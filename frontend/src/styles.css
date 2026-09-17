@@ -143,6 +143,7 @@ code, .mono { font-family: var(--mono); font-size: 0.86em; }
 .badge.live .dot { animation: pulse 1.6s infinite; }
 @keyframes pulse { 0% { box-shadow: 0 0 0 0 currentColor; } 70% { box-shadow: 0 0 0 6px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
 
+input[type="range"] { accent-color: #8b5cf6; }
 .input, .select, .textarea {
   width: 100%; min-height: 42px; padding: 10px 13px; border-radius: 12px; border: 1px solid var(--line-strong);
   background: rgba(7, 10, 23, 0.6); color: var(--ink); font: inherit; transition: border-color 0.15s, box-shadow 0.15s;
