@@ -14,7 +14,7 @@ const FUNNEL: [string, string][] = [["discovered", "Discovered"], ["prepared", "
 // already carries the magnitude. Only the score bands are genuinely ordered, so they
 // get a single-hue ordinal ramp (validated light->dark against the panel surface),
 // brightest at the top band so the best-fitting matches read first.
-const BAND_RAMP = ["#5f741d", "#98be31", "#cef264", "#f4ffd6"];
+const BAND_RAMP = ["#7a4a12", "#c98428", "#ffb454", "#ffdfae"];
 
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
