@@ -83,6 +83,27 @@ racing each other into the same employer form.
 
 ---
 
+## The front door
+
+CloudFront is the intended entry point and does five jobs: terminates TLS, serves the SPA
+from a **private** S3 bucket via Origin Access Control, routes `/api/*` and `/portal*` to
+API Gateway so the browser sees **one origin**, rewrites extensionless paths to
+`index.html` for client-side routes, and sets the security headers — including the
+`Permissions-Policy` that grants microphone access.
+
+A new AWS account cannot create a distribution until activation completes:
+`CreateDistribution` returns 403 no matter what IAM permits, and the stack rolls back at
+that single resource while every other CloudFront resource creates normally. The
+`UseCloudFront` parameter therefore has a second mode. With it `false`, a `WebFunction`
+behind the HTTP API's `$default` route serves the same built assets out of the same private
+bucket over IAM — same origin, same TLS, same SPA rewrite, same headers. The only thing
+given up is edge caching: every asset request reaches Lambda. Content-hashed assets are
+still served `immutable` and the shell `no-cache`, so it costs latency, not correctness.
+
+Either way the app's own code is identical — it only ever calls same-origin relative paths.
+
+---
+
 ## The two request paths
 
 **Synchronous** — anything the person is waiting on. `CloudFront → HTTP API → ApiFunction`,

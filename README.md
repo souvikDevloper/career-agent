@@ -73,7 +73,7 @@ Full design, state machine, data model and failure handling: **[docs/ARCHITECTUR
 | **Amazon EventBridge Scheduler** | 5-minute source monitor, reminders, outbox repair, judge-session cleanup |
 | **Amazon Transcribe / Polly** | Streaming voice commands; neural voice replies (en-IN) |
 | **Amazon Cognito** | Real users + short-lived, restricted example-workspace users |
-| **Amazon S3 + CloudFront** | Private encrypted resumes/evidence; global UI + same-origin API routing |
+| **Amazon S3 + CloudFront** | Private encrypted resumes/evidence; global UI + same-origin API routing (see *Front door* under Deploy — the HTTP API serves the UI when a distribution cannot be created) |
 | **Amazon SES** | Email updates and approval links (links open the review; they never approve on GET) |
 | **Secrets Manager, IAM, CloudWatch, Budgets** | HMAC secret, least-privilege roles, DLQ alarms, spend alerts |
 
@@ -129,6 +129,12 @@ cd frontend && npm install && npm run build && node dev/mock-server.mjs   # http
 
    Then verify the sender address in Amazon SES (it starts in the sandbox).
 2. Push to `main`. GitHub Actions runs tests, assumes the deploy role via OIDC, builds manylinux artifacts, deploys `template.yaml`, publishes the UI, and smoke-tests the live URL.
+   * **Front door.** CloudFront is the intended one. A brand-new AWS account cannot create a
+     distribution until activation finishes — `CreateDistribution` returns 403 whatever IAM
+     allows — so `UseCloudFront` defaults to `false` and the HTTP API serves the UI itself on
+     the same origin. That keeps TLS, one origin, a private bucket and SPA deep links; it
+     gives up edge caching. Add `UseCloudFront=true` to the SSM deploy parameters and redeploy
+     once the account is activated.
 3. Optional Telegram: `aws ssm put-parameter --name /career-agent/telegram-bot-token --type SecureString --value <token>` and redeploy.
 
 ## Live deployment
