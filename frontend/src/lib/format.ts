@@ -17,10 +17,12 @@ export function dateTime(iso?: string | null): string {
 }
 
 export function scoreTone(score: number): string {
-  if (score > 80) return "#34d399";
-  if (score >= 65) return "#22d3ee";
-  if (score >= 50) return "#fbbf24";
-  return "#fb7185";
+  // Deep enough to read as a ring stroke and as a numeral on a white card;
+  // the previous values were tuned for a dark surface and washed out on light.
+  if (score > 80) return "#059669";
+  if (score >= 65) return "#0891b2";
+  if (score >= 50) return "#b45309";
+  return "#dc2626";
 }
 
 export const STATE_META: Record<string, { label: string; tone: string; lane: "action" | "progress" | "done" | "closed" }> = {
