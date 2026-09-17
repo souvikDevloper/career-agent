@@ -340,7 +340,6 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .switch.on { background: var(--grad); }
 .switch.on::after { transform: translateX(18px); }
 
-
 .dropzone { border: 1.5px dashed rgba(139, 92, 246, 0.45); border-radius: var(--radius); padding: 30px; text-align: center; background: rgba(139, 92, 246, 0.05); transition: all 0.2s; cursor: pointer; }
 .dropzone.over { background: rgba(139, 92, 246, 0.14); border-color: var(--cyan); }
 
@@ -360,7 +359,6 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .viz-row { display: grid; grid-template-columns: 132px minmax(0, 1fr) auto; gap: 12px; align-items: center; }
 .viz-track { height: 20px; border-radius: 4px; background: var(--viz-track); }
 .viz-bar { height: 20px; border-radius: 0 4px 4px 0; min-width: 3px; transition: width 0.7s cubic-bezier(.2, .8, .2, 1); }
-.viz-bar.zero { background: var(--viz-track); }
 .viz-val { font-family: var(--mono); font-size: 12.5px; color: var(--ink-2); white-space: nowrap; }
 .viz-label { font-size: 13.5px; color: var(--ink-2); min-width: 0; }
 
@@ -382,9 +380,9 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
   .topbar { padding: 0 12px; gap: 8px; }
   .topbar h2 { font-size: 16px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .content { padding: 18px 16px 90px; }
-  .g2, .g3 { grid-template-columns: 1fr; }
+  .g2, .g3 { grid-template-columns: minmax(0, 1fr); }
   .span2 { grid-column: auto; }
-  .split, .split.detail, .split.profile, .split.aside { grid-template-columns: 1fr; }
+  .split, .split.detail, .split.profile, .split.aside { grid-template-columns: minmax(0, 1fr); }
   .answer { grid-template-columns: 1fr; gap: 4px; }
   .bar-row { grid-template-columns: 110px 1fr 44px; }
   .mobile-nav { display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; background: rgba(7, 10, 23, 0.92); backdrop-filter: blur(16px); border-top: 1px solid var(--line); justify-content: space-around; padding: 8px 4px calc(8px + env(safe-area-inset-bottom)); }
@@ -408,8 +406,6 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
   .viz-label { font-size: 12.5px; }
   .pipeline { grid-template-columns: repeat(3, 1fr); }
   .board { grid-template-columns: repeat(4, 82vw); }
-  /* Badges sit in narrow cards on phones - let a long row wrap rather than overflow. */
-  .badge { max-width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
