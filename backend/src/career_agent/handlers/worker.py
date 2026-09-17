@@ -27,10 +27,34 @@ def handler(event: dict, context: Any) -> dict:
     return {"batchItemFailures": failures}
 
 
+MODEL_DOWN_SIGNS = ("Operation not allowed", "account is currently being verified",
+                    "AccessDeniedException", "ThrottlingException", "ServiceUnavailable",
+                    "ModelNotReady", "don't have access to the model")
+
+
+def _model_unavailable(exc: Exception) -> bool:
+    """True when the failure is the model being unreachable, not a bug in our request."""
+    from ..llm import ModelUnavailable
+
+    if isinstance(exc, ModelUnavailable):
+        return True
+    text = str(exc)
+    return any(sign in text for sign in MODEL_DOWN_SIGNS)
+
+
 def _finish_op_error(uid: str, op_id: str | None, exc: Exception) -> None:
     if not op_id:
         return
-    msg = str(exc) if isinstance(exc, WorkflowError) else "This request could not be completed. Please try again."
+    if isinstance(exc, WorkflowError):
+        msg = str(exc)
+    elif _model_unavailable(exc):
+        # Strands calls ConverseStream on its own client, so a blocked model arrives as a
+        # raw botocore error rather than llm.ModelUnavailable. Saying "try again" for a
+        # model that cannot answer sends people in circles.
+        msg = ("The AI model is unavailable right now, so I could not answer. "
+               "Searching and scoring still work without it.")
+    else:
+        msg = "This request could not be completed. Please try again."
     services().wf.op_progress(uid, op_id, status="failed", message=msg, final={"error": msg})
 
 
