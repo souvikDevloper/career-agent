@@ -193,6 +193,12 @@ def seed_example_workspace(uid: str, username: str) -> None:
     profile = svc.profiles.save_version(uid, DEMO_FACTS, key, DEMO_RESUME_TEXT, "example_workspace", saved_answers=DEMO_SAVED_ANSWERS)
     svc.store.transact([svc.wf.event_put(uid, "workspace.example_started", {"profile_version": profile["version"],
                                                                             "note": "Fictional applicant; test employer only"})])
+    # Seed a watch and kick off one search. Without this the workspace opens with a
+    # profile but no matches, which reads as a broken app rather than an empty one.
+    svc.store.put({"pk": f"USER#{uid}", "sk": f"WATCH#{new_id('w_')}", "entity": "watch", "keywords": "intern",
+                   "interval_minutes": 5, "enabled": True, "gsi1pk": "WATCH#enabled",
+                   "gsi1sk": f"USER#{uid}", "created_at": svc.wf.clock.iso(), "ttl": now + 3 * 86400})
+    svc.wf.start_operation(uid, "search", {"keywords": "intern"}, f"seed:{uid}", None)
 
 
 @route("POST", r"/api/inbound/portal", auth=False)
