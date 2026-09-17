@@ -104,7 +104,7 @@ export function ApplicationDetailPage({ id }: { id: string }) {
         <div className="banner" style={{ marginBottom: 18 }}><IShield size={18} /> Cedar denied submission: {a.last_decision.reasons.join(", ")}</div>
       )}
 
-      <div className="grid" style={{ gridTemplateColumns: "minmax(0, 1.5fr) minmax(0, 1fr)", gap: 18, alignItems: "start" }}>
+      <div className="split detail">
         <div className="stack">
           {a.receipt && (
             <div className="receipt fade-in">

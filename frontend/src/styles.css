@@ -88,8 +88,8 @@ code, .mono { font-family: var(--mono); font-size: 0.86em; }
 .card.pad { padding: 20px; }
 .card.hover { transition: border-color 0.2s, transform 0.2s, box-shadow 0.2s; }
 .card.hover:hover { border-color: var(--line-strong); transform: translateY(-2px); box-shadow: var(--glow); }
-.card-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
-.card-title h3 { font-size: 15px; font-weight: 700; color: var(--ink); display: flex; gap: 8px; align-items: center; }
+.card-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+.card-title h3 { font-size: 15px; font-weight: 700; color: var(--ink); display: flex; gap: 8px; align-items: center; min-width: 0; }
 .eyebrow { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); font-weight: 600; }
 .muted { color: var(--muted); }
 .ink2 { color: var(--ink-2); }
@@ -105,6 +105,12 @@ code, .mono { font-family: var(--mono); font-size: 0.86em; }
 .g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .g4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .span2 { grid-column: span 2; }
+/* Collapsible two-column layouts. Defined here (not inline) so the mobile
+   breakpoint below can actually override them. */
+.split { display: grid; gap: 18px; align-items: start; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); }
+.split.detail { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); }
+.split.profile { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }
+.split.aside { grid-template-columns: minmax(0, 1fr) 320px; }
 .stack > * + * { margin-top: 16px; }
 .divider { height: 1px; background: var(--line); margin: 14px 0; }
 .spacer { flex: 1; }
@@ -163,6 +169,7 @@ input[type="range"] { accent-color: #8b5cf6; }
 
 .progress { height: 8px; border-radius: 99px; background: rgba(255, 255, 255, 0.06); overflow: hidden; }
 .progress > span { display: block; height: 100%; border-radius: inherit; background: var(--grad); transition: width 0.6s cubic-bezier(.2,.8,.2,1); }
+.progress.data > span { background: var(--viz-1); }
 
 .empty { text-align: center; padding: 36px 20px; color: var(--muted); }
 .empty .art { width: 64px; height: 64px; margin: 0 auto 12px; border-radius: 20px; display: grid; place-items: center; background: var(--grad-soft); border: 1px solid var(--line); color: #c4b5fd; }
@@ -241,7 +248,7 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
 /* ---------- KPI ---------- */
 .kpi { padding: 18px; position: relative; overflow: hidden; }
 .kpi .v { font-family: var(--display); font-size: 30px; font-weight: 800; letter-spacing: -0.03em; margin-top: 6px; }
-.kpi .t { font-size: 13px; color: var(--muted); }
+.kpi .t { font-size: 13px; color: var(--muted); padding-right: 46px; }
 .kpi .ic { position: absolute; right: 14px; top: 14px; width: 36px; height: 36px; border-radius: 11px; display: grid; place-items: center; background: var(--grad-soft); color: #c4b5fd; }
 
 /* ---------- command / voice ---------- */
@@ -333,13 +340,35 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .switch.on { background: var(--grad); }
 .switch.on::after { transform: translateX(18px); }
 
-.funnel-bar { height: 38px; border-radius: 10px; background: var(--grad); display: flex; align-items: center; padding: 0 12px; color: #fff; font-weight: 700; font-size: 13px; min-width: 44px; transition: width 0.7s cubic-bezier(.2,.8,.2,1); }
 
 .dropzone { border: 1.5px dashed rgba(139, 92, 246, 0.45); border-radius: var(--radius); padding: 30px; text-align: center; background: rgba(139, 92, 246, 0.05); transition: all 0.2s; cursor: pointer; }
 .dropzone.over { background: rgba(139, 92, 246, 0.14); border-color: var(--cyan); }
 
 .banner { display: flex; gap: 12px; align-items: center; padding: 12px 16px; border-radius: 14px; border: 1px solid rgba(251, 191, 36, 0.35); background: rgba(251, 191, 36, 0.08); color: #fde68a; font-size: 13.5px; }
 .banner.info { border-color: rgba(34, 211, 238, 0.35); background: rgba(34, 211, 238, 0.07); color: #a5f3fc; }
+
+/* ---------- charts ----------
+   One series -> one colour; ordered stages -> a single-hue violet ordinal ramp
+   (validated light->dark for monotone lightness, step gaps and contrast against
+   the panel surface). Bars are thin, square at the baseline, 4px at the data end. */
+:root {
+  --viz-1: #9168f5;              /* single-series fill */
+  --viz-track: rgba(255, 255, 255, 0.055);
+  --viz-axis: var(--line);
+}
+.viz-rows { display: grid; gap: 11px; }
+.viz-row { display: grid; grid-template-columns: 132px minmax(0, 1fr) auto; gap: 12px; align-items: center; }
+.viz-track { height: 20px; border-radius: 4px; background: var(--viz-track); }
+.viz-bar { height: 20px; border-radius: 0 4px 4px 0; min-width: 3px; transition: width 0.7s cubic-bezier(.2, .8, .2, 1); }
+.viz-bar.zero { background: var(--viz-track); }
+.viz-val { font-family: var(--mono); font-size: 12.5px; color: var(--ink-2); white-space: nowrap; }
+.viz-label { font-size: 13.5px; color: var(--ink-2); min-width: 0; }
+
+.viz-plot { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); align-items: end; gap: 10px; height: 172px; border-bottom: 1px solid var(--viz-axis); }
+.viz-col { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 7px; min-width: 0; }
+.viz-colbar { width: 100%; max-width: 24px; border-radius: 4px 4px 0 0; transition: height 0.6s cubic-bezier(.2, .8, .2, 1); }
+.viz-axis-x { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 10px; margin-top: 9px; }
+.viz-axis-x span { text-align: center; font-size: 12px; color: var(--muted); }
 
 /* ---------- responsive ---------- */
 @media (max-width: 1100px) {
@@ -350,10 +379,12 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
   .hero { grid-template-columns: 1fr; padding-top: 24px; }
   .shell { grid-template-columns: 1fr; }
   .side { display: none; }
-  .topbar { padding: 0 16px; }
+  .topbar { padding: 0 12px; gap: 8px; }
+  .topbar h2 { font-size: 16px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .content { padding: 18px 16px 90px; }
   .g2, .g3 { grid-template-columns: 1fr; }
   .span2 { grid-column: auto; }
+  .split, .split.detail, .split.profile, .split.aside { grid-template-columns: 1fr; }
   .answer { grid-template-columns: 1fr; gap: 4px; }
   .bar-row { grid-template-columns: 110px 1fr 44px; }
   .mobile-nav { display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; background: rgba(7, 10, 23, 0.92); backdrop-filter: blur(16px); border-top: 1px solid var(--line); justify-content: space-around; padding: 8px 4px calc(8px + env(safe-area-inset-bottom)); }
@@ -368,6 +399,17 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
   .g4 { grid-template-columns: 1fr 1fr; }
   .hero h1 { font-size: 38px; }
   .kpi .v { font-size: 24px; }
+  /* Let the landing header wrap instead of pushing "Sign in" off-screen. */
+  .nav { flex-wrap: wrap; height: auto; padding: 14px 0 6px; gap: 10px; row-gap: 10px; }
+  .nav .brand { white-space: nowrap; }
+  .nav .spacer { flex-basis: 100%; height: 0; }
+  .landing { padding: 0 16px 80px; }
+  .viz-row { grid-template-columns: 96px minmax(0, 1fr) auto; gap: 9px; }
+  .viz-label { font-size: 12.5px; }
+  .pipeline { grid-template-columns: repeat(3, 1fr); }
+  .board { grid-template-columns: repeat(4, 82vw); }
+  /* Badges sit in narrow cards on phones - let a long row wrap rather than overflow. */
+  .badge { max-width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }

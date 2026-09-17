@@ -63,7 +63,7 @@ export function JobsPage() {
         </div>
       </div>
 
-      <div className="grid" style={{ gridTemplateColumns: "minmax(0,1fr) 320px", gap: 18, alignItems: "start" }}>
+      <div className="split aside">
         <div className="stack">
           <div className="card pad">
             <form className="row wrap" onSubmit={(e) => { e.preventDefault(); search(); }}>

@@ -1,7 +1,11 @@
 // Local UI preview with realistic fixtures (no AWS). Usage: node build.mjs && node dev/mock-server.mjs
 import http from "node:http";
 import { readFileSync, existsSync } from "node:fs";
-import { extname, join } from "node:path";
+import { extname, join, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Resolve the built UI relative to this file so the server runs from any cwd.
+const DIST = resolve(dirname(fileURLToPath(import.meta.url)), "..", "dist");
 
 const now = Date.now();
 const iso = (msAgo) => new Date(now - msAgo).toISOString().slice(0, 19) + "+00:00";
@@ -89,8 +93,8 @@ http.createServer((req, res) => {
   if (url.pathname.startsWith("/api/applications/") && url.pathname.endsWith("/interview")) body = { prep: null };
   if (body) { res.writeHead(200, { "Content-Type": "application/json" }); return res.end(JSON.stringify(body)); }
   if (url.pathname.startsWith("/api/")) { res.writeHead(200, { "Content-Type": "application/json" }); return res.end("{}"); }
-  let file = join("dist", url.pathname);
-  if (!extname(url.pathname) || !existsSync(file)) file = "dist/index.html";
+  let file = join(DIST, url.pathname);
+  if (!extname(url.pathname) || !existsSync(file)) file = join(DIST, "index.html");
   res.writeHead(200, { "Content-Type": types[extname(file)] || "application/octet-stream" });
   res.end(readFileSync(file));
 }).listen(Number(process.env.PORT || 5173), () => console.log("mock UI on http://localhost:" + (process.env.PORT || 5173)));
