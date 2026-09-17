@@ -1,0 +1,719 @@
+"""HTTP API (API Gateway HTTP API, payload v2). Commands are validated, recorded and answered quickly;
+long work is dispatched through the transactional outbox."""
+
+from __future__ import annotations
+
+import json
+import re
+import secrets
+import time
+import urllib.error
+import urllib.request
+from typing import Any, Callable
+
+from pydantic import BaseModel, Field, ValidationError
+
+from .. import connectors, discovery, voice
+from ..config import settings as cfg
+from ..demo import DEMO_FACTS, DEMO_PREFERENCES, DEMO_RESUME_TEXT, DEMO_SAVED_ANSWERS, PUBLISHABLE_TEMPLATES, minimal_pdf
+from ..resume import ResumeError, resume_doc_id
+from ..store import C, Put, Update
+from ..util import get_logger, log, new_id
+from ..workflow import Principal, WorkflowError
+from .common import body_json, correlation, error, portal_signature, principal, respond, services, verify_signature
+
+logger = get_logger("api")
+
+# ---------------------------------------------------------------------------
+# request models
+# ---------------------------------------------------------------------------
+
+
+class CommandIn(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+    client_request_id: str = Field(min_length=8, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
+    source: str = Field(default="chat", pattern=r"^(chat|voice)$")
+
+
+class SettingsIn(BaseModel):
+    mode: str | None = Field(default=None, pattern=r"^(review|auto_above_80|auto_eligible)$")
+    daily_cap: int | None = Field(default=None, ge=0, le=25)
+    cooldown_seconds: int | None = Field(default=None, ge=30, le=3600)
+    timezone: str | None = Field(default=None, max_length=60)
+    notify_email: str | None = Field(default=None, max_length=200)
+    voice_enabled: bool | None = None
+    preferences: dict | None = None
+
+
+class MandateIn(BaseModel):
+    enabled: bool
+    mode: str | None = Field(default=None, pattern=r"^(auto_above_80|auto_eligible)$")
+    hours: int = Field(default=72, ge=1, le=720)
+
+
+class UploadIn(BaseModel):
+    filename: str = Field(min_length=1, max_length=200)
+    size: int = Field(gt=0, le=5 * 1024 * 1024)
+
+
+class ApproveIn(BaseModel):
+    packet_hash: str = Field(min_length=64, max_length=64)
+
+
+class WatchIn(BaseModel):
+    keywords: str = Field(min_length=1, max_length=200)
+
+
+class SearchIn(BaseModel):
+    keywords: str = Field(default="", max_length=200)
+    client_request_id: str = Field(min_length=8, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class FeedbackIn(BaseModel):
+    question: str = Field(min_length=3, max_length=600)
+    answer: str = Field(min_length=1, max_length=4000)
+    client_request_id: str = Field(min_length=8, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+# ---------------------------------------------------------------------------
+# router
+# ---------------------------------------------------------------------------
+
+Route = tuple[str, re.Pattern, Callable[..., dict], bool]
+ROUTES: list[Route] = []
+
+
+def route(method: str, pattern: str, auth: bool = True):
+    def deco(fn):
+        ROUTES.append((method, re.compile("^" + pattern + "$"), fn, auth))
+        return fn
+
+    return deco
+
+
+def handler(event: dict, context: Any) -> dict:
+    cid = correlation(event)
+    method = event.get("requestContext", {}).get("http", {}).get("method", "GET")
+    path = event.get("rawPath", "")
+    started = time.time()
+    try:
+        for m, rx, fn, auth in ROUTES:
+            match = rx.match(path)
+            if m != method or not match:
+                continue
+            p = principal(event)
+            if auth and p is None:
+                return error(401, "unauthorized", "Sign in required", cid)
+            res = fn(event=event, p=p, cid=cid, **match.groupdict())
+            log(logger, "http.request", method=method, route=rx.pattern, status=res["statusCode"],
+                ms=int((time.time() - started) * 1000), correlation_id=cid, user=(p.user_id if p else None))
+            return res
+        return error(404, "not_found", "No such route", cid)
+    except ValidationError as exc:
+        return error(400, "invalid_request", "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors()[:5]), cid)
+    except (ValueError, json.JSONDecodeError) as exc:
+        return error(400, "invalid_request", str(exc)[:200], cid)
+    except WorkflowError as exc:
+        return error(exc.status, exc.code, str(exc), cid)
+    except ResumeError as exc:
+        return error(422, "resume_error", str(exc), cid)
+    except Exception as exc:  # pragma: no cover - logged, never leaked
+        log(logger, "http.error", error=type(exc).__name__, detail=str(exc)[:500], correlation_id=cid, path=path)
+        return error(500, "internal", "Something went wrong. Reference: " + cid, cid)
+
+
+def _svc():
+    return services()
+
+
+# ---------------------------------------------------------------------------
+# public
+# ---------------------------------------------------------------------------
+
+
+@route("GET", r"/api/public/health", auth=False)
+def health(event, p, cid):
+    return respond(200, {"ok": True, "service": "career-agent", "version": "1.0.0", "stage": cfg().stage})
+
+
+@route("GET", r"/api/public/status", auth=False)
+def public_status(event, p, cid):
+    return respond(200, {"sources": discovery.source_status(_svc().wf), "connectors": connectors.CONNECTORS,
+                         "model": cfg().model_id, "region": cfg().region})
+
+
+@route("POST", r"/api/public/demo-session", auth=False)
+def demo_session(event, p, cid):
+    """Isolated example workspace: a short-lived Cognito user in the 'judge' group with fictional data."""
+    import boto3
+
+    svc = _svc()
+    hour = time.strftime("%Y%m%d%H", time.gmtime())
+    try:
+        svc.store.update(Update("DEMO#RATE", hour, add={"count": 1}, set={"ttl": int(time.time()) + 7200},
+                                condition=_rate_condition(cfg().demo_sessions_per_hour)))
+    except Exception as exc:
+        if type(exc).__name__ == "ConditionFailed":
+            return error(429, "busy", "Too many example workspaces were started this hour. Please try again shortly.", cid)
+        raise
+    idp = boto3.client("cognito-idp")
+    username = f"judge-{secrets.token_hex(6)}"
+    password = "Aa1!" + secrets.token_urlsafe(24)
+    pool = cfg().user_pool_id
+    idp.admin_create_user(UserPoolId=pool, Username=username, MessageAction="SUPPRESS",
+                          UserAttributes=[{"Name": "email", "Value": f"{username}@example.com"}, {"Name": "email_verified", "Value": "true"}])
+    idp.admin_set_user_password(UserPoolId=pool, Username=username, Password=password, Permanent=True)
+    idp.admin_add_user_to_group(UserPoolId=pool, Username=username, GroupName="judge")
+    auth = idp.admin_initiate_auth(UserPoolId=pool, ClientId=cfg().user_pool_client_id, AuthFlow="ADMIN_USER_PASSWORD_AUTH",
+                                   AuthParameters={"USERNAME": username, "PASSWORD": password})["AuthenticationResult"]
+    sub = next(a["Value"] for a in idp.admin_get_user(UserPoolId=pool, Username=username)["UserAttributes"] if a["Name"] == "sub")
+    seed_example_workspace(sub, username)
+    return respond(201, {"id_token": auth["IdToken"], "access_token": auth["AccessToken"], "expires_in": auth["ExpiresIn"],
+                         "refresh_token": auth.get("RefreshToken"), "username": username, "example_workspace": True})
+
+
+def _rate_condition(limit: int):
+    from ..store import Or
+
+    return Or(C("count", "not_exists"), C("count", "lt", limit))
+
+
+def seed_example_workspace(uid: str, username: str) -> None:
+    import boto3
+
+    svc = _svc()
+    key = f"resumes/{uid}/example-aarav-mehta.pdf"
+    boto3.client("s3").put_object(Bucket=cfg().bucket, Key=key, Body=minimal_pdf(DEMO_RESUME_TEXT), ContentType="application/pdf",
+                                  ServerSideEncryption="AES256")
+    now = int(time.time())
+    svc.store.put({"pk": f"USER#{uid}", "sk": "ACCOUNT", "is_judge": True, "username": username, "created_at": svc.wf.clock.iso(),
+                   "gsi1pk": "JUDGE#accounts", "gsi1sk": svc.wf.clock.iso(), "ttl": now + 3 * 86400})
+    svc.store.put({"pk": f"USER#{uid}", "sk": "SETTINGS", "preferences": DEMO_PREFERENCES, "mode": "review", "daily_cap": 5,
+                   "cooldown_seconds": 30, "timezone": "Asia/Kolkata"})
+    profile = svc.profiles.save_version(uid, DEMO_FACTS, key, DEMO_RESUME_TEXT, "example_workspace", saved_answers=DEMO_SAVED_ANSWERS)
+    svc.store.transact([svc.wf.event_put(uid, "workspace.example_started", {"profile_version": profile["version"],
+                                                                            "note": "Fictional applicant; test employer only"})])
+
+
+@route("POST", r"/api/inbound/portal", auth=False)
+def inbound_portal(event, p, cid):
+    raw = event.get("body") or ""
+    if event.get("isBase64Encoded"):
+        import base64
+
+        raw = base64.b64decode(raw).decode()
+    headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
+    if not verify_signature(raw, headers.get("x-portal-signature")):
+        return error(403, "forbidden", "bad signature", cid)
+    msg = json.loads(raw)
+    svc = _svc()
+    ref = svc.store.get(f"RECEIPT#{msg.get('reference')}", "RECEIPT")
+    if not ref:
+        return respond(202, {"accepted": True, "matched": False})
+    svc.store.transact([svc.wf.outbox_put("work", {"kind": "inbound_message", "message": {**msg, "user_id": ref["user_id"]}},
+                                          f"work:inbound:{msg['message_id']}")])
+    return respond(202, {"accepted": True})
+
+
+@route("POST", r"/api/telegram/webhook", auth=False)
+def telegram_webhook(event, p, cid):
+    from ..notify import telegram_call
+
+    headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
+    import hmac
+
+    if not hmac.compare_digest(headers.get("x-telegram-bot-api-secret-token", ""), portal_signature("telegram-webhook")[:64]):
+        return error(403, "forbidden", "bad secret", cid)
+    upd = body_json(event)
+    svc = _svc()
+    if "message" in upd:
+        chat = upd["message"]["chat"]["id"]
+        text = (upd["message"].get("text") or "").strip()
+        m = re.fullmatch(r"/start\s+([A-Z0-9]{6,12})", text)
+        if m:
+            link = svc.store.get(f"TGLINK#{m.group(1)}", "LINK")
+            if link and float(link["expires_at"]) > time.time() and not link.get("used"):
+                svc.store.transact([
+                    Update(f"TGLINK#{m.group(1)}", "LINK", set={"used": True}, condition=C("used", "not_exists")),
+                    Update(f"USER#{link['user_id']}", "SETTINGS", set={"telegram_chat_id": chat}),
+                    svc.wf.event_put(link["user_id"], "connector.telegram_linked", {}),
+                ])
+                telegram_call("sendMessage", {"chat_id": chat, "text": "Linked to Career Agent. You'll get updates and approval requests here."})
+            else:
+                telegram_call("sendMessage", {"chat_id": chat, "text": "That link code is invalid or expired. Generate a new one in Settings."})
+        return respond(200, {"ok": True})
+    if "callback_query" in upd:
+        cq = upd["callback_query"]
+        data = cq.get("data", "")
+        chat = cq.get("message", {}).get("chat", {}).get("id")
+        answer = "This approval link is no longer valid."
+        if data.startswith("ap:"):
+            tok = svc.store.get(f"ACTIONTOKEN#{data[3:]}", "TOKEN")
+            if tok and str(tok["chat_id"]) == str(chat) and float(tok["expires_at"]) > time.time():
+                try:
+                    app = svc.wf.approve(Principal(tok["user_id"], svc.is_judge(tok["user_id"])), tok["app_id"], tok["packet_hash"], "telegram")
+                    answer = f"Approved. Status: {app['action_state']}"
+                except WorkflowError as exc:
+                    answer = str(exc)[:180]
+        telegram_call("answerCallbackQuery", {"callback_query_id": cq["id"], "text": answer})
+        return respond(200, {"ok": True})
+    return respond(200, {"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# account & settings
+# ---------------------------------------------------------------------------
+
+
+@route("GET", r"/api/me")
+def me(event, p, cid):
+    svc = _svc()
+    account = svc.store.get(f"USER#{p.user_id}", "ACCOUNT")
+    if not account and not p.is_judge:
+        try:
+            svc.store.put({"pk": f"USER#{p.user_id}", "sk": "ACCOUNT", "is_judge": False, "email": p.email,
+                           "created_at": svc.wf.clock.iso()}, C("pk", "not_exists"))
+        except Exception as exc:
+            if type(exc).__name__ != "ConditionFailed":
+                raise
+    profile = svc.profiles.current(p.user_id)
+    settings = svc.wf.settings(p.user_id)
+    conn = {k: dict(v) for k, v in connectors.CONNECTORS.items()}
+    if settings.get("telegram_chat_id"):
+        conn["telegram"]["status"] = "verified_live"
+    if settings.get("notify_email_verified"):
+        conn["email-ses"]["status"] = "verified_live"
+    if p.is_judge:
+        conn["email-ses"]["note"] = "Example workspaces deliver email only to the project's own verified demo inbox."
+    inbox = svc.store.query(f"USER#{p.user_id}", "INBOX#", limit=30, newest_first=True)
+    return respond(200, {
+        "user_id": p.user_id, "is_judge": p.is_judge, "email": p.email if not p.is_judge else None,
+        "example_workspace": p.is_judge, "settings": _settings_public(settings, svc),
+        "profile": _profile_public(profile), "connectors": conn, "usage": svc.wf.usage(p.user_id),
+        "limits": {"model_calls": cfg().judge_daily_model_calls if p.is_judge else cfg().user_daily_model_calls,
+                   "voice_seconds": cfg().judge_voice_seconds if p.is_judge else cfg().user_voice_seconds},
+        "inbox": [_strip(i) for i in inbox], "sources": discovery.source_status(svc.wf),
+        "watches": [_strip(w) for w in svc.store.query(f"USER#{p.user_id}", "WATCH#", limit=50)],
+    })
+
+
+def _settings_public(s: dict, svc) -> dict:
+    out = {k: s.get(k) for k in ("mode", "daily_cap", "cooldown_seconds", "timezone", "notify_email", "notify_email_verified",
+                                 "voice_enabled", "preferences", "mandate")}
+    out["telegram_linked"] = bool(s.get("telegram_chat_id"))
+    return out
+
+
+def _profile_public(profile: dict | None) -> dict | None:
+    if not profile:
+        return None
+    return {"version": profile["version"], "facts": profile["facts"], "created_at": profile["created_at"],
+            "source": profile["source"], "saved_answers": profile.get("saved_answers", {}), "has_resume": bool(profile.get("resume_key"))}
+
+
+def _strip(item: dict) -> dict:
+    return {k: v for k, v in item.items() if k not in ("pk", "sk", "gsi1pk", "gsi1sk", "ttl")}
+
+
+@route("PUT", r"/api/settings")
+def put_settings(event, p, cid):
+    data = SettingsIn(**body_json(event)).model_dump(exclude_none=True)
+    svc = _svc()
+    if data.get("notify_email"):
+        if p.is_judge:
+            raise WorkflowError("forbidden", "Example workspaces can't send email to arbitrary addresses.", 403)
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", data["notify_email"]):
+            raise ValueError("invalid email")
+    s = svc.wf.update_settings(p.user_id, data)
+    ledger = svc.store.get(f"USER#{p.user_id}", svc.wf.ledger_key(p.user_id, s)) or {}
+    return respond(200, {"settings": _settings_public(s, svc), "today": _strip(ledger) if ledger else {}})
+
+
+@route("POST", r"/api/mandate")
+def mandate(event, p, cid):
+    data = MandateIn(**body_json(event))
+    s = _svc().wf.set_mandate(p, data.enabled, data.mode, data.hours)
+    return respond(200, {"settings": _settings_public(s, _svc())})
+
+
+@route("POST", r"/api/email/verify")
+def email_verify(event, p, cid):
+    import boto3
+
+    if p.is_judge:
+        raise WorkflowError("forbidden", "Not available in example workspaces.", 403)
+    s = _svc().wf.settings(p.user_id)
+    email = s.get("notify_email")
+    if not email:
+        raise ValueError("set notify_email first")
+    ses = boto3.client("ses", region_name=cfg().region)
+    status = ses.get_identity_verification_attributes(Identities=[email])["VerificationAttributes"].get(email, {}).get("VerificationStatus")
+    if status == "Success":
+        _svc().store.update(Update(f"USER#{p.user_id}", "SETTINGS", set={"notify_email_verified": True}))
+        return respond(200, {"verified": True})
+    ses.verify_email_identity(EmailAddress=email)
+    return respond(202, {"verified": False, "message": "AWS sent a verification email. Click the link, then press Verify again."})
+
+
+@route("POST", r"/api/telegram/link-code")
+def telegram_link(event, p, cid):
+    from ..notify import telegram_token
+
+    if not telegram_token():
+        raise WorkflowError("needs_setup", "The Telegram bot is not configured on this deployment.", 409)
+    code = secrets.token_hex(4).upper()
+    _svc().store.put({"pk": f"TGLINK#{code}", "sk": "LINK", "user_id": p.user_id, "expires_at": time.time() + 900,
+                      "ttl": int(time.time()) + 3600})
+    bot = __import__("os").environ.get("TELEGRAM_BOT_USERNAME", "")
+    return respond(200, {"code": code, "command": f"/start {code}", "bot": bot, "deep_link": f"https://t.me/{bot}?start={code}" if bot else None})
+
+
+@route("DELETE", r"/api/account")
+def delete_account(event, p, cid):
+    n = _svc().delete_account_data(p.user_id)
+    return respond(200, {"deleted_items": n, "note": "Queued work referencing deleted records will be discarded."})
+
+
+# ---------------------------------------------------------------------------
+# resume & profile
+# ---------------------------------------------------------------------------
+
+
+@route("POST", r"/api/resume/upload-url")
+def upload_url(event, p, cid):
+    import boto3
+
+    data = UploadIn(**body_json(event))
+    ext = data.filename.lower().rsplit(".", 1)[-1]
+    if ext not in ("pdf", "docx"):
+        raise ResumeError("Only PDF or DOCX resumes are supported.")
+    rid = resume_doc_id()
+    key = f"resumes/{p.user_id}/{rid}.{ext}"
+    post = boto3.client("s3").generate_presigned_post(
+        Bucket=cfg().bucket, Key=key, ExpiresIn=300,
+        Fields={"x-amz-server-side-encryption": "AES256"},
+        Conditions=[["content-length-range", 100, 5 * 1024 * 1024], {"x-amz-server-side-encryption": "AES256"}])
+    _svc().store.put({"pk": f"USER#{p.user_id}", "sk": f"RESUME#{rid}", "entity": "resume", "resume_id": rid, "s3_key": key,
+                      "filename": data.filename[:200], "status": "awaiting_upload", "created_at": _svc().wf.clock.iso()})
+    return respond(201, {"resume_id": rid, "upload": post})
+
+
+@route("POST", r"/api/resume/(?P<rid>res_[a-z0-9]+)/process")
+def process_resume(event, p, cid, rid):
+    body = body_json(event)
+    op, created = _svc().wf.start_operation(p.user_id, "resume", {"resume_id": rid}, body.get("client_request_id") or f"resume-{rid}", cid)
+    return respond(202 if created else 200, {"operation": _strip(op)})
+
+
+@route("GET", r"/api/profile")
+def get_profile(event, p, cid):
+    return respond(200, {"profile": _profile_public(_svc().profiles.current(p.user_id))})
+
+
+@route("PATCH", r"/api/profile")
+def patch_profile(event, p, cid):
+    body = body_json(event)
+    prof = _svc().profiles.correct(p.user_id, body)
+    return respond(200, {"profile": _profile_public(prof)})
+
+
+@route("PUT", r"/api/profile/answers")
+def put_answers(event, p, cid):
+    body = body_json(event)
+    answers = body.get("answers") or {}
+    if not isinstance(answers, dict) or len(answers) > 40:
+        raise ValueError("answers must be an object")
+    prof = _svc().profiles.save_answers(p.user_id, answers)
+    app_id = body.get("reprepare_app_id")
+    if app_id:
+        _svc().request_prepare(p.user_id, app_id=app_id)
+    return respond(200, {"profile": _profile_public(prof)})
+
+
+@route("GET", r"/api/resume/file")
+def resume_file(event, p, cid):
+    prof = _svc().profiles.current(p.user_id)
+    if not prof or not prof.get("resume_key"):
+        raise WorkflowError("not_found", "no resume", 404)
+    url = _svc().s3.generate_presigned_url("get_object", Params={"Bucket": cfg().bucket, "Key": prof["resume_key"]}, ExpiresIn=120)
+    return respond(200, {"url": url})
+
+
+@route("POST", r"/api/resume/improve")
+def resume_improve(event, p, cid):
+    body = body_json(event)
+    op, created = _svc().wf.start_operation(p.user_id, "resume_improve", {"job_key": body.get("job_key")},
+                                            body.get("client_request_id") or new_id("ri"), cid)
+    return respond(202, {"operation": _strip(op)})
+
+
+# ---------------------------------------------------------------------------
+# agent commands & operations
+# ---------------------------------------------------------------------------
+
+
+@route("POST", r"/api/commands")
+def command(event, p, cid):
+    data = CommandIn(**body_json(event))
+    svc = _svc()
+    ts = svc.wf.clock.iso()
+    op, created = svc.wf.start_operation(p.user_id, "chat", {"text": data.text, "source": data.source}, data.client_request_id, cid)
+    if created:
+        svc.store.put({"pk": f"USER#{p.user_id}", "sk": f"CHAT#{ts}#{op['op_id']}#u", "entity": "chat", "role": "user",
+                       "text": data.text, "source": data.source, "op_id": op["op_id"], "at": ts, "ttl": int(time.time()) + 14 * 86400})
+    return respond(202 if created else 200, {"operation": _strip(op)})
+
+
+@route("GET", r"/api/operations/(?P<op_id>op_[a-z0-9]+)")
+def get_operation(event, p, cid, op_id):
+    op = _svc().store.get(f"USER#{p.user_id}", f"OP#{op_id}")
+    if not op:
+        raise WorkflowError("not_found", "operation not found", 404)
+    return respond(200, {"operation": _strip(op)})
+
+
+@route("GET", r"/api/chat")
+def chat_history(event, p, cid):
+    rows = _svc().store.query(f"USER#{p.user_id}", "CHAT#", limit=60, newest_first=True)
+    return respond(200, {"messages": [_strip(r) for r in reversed(rows)]})
+
+
+@route("POST", r"/api/search")
+def search(event, p, cid):
+    data = SearchIn(**body_json(event))
+    op, created = _svc().wf.start_operation(p.user_id, "search", {"keywords": data.keywords}, data.client_request_id, cid)
+    return respond(202 if created else 200, {"operation": _strip(op)})
+
+
+# ---------------------------------------------------------------------------
+# jobs, watches, monitor
+# ---------------------------------------------------------------------------
+
+
+@route("GET", r"/api/jobs/matches")
+def matches(event, p, cid):
+    svc = _svc()
+    return respond(200, {"matches": [svc.match_card(m) for m in svc.matcher.list(p.user_id)],
+                         "sources": discovery.source_status(svc.wf)})
+
+
+@route("POST", r"/api/watches")
+def create_watch(event, p, cid):
+    data = WatchIn(**body_json(event))
+    return respond(201, {"watch": _strip(_svc().create_watch(p.user_id, data.keywords))})
+
+
+@route("DELETE", r"/api/watches/(?P<wid>w_[a-z0-9]+)")
+def delete_watch(event, p, cid, wid):
+    _svc().delete_watch(p.user_id, wid)
+    return respond(204, {})
+
+
+@route("POST", r"/api/monitor/check")
+def check_now(event, p, cid):
+    """Runs the real discovery pipeline immediately (same code path as the 5-minute schedule)."""
+    svc = _svc()
+    minute = time.strftime("%Y%m%d%H%M", time.gmtime())
+    svc.store.transact([svc.wf.outbox_put("work", {"kind": "monitor_now", "user_id": p.user_id}, f"work:monitor:{p.user_id}:{minute}")])
+    return respond(202, {"queued": True, "note": "Checking all sources now. New matches will appear in a few seconds."})
+
+
+@route("GET", r"/api/demo/templates")
+def demo_templates(event, p, cid):
+    return respond(200, {"templates": [{"slug": t["slug"], "title": t["title"], "location": t["location"]} for t in PUBLISHABLE_TEMPLATES]})
+
+
+@route("POST", r"/api/demo/publish-job")
+def publish_job(event, p, cid):
+    body = body_json(event)
+    payload = json.dumps({"template": body.get("template"), "published_by": p.user_id[:8]})
+    status, data = _portal_admin("/portal/api/admin/jobs", payload)
+    svc = _svc()
+    if status == 201:
+        svc.store.transact([svc.wf.event_put(p.user_id, "demo.job_published", {"title": data["job"]["title"], "job_id": data["job"]["id"],
+                                                                                "published_at": data["job"]["published_at"]})])
+    return respond(status, data)
+
+
+@route("POST", r"/api/demo/employer-reply")
+def employer_reply(event, p, cid):
+    body = body_json(event)
+    app = _svc().wf.get_app(p.user_id, str(body.get("app_id")))
+    if app.get("target_environment") != "test" or not app.get("receipt"):
+        raise WorkflowError("invalid", "Employer replies can only be simulated for submitted test-employer applications.", 400)
+    kind = body.get("kind")
+    if kind not in ("assessment", "interview", "rejection"):
+        raise ValueError("kind must be assessment, interview or rejection")
+    status, data = _portal_admin("/portal/api/admin/reply", json.dumps({"reference": app["receipt"]["reference"], "kind": kind}))
+    return respond(status, data)
+
+
+def _portal_admin(path: str, payload: str) -> tuple[int, dict]:
+    req = urllib.request.Request(f"{cfg().api_base_url.rstrip('/')}{path}", data=payload.encode(), method="POST",
+                                 headers={"Content-Type": "application/json", "X-Portal-Signature": portal_signature(payload)})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as res:  # noqa: S310 - our own API
+            return res.status, json.loads(res.read())
+    except urllib.error.HTTPError as exc:
+        return exc.code, {"error": exc.read().decode()[:300]}
+
+
+# ---------------------------------------------------------------------------
+# applications
+# ---------------------------------------------------------------------------
+
+
+@route("GET", r"/api/applications")
+def list_apps(event, p, cid):
+    svc = _svc()
+    s = svc.wf.settings(p.user_id)
+    ledger = svc.store.get(f"USER#{p.user_id}", svc.wf.ledger_key(p.user_id, s)) or {}
+    apps = sorted(svc.wf.list_apps(p.user_id), key=lambda a: a.get("updated_at", ""), reverse=True)
+    return respond(200, {"applications": [_strip(a) for a in apps], "today": _strip(ledger), "daily_cap": s["daily_cap"]})
+
+
+@route("GET", r"/api/applications/(?P<app_id>app_[a-z0-9]+)")
+def app_detail(event, p, cid, app_id):
+    return respond(200, _svc().application_detail(p.user_id, app_id))
+
+
+@route("POST", r"/api/applications")
+def app_from_job(event, p, cid):
+    body = body_json(event)
+    job_key = str(body.get("job_key", ""))[:200]
+    app = _svc().request_prepare(p.user_id, job_key=job_key)
+    return respond(202, {"application": _strip(app)})
+
+
+@route("POST", r"/api/applications/(?P<app_id>app_[a-z0-9]+)/prepare")
+def app_prepare(event, p, cid, app_id):
+    app = _svc().request_prepare(p.user_id, app_id=app_id)
+    return respond(202, {"application": _strip(app)})
+
+
+@route("POST", r"/api/applications/(?P<app_id>app_[a-z0-9]+)/approve")
+def app_approve(event, p, cid, app_id):
+    data = ApproveIn(**body_json(event))
+    app = _svc().wf.approve(p, app_id, data.packet_hash, "dashboard")
+    return respond(200, {"application": _strip(app)})
+
+
+@route("POST", r"/api/applications/(?P<app_id>app_[a-z0-9]+)/reject")
+def app_reject(event, p, cid, app_id):
+    body = body_json(event)
+    return respond(200, {"application": _strip(_svc().wf.reject(p, app_id, str(body.get("reason", ""))))})
+
+
+@route("POST", r"/api/applications/(?P<app_id>app_[a-z0-9]+)/pause")
+def app_pause(event, p, cid, app_id):
+    return respond(200, {"application": _strip(_svc().wf.pause(p, app_id))})
+
+
+@route("POST", r"/api/applications/(?P<app_id>app_[a-z0-9]+)/resume")
+def app_resume(event, p, cid, app_id):
+    return respond(200, {"application": _strip(_svc().wf.resume(p, app_id))})
+
+
+@route("POST", r"/api/applications/(?P<app_id>app_[a-z0-9]+)/handoff-complete")
+def handoff_complete(event, p, cid, app_id):
+    svc = _svc()
+    app = svc.wf.get_app(p.user_id, app_id)
+    if app["action_state"] != "ManualHandoff":
+        raise WorkflowError("invalid_state", "Only manual handoffs can be marked as submitted by you.")
+    svc.store.transact([svc.wf._transition(app, "Submitted", {"recruitment_stage": "applied", "receipt": {"reference": "user-reported",
+                                                                                                          "user_reported": True}}),
+                        svc.wf.event_put(p.user_id, "submission.user_reported", {"note": "User applied on the employer site"}, app_id)])
+    return respond(200, {"application": _strip(svc.wf.get_app(p.user_id, app_id))})
+
+
+@route("POST", r"/api/applications/(?P<app_id>app_[a-z0-9]+)/interview/questions")
+def interview_q(event, p, cid, app_id):
+    body = body_json(event)
+    op, created = _svc().wf.start_operation(p.user_id, "interview_questions", {"app_id": app_id},
+                                            body.get("client_request_id") or new_id("iq"), cid)
+    return respond(202, {"operation": _strip(op)})
+
+
+@route("POST", r"/api/applications/(?P<app_id>app_[a-z0-9]+)/interview/feedback")
+def interview_fb(event, p, cid, app_id):
+    data = FeedbackIn(**body_json(event))
+    op, created = _svc().wf.start_operation(p.user_id, "interview_feedback", {"app_id": app_id, "question": data.question,
+                                                                              "answer": data.answer}, data.client_request_id, cid)
+    return respond(202, {"operation": _strip(op)})
+
+
+@route("GET", r"/api/applications/(?P<app_id>app_[a-z0-9]+)/interview")
+def interview_get(event, p, cid, app_id):
+    item = _svc().store.get(f"USER#{p.user_id}", f"PREP#{app_id}")
+    return respond(200, {"prep": _strip(item) if item else None})
+
+
+# ---------------------------------------------------------------------------
+# timeline, tasks, insights
+# ---------------------------------------------------------------------------
+
+
+@route("GET", r"/api/timeline")
+def timeline(event, p, cid):
+    rows = _svc().store.query(f"USER#{p.user_id}", "EVENT#", limit=150, newest_first=True)
+    return respond(200, {"events": [_strip(r) for r in rows]})
+
+
+@route("GET", r"/api/tasks")
+def tasks(event, p, cid):
+    rows = _svc().store.query(f"USER#{p.user_id}", "TASK#", limit=200, newest_first=True)
+    return respond(200, {"tasks": [_strip(r) for r in rows]})
+
+
+@route("PATCH", r"/api/tasks/(?P<tid>t_[a-z0-9]+)")
+def patch_task(event, p, cid, tid):
+    return respond(200, {"task": _strip(_svc().update_task(p.user_id, tid, body_json(event)))})
+
+
+@route("GET", r"/api/insights")
+def insights(event, p, cid):
+    return respond(200, _svc().insights(p.user_id))
+
+
+@route("POST", r"/api/inbox/read")
+def inbox_read(event, p, cid):
+    svc = _svc()
+    for i in svc.store.query(f"USER#{p.user_id}", "INBOX#", limit=50):
+        if not i.get("read"):
+            svc.store.update(Update(i["pk"], i["sk"], set={"read": True}))
+    return respond(200, {"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# voice
+# ---------------------------------------------------------------------------
+
+
+@route("POST", r"/api/voice/session")
+def voice_session(event, p, cid):
+    body = body_json(event)
+    svc = _svc()
+    s = cfg()
+    per_session = 60
+    cap = s.judge_voice_seconds if p.is_judge else s.user_voice_seconds
+    if not svc.wf.reserve_usage(p.user_id, "voice_seconds", per_session, cap, 20000):
+        raise WorkflowError("quota", "Voice allowance for today is used up. You can keep typing.", 429)
+    session = voice.presign_transcribe(body.get("language", "en-IN"))
+    session["max_seconds"] = per_session
+    return respond(201, session)
+
+
+@route("POST", r"/api/speak")
+def speak(event, p, cid):
+    body = body_json(event)
+    text = str(body.get("text", ""))[:1500]
+    if not text:
+        raise ValueError("text required")
+    svc = _svc()
+    cap = (cfg().judge_voice_seconds if p.is_judge else cfg().user_voice_seconds) * 20
+    if not svc.wf.reserve_usage(p.user_id, "speech_chars", len(text), cap, 400000):
+        raise WorkflowError("quota", "Speech allowance for today is used up; captions remain available.", 429)
+    return respond(200, voice.synthesize(text, body.get("language", "en-IN")))
+
+
+__all__ = ["handler", "Put"]

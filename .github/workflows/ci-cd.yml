@@ -1,0 +1,129 @@
+name: ci-cd
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  APP_STACK: career-agent
+  BOOTSTRAP_STACK: career-agent-bootstrap
+  DEPLOY_ROLE: arn:aws:iam::686090305719:role/gha-career-agent-deploy
+
+jobs:
+  backend:
+    name: Backend tests (domain, Cedar parity, handlers)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip, cache-dependency-path: backend/requirements-dev.txt }
+      - run: pip install -r backend/requirements-dev.txt
+      - name: Lint
+        run: ruff check backend/src backend/tests --output-format=github || true
+      - name: Unit tests
+        working-directory: backend
+        run: python -m pytest -q
+      - name: Strands SDK import check
+        run: python -c "from strands import Agent, tool; from strands.models import BedrockModel; import cedarpy; print('strands + cedar OK')"
+
+  worker:
+    name: Browser worker tests (real Chromium against portal form)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - working-directory: worker-browser
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright-core install --with-deps chromium
+          npm test
+
+  frontend:
+    name: Frontend typecheck and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - working-directory: frontend
+        run: |
+          npm install --no-audit --no-fund
+          npm run typecheck
+          npm run build
+      - uses: actions/upload-artifact@v4
+        with: { name: web, path: frontend/dist, retention-days: 3 }
+
+  deploy:
+    name: Deploy to AWS (OIDC, no stored keys)
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: [backend, worker, frontend]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.DEPLOY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Build Lambda artifacts
+        run: ./scripts/build.sh
+      - name: Package and deploy stack
+        run: |
+          set -euo pipefail
+          BUCKET=$(aws cloudformation describe-stacks --stack-name "$BOOTSTRAP_STACK" --query "Stacks[0].Outputs[?OutputKey=='ArtifactsBucket'].OutputValue" --output text)
+          PARAMS=$(aws ssm get-parameter --name "/$APP_STACK/deploy-parameters" --query Parameter.Value --output text 2>/dev/null || echo "")
+          aws cloudformation package --template-file template.yaml --s3-bucket "$BUCKET" --s3-prefix app --output-template-file packaged.yaml
+          aws cloudformation deploy --template-file packaged.yaml --stack-name "$APP_STACK" \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
+            --no-fail-on-empty-changeset --parameter-overrides Stage=prod $PARAMS
+      - name: Read outputs
+        id: out
+        run: |
+          get() { aws cloudformation describe-stacks --stack-name "$APP_STACK" --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text; }
+          echo "url=$(get AppUrl)" >> "$GITHUB_OUTPUT"
+          echo "bucket=$(get WebBucketName)" >> "$GITHUB_OUTPUT"
+          echo "dist=$(get DistributionId)" >> "$GITHUB_OUTPUT"
+          echo "pool=$(get UserPoolId)" >> "$GITHUB_OUTPUT"
+          echo "client=$(get UserPoolClientId)" >> "$GITHUB_OUTPUT"
+      - name: Build and publish web app
+        working-directory: frontend
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund
+          npm run build
+          cat > dist/config.json <<JSON
+          {"region":"${AWS_REGION}","userPoolId":"${{ steps.out.outputs.pool }}","userPoolClientId":"${{ steps.out.outputs.client }}","version":"${GITHUB_SHA::7}"}
+          JSON
+          aws s3 sync dist "s3://${{ steps.out.outputs.bucket }}" --delete --exclude index.html --exclude config.json --cache-control "public,max-age=31536000,immutable"
+          aws s3 cp dist/index.html "s3://${{ steps.out.outputs.bucket }}/index.html" --cache-control "no-cache"
+          aws s3 cp dist/config.json "s3://${{ steps.out.outputs.bucket }}/config.json" --cache-control "no-cache"
+          aws cloudfront create-invalidation --distribution-id "${{ steps.out.outputs.dist }}" --paths "/index.html" "/config.json" > /dev/null
+      - name: Telegram webhook (if a bot token is configured)
+        run: |
+          TOKEN=$(aws ssm get-parameter --name "/$APP_STACK/telegram-bot-token" --with-decryption --query Parameter.Value --output text 2>/dev/null || echo "")
+          if [ -n "$TOKEN" ] && [ "$TOKEN" != "none" ]; then
+            SECRET_ARN=$(aws cloudformation describe-stack-resource --stack-name "$APP_STACK" --logical-resource-id InternalSecret --query StackResourceDetail.PhysicalResourceId --output text)
+            HMAC=$(aws secretsmanager get-secret-value --secret-id "$SECRET_ARN" --query SecretString --output text | python3 -c "import sys,json,hmac,hashlib;k=json.load(sys.stdin)['hmac'];print(hmac.new(k.encode(),b'telegram-webhook',hashlib.sha256).hexdigest()[:64])")
+            curl -s "https://api.telegram.org/bot${TOKEN}/setWebhook" -d "url=${{ steps.out.outputs.url }}/api/telegram/webhook" -d "secret_token=${HMAC}" -d 'allowed_updates=["message","callback_query"]' | grep -o '"ok":[a-z]*'
+          else
+            echo "Telegram not configured; connector shows needs_setup."
+          fi
+      - name: Smoke test deployed system
+        run: python3 scripts/smoke.py "${{ steps.out.outputs.url }}"

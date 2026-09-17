@@ -1,0 +1,41 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Apply: Backend Engineer Intern · Northwind Labs Careers (test)</title><meta name="robots" content="noindex"><style>
+:root{--ink:#0b2a22;--muted:#4b635b;--brand:#0f7b5f;--brand2:#12a37c;--bg:#f5faf7;--card:#fff;--line:#d9e7e1;--warn:#fff4d6;--warnink:#7a5200}
+*{box-sizing:border-box}body{margin:0;font:15px/1.55 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:var(--ink);background:var(--bg)}
+.test{background:var(--warn);color:var(--warnink);text-align:center;padding:8px 12px;font-weight:600;font-size:13px;border-bottom:1px solid #f1d58a}
+header{background:linear-gradient(120deg,#0b3d2e,#0f7b5f);color:#fff;padding:28px 16px 36px}
+.wrap{max-width:880px;margin:0 auto;padding:0 16px}.logo{display:flex;gap:10px;align-items:center;font-weight:800;letter-spacing:.2px}
+.logo i{width:30px;height:30px;border-radius:9px;background:#fff;display:inline-grid;place-items:center;color:var(--brand);font-style:normal}
+h1{font-size:30px;margin:18px 0 6px}header p{margin:0;opacity:.85}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:14px 0;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+.job{display:flex;justify-content:space-between;gap:12px;align-items:center;text-decoration:none;color:inherit}
+.job:hover{border-color:var(--brand2)}.meta{color:var(--muted);font-size:13px}.pill{background:#e7f5ef;color:var(--brand);border-radius:99px;padding:2px 10px;font-size:12px;font-weight:600}
+label{display:block;font-weight:600;margin:14px 0 6px}input,select,textarea{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:10px;font:inherit;background:#fff}
+input[type=checkbox]{width:auto}textarea{min-height:120px}.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+button,.btn{background:var(--brand);color:#fff;border:0;border-radius:10px;padding:12px 18px;font-weight:700;cursor:pointer;text-decoration:none;display:inline-block}
+.check{display:flex;gap:10px;align-items:flex-start;font-weight:500}.check label{margin:0;font-weight:500}
+.receipt{font-size:26px;font-weight:800;letter-spacing:1px;color:var(--brand)}table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px solid var(--line);text-align:left;font-size:14px}
+@media(max-width:640px){.row{grid-template-columns:1fr}h1{font-size:24px}}
+</style></head>
+<body><div class="test" role="note">TEST ENVIRONMENT — Northwind Labs is a fictional employer used to demonstrate Career Agent. No real hiring happens here.</div>
+<header><div class="wrap"><div class="logo"><i>N</i>Northwind Labs Careers</div><h1>Apply: Backend Engineer Intern</h1><p>Payments Platform · Bengaluru (Hybrid)</p></div></header>
+<main class="wrap"><div class="card">
+<form id="application-form" method="post" action="/portal/jobs/nw-100/apply" enctype="multipart/form-data">
+<div class="row"><div><label for="first_name">First name *</label><input id="first_name" name="first_name" required autocomplete="given-name"></div>
+<div><label for="last_name">Last name *</label><input id="last_name" name="last_name" required autocomplete="family-name"></div></div>
+<div class="row"><div><label for="email">Email *</label><input id="email" name="email" type="email" required></div>
+<div><label for="phone">Phone *</label><input id="phone" name="phone" type="tel" required></div></div>
+<label for="resume">Resume (PDF or DOCX, max 2 MB) *</label><input id="resume" name="resume" type="file" accept=".pdf,.docx" required>
+<div class="row"><div><label for="linkedin">LinkedIn profile</label><input id="linkedin" name="linkedin" type="url"></div>
+<div><label for="github">GitHub profile</label><input id="github" name="github" type="url"></div></div>
+<div class="row"><div><label for="university">University / College *</label><input id="university" name="university" required></div>
+<div><label for="graduation_year">Graduation year *</label><select id="graduation_year" name="graduation_year" required><option value="">Select</option><option value='2024'>2024</option><option value='2025'>2025</option><option value='2026'>2026</option><option value='2027'>2027</option><option value='2028'>2028</option><option value='2029'>2029</option><option value='2030'>2030</option></select></div></div>
+<label for="work_authorization">Are you legally authorized to work in India? *</label>
+<select id="work_authorization" name="work_authorization" required><option value="">Select</option><option value="yes">Yes</option><option value="no">No</option></select>
+<label for="start_date">Earliest start date *</label><input id="start_date" name="start_date" type="date" required>
+<label for="why_northwind">Why do you want to join Northwind Labs? *</label><textarea id="why_northwind" name="why_northwind" required maxlength="3000"></textarea>
+<label for="gender">Gender (optional)</label><select id="gender" name="gender"><option value="">Select</option><option value="female">Female</option>
+<option value="male">Male</option><option value="non_binary">Non-binary</option><option value="decline">Decline to self-identify</option></select>
+<div class="check" style="margin-top:16px"><input id="accuracy" name="accuracy" type="checkbox" value="yes" required>
+<label for="accuracy">I confirm the information in this application is accurate</label></div>
+<p style="margin-top:18px"><button id="submit-application" type="submit">Submit application</button></p></form></div></main><footer class="wrap meta" style="padding:30px 16px">Fictional test employer · <a href="/portal">All openings</a> · <a href="/portal/employer">Employer console</a></footer></body></html>
