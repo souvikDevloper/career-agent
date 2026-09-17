@@ -10,12 +10,11 @@ type Insights = {
 
 const FUNNEL: [string, string][] = [["discovered", "Discovered"], ["prepared", "Prepared"], ["submitted", "Submitted"], ["replied", "Employer replied"], ["assessment", "Assessment"], ["interview", "Interview"]];
 
-// Single-hue violet ordinal ramps (validated: monotone lightness, >=0.06 step gaps,
-// >=2:1 against the panel surface). Ordered stages brighten as they go deeper, so the
-// small, valuable end of the funnel stays the most prominent. Colour never encodes
-// magnitude here - bar length already does that.
-const FUNNEL_RAMP = ["#7546e8", "#9168f5", "#ab8df9", "#c3aefb", "#d9ccfd", "#ede9fe"];
-const BAND_RAMP = ["#7c3aed", "#9b74f8", "#bda5fc", "#ddd4fe"];
+// The funnel is a single series, so every stage takes one flat colour - bar length
+// already carries the magnitude. Only the score bands are genuinely ordered, so they
+// get a single-hue ordinal ramp (validated light->dark against the panel surface),
+// brightest at the top band so the best-fitting matches read first.
+const BAND_RAMP = ["#5f741d", "#98be31", "#cef264", "#f4ffd6"];
 
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
@@ -35,13 +34,13 @@ export function InsightsPage() {
         <div className="card pad">
           <div className="card-title"><h3><IChart size={16} /> Application funnel</h3></div>
           <div className="viz-rows">
-            {FUNNEL.map(([k, label], i) => {
+            {FUNNEL.map(([k, label]) => {
               const v = data.funnel[k] ?? 0;
               return (
                 <div key={k} className="viz-row" title={`${label}: ${plural(v, "application")}`}>
                   <span className="viz-label">{label}</span>
                   <div className="viz-track">
-                    {v > 0 && <div className="viz-bar" style={{ width: `${Math.max(2, (v / max) * 100)}%`, background: FUNNEL_RAMP[i] }} />}
+                    {v > 0 && <div className="viz-bar" style={{ width: `${Math.max(2, (v / max) * 100)}%`, background: "var(--viz-1)" }} />}
                   </div>
                   <span className="viz-val">{v}</span>
                 </div>

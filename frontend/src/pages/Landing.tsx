@@ -4,6 +4,7 @@ import { useRouter, Link } from "../lib/router";
 import { BrandMark } from "../components/Shell";
 import { Badge, ScoreRing, Spinner, useToast } from "../components/ui";
 import { IArrow, IBolt, IBrain, ICheck, IEye, IFile, IMic, IRadar, ISend, IShield, ITarget } from "../components/Icons";
+import { Spotlight, useScrolled } from "../components/motion";
 
 const STEPS = [
   { label: "Published", icon: IFile },
@@ -61,11 +62,16 @@ export function Landing() {
   }
 
   const s = Math.min(step, STEPS.length - 1);
+  const stuck = useScrolled(20);
 
   return (
     <div className="landing">
-      <header className="nav">
+      <header className={`nav ${stuck ? "stuck" : ""}`}>
         <div className="brand"><BrandMark /> Career Agent</div>
+        <nav className="nav-links" aria-label="Sections">
+          <a className="nav-link" href="#how">How it works</a>
+          <a className="nav-link" href="#architecture">Architecture</a>
+        </nav>
         <div className="spacer" />
         <a className="btn ghost sm" href="/portal" target="_blank" rel="noreferrer">Test employer portal</a>
         <Link to="/login" className="btn sm">Sign in</Link>
@@ -73,29 +79,29 @@ export function Landing() {
 
       <section className="hero">
         <div>
-          <Badge tone="violet" live>Built on AWS · WeMakeDevs “Ship It”</Badge>
-          <h1 style={{ marginTop: 18 }}>
+          <div className="rise"><Badge tone="violet" live>Built on AWS · WeMakeDevs “Ship It”</Badge></div>
+          <h1 className="rise rise-1" style={{ marginTop: 18 }}>
             Your career agent that <span className="grad-text">finds, applies and follows up</span> — truthfully.
           </h1>
-          <p className="lede">
+          <p className="lede rise rise-2">
             Talk to it. It watches for new openings while your laptop is off, explains exactly why you fit, fills
             applications only with facts you verified, submits under rules you set, and turns recruiter replies into
             deadlines and interview prep.
           </p>
-          <div className="hero-cta">
+          <div className="hero-cta rise rise-3">
             <button className="btn primary lg" onClick={tryExample} disabled={starting}>
               {starting ? <Spinner /> : <IBolt size={18} />} Try the example workspace
             </button>
             <Link to="/signup" className="btn lg">Use my own profile <IArrow size={16} /></Link>
           </div>
-          <div className="trust">
+          <div className="trust rise rise-3">
             <Badge tone="mint">No invented qualifications</Badge>
             <Badge tone="cyan">Every action authorized by Cedar</Badge>
             <Badge tone="amber">Test employer clearly labeled</Badge>
           </div>
         </div>
 
-        <div className="preview">
+        <div className="preview rise rise-2">
           <div className="preview-glow" />
           <div className="card">
             <div className="row between">
@@ -136,7 +142,7 @@ export function Landing() {
         </div>
       </section>
 
-      <section className="section">
+      <section className="section" id="how">
         <div className="eyebrow">What makes it different</div>
         <h2 style={{ marginTop: 8 }}>Autonomy you can audit.</h2>
         <p className="sub">Most “auto-apply” bots spray applications and hallucinate answers. Career Agent treats every submission like a payment: explicit rules, exact packets, receipts.</p>
@@ -151,23 +157,23 @@ export function Landing() {
           ].map(([Icon, title, body]) => {
             const I = Icon as typeof ITarget;
             return (
-              <div key={title as string} className="card feature hover">
+              <Spotlight key={title as string} className="card feature hover">
                 <div className="ic"><I size={20} /></div>
                 <h3>{title as string}</h3>
                 <p>{body as string}</p>
-              </div>
+              </Spotlight>
             );
           })}
         </div>
       </section>
 
-      <section className="section">
+      <section className="section" id="architecture">
         <div className="eyebrow">Architecture</div>
         <h2 style={{ marginTop: 8 }}>Serverless on AWS, end to end.</h2>
         <p className="sub">Each service earns its place in the demo — no always-on servers, no NAT gateway, and a usage ledger that pauses nonessential work before credits run out.</p>
         <div className="aws-grid">
           {AWS.map(([n, d]) => (
-            <div key={n} className="aws-chip"><b>{n}</b><span>{d}</span></div>
+            <Spotlight key={n} className="aws-chip"><b>{n}</b><span>{d}</span></Spotlight>
           ))}
         </div>
       </section>
