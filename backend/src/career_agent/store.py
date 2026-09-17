@@ -18,6 +18,14 @@ class ConditionFailed(Exception):
     """A conditional write or transaction precondition did not hold."""
 
 
+class TransactionFailed(Exception):
+    """A transaction was cancelled for a reason other than a failed condition.
+
+    DynamoDB reports one reason per item and only the per-item ``Message`` says
+    which attribute is at fault; the ``Code`` alone ("ValidationError") does not.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Condition DSL
 # ---------------------------------------------------------------------------
@@ -333,10 +341,13 @@ class DynamoStore(Store):
         except self._client.exceptions.ConditionalCheckFailedException as exc:
             raise ConditionFailed(str(exc)) from exc
         except self._client.exceptions.TransactionCanceledException as exc:
-            reasons = [r.get("Code") for r in exc.response.get("CancellationReasons", [])]
+            raw = exc.response.get("CancellationReasons", [])
+            reasons = [r.get("Code") for r in raw]
             if "ConditionalCheckFailed" in reasons:
                 raise ConditionFailed(str(reasons)) from exc
-            raise
+            detail = "; ".join(f"item[{i}] {r.get('Code')}: {r.get('Message')}"
+                               for i, r in enumerate(raw) if r.get("Code") not in (None, "None"))
+            raise TransactionFailed(detail or str(exc)) from exc
 
     def put(self, item, condition=None):
         params: dict[str, Any] = {"Item": to_dynamo(item)}
