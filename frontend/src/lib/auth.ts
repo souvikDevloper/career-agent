@@ -34,7 +34,9 @@ export function setSession(s: Session | null) {
 
 export function onSession(l: Listener) {
   listeners.add(l);
-  return () => listeners.delete(l);
+  return () => {
+    listeners.delete(l);
+  };
 }
 
 export function claims(token: string): Record<string, unknown> {

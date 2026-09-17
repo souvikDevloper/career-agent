@@ -18,7 +18,7 @@ export function crc32(bytes: Uint8Array, start = 0, end = bytes.length): number 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-export function encodeMessage(headers: Record<string, string>, payload: Uint8Array): Uint8Array {
+export function encodeMessage(headers: Record<string, string>, payload: Uint8Array): Uint8Array<ArrayBuffer> {
   const headerParts: Uint8Array[] = [];
   for (const [name, value] of Object.entries(headers)) {
     const n = enc.encode(name);
@@ -79,6 +79,6 @@ export function decodeMessage(buf: Uint8Array): DecodedMessage {
   return { headers, payload: buf.subarray(end, total - 4) };
 }
 
-export function audioEvent(pcm: Uint8Array): Uint8Array {
+export function audioEvent(pcm: Uint8Array): Uint8Array<ArrayBuffer> {
   return encodeMessage({ ":content-type": "application/octet-stream", ":event-type": "AudioEvent", ":message-type": "event" }, pcm);
 }

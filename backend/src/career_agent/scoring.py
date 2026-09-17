@@ -77,13 +77,13 @@ def hard_filters(job: dict, prefs: dict, facts: dict) -> list[FilterResult]:
         status = UNKNOWN if mode == "unknown" else (PASS if mode in modes else FAIL)
         out.append(FilterResult("work_mode", status, f"job is {mode}; wants {modes}", mandatory=False))
 
-    locs = [_norm(l) for l in prefs.get("locations", []) if l]
+    locs = [_norm(loc) for loc in prefs.get("locations", []) if loc]
     if locs:
         jl = _norm(job.get("location"))
         mode = work_mode_of(job)
         if not jl:
             status = UNKNOWN
-        elif any(l in jl for l in locs) or ("remote" in locs and mode == "remote"):
+        elif any(loc in jl for loc in locs) or ("remote" in locs and mode == "remote"):
             status = PASS
         else:
             status = FAIL
