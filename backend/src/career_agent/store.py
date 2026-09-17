@@ -328,6 +328,11 @@ class DynamoStore(Store):
         self._resource = resource or boto3.resource("dynamodb")
         self._table = self._resource.Table(table_name)
         self._client = self._table.meta.client
+        # transact() builds attribute values by hand with TypeSerializer. The resource's
+        # own client also auto-marshals every dynamodb call, which would serialize those
+        # values a second time ("Type mismatch for key pk expected: S actual: M"), so
+        # transactions go through a plain client that transforms nothing.
+        self._raw = boto3.client("dynamodb", region_name=self._client.meta.region_name)
         self._name = table_name
 
     def get(self, pk, sk, consistent=True):
@@ -336,11 +341,16 @@ class DynamoStore(Store):
         return from_dynamo(item) if item else None
 
     def _wrap(self, fn, **params):
+        from botocore.exceptions import ClientError
+
         try:
             return fn(**params)
-        except self._client.exceptions.ConditionalCheckFailedException as exc:
-            raise ConditionFailed(str(exc)) from exc
-        except self._client.exceptions.TransactionCanceledException as exc:
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code")
+            if code == "ConditionalCheckFailedException":
+                raise ConditionFailed(str(exc)) from exc
+            if code != "TransactionCanceledException":
+                raise
             raw = exc.response.get("CancellationReasons", [])
             reasons = [r.get("Code") for r in raw]
             if "ConditionalCheckFailed" in reasons:
@@ -441,4 +451,4 @@ class DynamoStore(Store):
                         p["ExpressionAttributeValues"] = s(p["ExpressionAttributeValues"])
                 items.append({"Delete": p})
         if items:
-            self._wrap(self._client.transact_write_items, TransactItems=items)
+            self._wrap(self._raw.transact_write_items, TransactItems=items)
