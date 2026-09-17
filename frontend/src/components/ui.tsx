@@ -123,7 +123,7 @@ export function Bar({ label, value, max, suffix }: { label: string; value: numbe
   return (
     <div className="bar-row">
       <span className="ink2">{label}</span>
-      <div className="progress"><span style={{ width: `${Math.max(2, (value / max) * 100)}%` }} /></div>
+      <div className="progress data"><span style={{ width: `${Math.max(2, (value / max) * 100)}%` }} /></div>
       <span className="mono" style={{ textAlign: "right" }}>{value}{suffix ?? `/${max}`}</span>
     </div>
   );

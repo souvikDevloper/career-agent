@@ -59,7 +59,7 @@ export function Home() {
         <Kpi icon={<IRadar size={18} />} label="Active watches" value={me?.watches.length ?? 0} />
       </div>
 
-      <div className="grid" style={{ gridTemplateColumns: "minmax(0, 1.55fr) minmax(0, 1fr)", gap: 18 }}>
+      <div className="split">
         <div className="stack">
           <LivePipeline events={timeline.data?.events || []} onChange={() => { timeline.reload(); apps.reload(); reload(); }} />
           <div>

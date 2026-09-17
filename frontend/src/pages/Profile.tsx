@@ -89,7 +89,7 @@ export function ProfilePage() {
         {profile && <Badge tone="violet">Version {profile.version} · {timeAgo(profile.created_at)}</Badge>}
       </div>
 
-      <div className="grid" style={{ gridTemplateColumns: "minmax(0,1.4fr) minmax(0,1fr)", gap: 18, alignItems: "start" }}>
+      <div className="split profile">
         <div className="stack">
           {me?.example_workspace ? (
             <div className="banner info"><IShield size={18} /> Example workspace: Aarav Mehta is a fictional applicant. Uploading your own resume requires your own account.</div>
