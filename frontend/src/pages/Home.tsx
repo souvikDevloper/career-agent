@@ -6,8 +6,10 @@ import { Link, useRouter } from "../lib/router";
 import { EVENT_LABEL, STATE_META, timeAgo } from "../lib/format";
 import { Shell } from "../components/Shell";
 import { Assistant } from "../components/Assistant";
-import { Badge, EnvBadge, Empty, ScoreRing, Spinner, StateBadge, Switch, useToast } from "../components/ui";
+import { Badge, EnvBadge, Empty, Spinner, StateBadge, Switch, useToast } from "../components/ui";
 import { IBolt, IBrain, IBriefcase, ICheck, IClock, IFile, IRadar, IRefresh, ISend, IShield, ITarget } from "../components/Icons";
+import SpotlightCard from "../components/motion/SpotlightCard";
+import KineticScoreGauge from "../components/motion/KineticScoreGauge";
 
 const STEPS = [
   { key: "published", label: "Published", icon: IFile, hint: "Test employer posts a new role" },
@@ -62,13 +64,13 @@ export function Home() {
       <div className="split">
         <div className="stack">
           <LivePipeline events={timeline.data?.events || []} onChange={() => { timeline.reload(); apps.reload(); reload(); }} />
-          <div>
+          <div className="card glass-stripe">
             <div className="card-title"><h3>Talk to your agent</h3><Link to="/app/agent" className="btn ghost sm">Open full view</Link></div>
             <Assistant compact />
           </div>
         </div>
         <div className="stack">
-          <div className="card pad">
+          <div className="card pad glass-stripe">
             <div className="card-title"><h3>Waiting on you</h3><Badge tone={waiting.length ? "amber" : "mint"}>{waiting.length}</Badge></div>
             {waiting.length === 0 ? (
               <p className="muted small">Nothing needs you right now.</p>
@@ -83,7 +85,7 @@ export function Home() {
               </div>
             )}
           </div>
-          <div className="card pad">
+          <div className="card pad glass-stripe">
             <div className="card-title"><h3>Live activity</h3><Badge tone="mint" live>streaming</Badge></div>
             <Feed events={(timeline.data?.events || []).slice(0, 14)} />
           </div>
@@ -95,11 +97,11 @@ export function Home() {
 
 function Kpi({ icon, label, value, tone }: { icon: ReactNode; label: string; value: ReactNode; tone?: string }) {
   return (
-    <div className="card kpi">
+    <SpotlightCard className="kpi glass-stripe">
       <div className="ic">{icon}</div>
       <div className="t">{label}</div>
       <div className="v" style={{ color: tone }}>{value}</div>
-    </div>
+    </SpotlightCard>
   );
 }
 
@@ -231,7 +233,7 @@ function LivePipeline({ events, onChange }: { events: TimelineEvent[]; onChange:
   }
 
   return (
-    <div className="card command">
+    <div className="card command glass-stripe">
       <div className="row between wrap" style={{ gap: 12 }}>
         <div>
           <div className="eyebrow">Live pipeline · discovery → receipt</div>
@@ -264,7 +266,7 @@ function LivePipeline({ events, onChange }: { events: TimelineEvent[]; onChange:
       </div>
       {run && (
         <div className="row wrap fade-in" style={{ marginTop: 14, gap: 14 }}>
-          {progress.score !== null && <ScoreRing score={progress.score} />}
+          {progress.score !== null && <KineticScoreGauge score={progress.score} />}
           <div style={{ flex: 1, minWidth: 200 }}>
             <div style={{ fontWeight: 700 }}>{run.title} <span className="tiny" style={{ color: "#fde68a" }}>· test employer</span></div>
             <div className="small muted">

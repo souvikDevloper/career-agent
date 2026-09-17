@@ -31,7 +31,7 @@ export function InsightsPage() {
         {data.note && <Badge tone="amber">{data.note}</Badge>}
       </div>
       <div className="grid g2">
-        <div className="card pad">
+        <div className="card pad glass-stripe">
           <div className="card-title"><h3><IChart size={16} /> Application funnel</h3></div>
           <div className="viz-rows">
             {FUNNEL.map(([k, label]) => {
@@ -50,7 +50,7 @@ export function InsightsPage() {
           <p className="tiny muted" style={{ marginTop: 12 }}>Every stage is a stored event, so a number here can always be traced to an application.</p>
         </div>
 
-        <div className="card pad">
+        <div className="card pad glass-stripe">
           <div className="card-title"><h3><ITarget size={16} /> Fit score distribution</h3><span className="small muted">{data.match_count} matches · avg {data.avg_score ?? "–"}</span></div>
           <div className="viz-plot" role="img" aria-label={`Fit score distribution: ${data.score_histogram.map((h) => `${h.range}, ${plural(h.count, "match")}`).join("; ")}`}>
             {data.score_histogram.map((h, i) => (
@@ -63,7 +63,7 @@ export function InsightsPage() {
           <div className="viz-axis-x">{data.score_histogram.map((h) => <span key={h.range}>{h.range}</span>)}</div>
         </div>
 
-        <div className="card pad">
+        <div className="card pad glass-stripe">
           <div className="card-title"><h3>Most common unmet requirements</h3></div>
           {data.top_gaps.length === 0 ? <p className="small muted">No gaps found yet.</p> : (
             <div className="viz-rows">
@@ -78,7 +78,7 @@ export function InsightsPage() {
           )}
         </div>
 
-        <div className="card pad">
+        <div className="card pad glass-stripe">
           <div className="card-title"><h3>Useful next steps</h3></div>
           {data.next_steps.length === 0 ? <p className="small muted">Keep going — suggestions appear as data accumulates.</p> : (
             <ul className="col" style={{ paddingLeft: 18, margin: 0 }}>{data.next_steps.map((s) => <li key={s} className="ink2">{s}</li>)}</ul>

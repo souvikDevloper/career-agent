@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { motion, AnimatePresence } from "motion/react";
 import { signOut } from "../lib/auth";
 import { useMe } from "../lib/me";
 import { Link, useRouter } from "../lib/router";
@@ -56,14 +57,14 @@ export function Shell({ title, actions, children }: { title: string; actions?: R
     <>
       <AuroraField className="app-aurora" />
     <div className="shell">
-      <nav className="side" aria-label="Main">
+      <nav className="side glass-stripe" aria-label="Main">
         <Link to="/app" className="brand"><BrandMark /> Career Agent</Link>
         {NAV.map((n) => (
           <Link key={n.to} to={n.to} className={`nav-item ${isActive(n.to, n.exact) ? "active" : ""}`}>
             <n.icon /> {n.label}
           </Link>
         ))}
-        <div className="side-foot">
+        <div className="side-foot glass-stripe">
           {me?.example_workspace ? (
             <>
               <Badge tone="violet" live>Example workspace</Badge>
@@ -78,7 +79,7 @@ export function Shell({ title, actions, children }: { title: string; actions?: R
         </div>
       </nav>
       <div className="main">
-        <header className="topbar">
+        <header className="topbar glass-stripe">
           <h2>{title}</h2>
           <div className="spacer" />
           {portal && (
@@ -100,7 +101,7 @@ export function Shell({ title, actions, children }: { title: string; actions?: R
               {unread > 0 && <span style={{ position: "absolute", top: 6, right: 6, width: 9, height: 9, borderRadius: 9, background: "var(--rose)" }} />}
             </button>
             {inboxOpen && (
-              <div className="card fade-in" style={{ position: "absolute", right: 0, top: 48, width: 360, maxHeight: 440, overflowY: "auto", padding: 8, zIndex: 40 }}>
+              <div className="card glass-stripe fade-in" style={{ position: "absolute", right: 0, top: 48, width: 360, maxHeight: 440, overflowY: "auto", padding: 8, zIndex: 40 }}>
                 <div className="eyebrow" style={{ padding: "8px 10px" }}>Notifications</div>
                 {(me?.inbox || []).length === 0 && <p className="muted small" style={{ padding: 10 }}>Nothing yet.</p>}
                 {(me?.inbox || []).map((i, idx) => (
@@ -119,9 +120,20 @@ export function Shell({ title, actions, children }: { title: string; actions?: R
             )}
           </div>
         </header>
-        <main className="content fade-in" key={path}>{children}</main>
+        <AnimatePresence mode="wait">
+          <motion.main
+            key={path}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+            className="content"
+          >
+            {children}
+          </motion.main>
+        </AnimatePresence>
       </div>
-      <nav className="mobile-nav" aria-label="Mobile">
+      <nav className="mobile-nav glass-stripe" aria-label="Mobile">
         {NAV.filter((n) => ["/app", "/app/agent", "/app/jobs", "/app/applications", "/app/settings"].includes(n.to)).map((n) => (
           <Link key={n.to} to={n.to} className={isActive(n.to, n.exact) ? "active" : ""}>
             <n.icon size={20} />
