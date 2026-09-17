@@ -89,7 +89,7 @@ export function Landing() {
             deadlines and interview prep.
           </p>
           <div className="hero-cta rise rise-3">
-            <button className="btn primary lg" onClick={tryExample} disabled={starting}>
+            <button className="btn primary lg shimmer" onClick={tryExample} disabled={starting}>
               {starting ? <Spinner /> : <IBolt size={18} />} Try the example workspace
             </button>
             <Link to="/signup" className="btn lg">Use my own profile <IArrow size={16} /></Link>
@@ -103,7 +103,7 @@ export function Landing() {
 
         <div className="preview rise rise-2">
           <div className="preview-glow" />
-          <div className="card">
+          <div className="card border-beam">
             <div className="row between">
               <div className="row">
                 <span className="brand-mark" style={{ width: 28, height: 28, borderRadius: 9 }}><IMic size={15} /></span>
@@ -171,10 +171,21 @@ export function Landing() {
         <div className="eyebrow">Architecture</div>
         <h2 style={{ marginTop: 8 }}>Serverless on AWS, end to end.</h2>
         <p className="sub">Each service earns its place in the demo — no always-on servers, no NAT gateway, and a usage ledger that pauses nonessential work before credits run out.</p>
-        <div className="aws-grid">
-          {AWS.map(([n, d]) => (
-            <Spotlight key={n} className="aws-chip"><b>{n}</b><span>{d}</span></Spotlight>
-          ))}
+        <div
+          className="relative mt-6 overflow-hidden [mask-image:linear-gradient(90deg,transparent,#000_8%,#000_92%,transparent)]"
+          aria-label="AWS services used"
+        >
+          {/* Duplicated once so the translate can loop seamlessly at -50%. The copy
+              is hidden from assistive tech so the list is not announced twice. */}
+          <div className="flex w-max gap-3 animate-marquee hover:[animation-play-state:paused] motion-reduce:animate-none">
+            {[0, 1].map((copy) => (
+              <div key={copy} className="flex shrink-0 gap-3" aria-hidden={copy === 1 || undefined}>
+                {AWS.map(([n, d]) => (
+                  <Spotlight key={n} className="aws-chip shrink-0"><b>{n}</b><span>{d}</span></Spotlight>
+                ))}
+              </div>
+            ))}
+          </div>
         </div>
       </section>
 
@@ -184,7 +195,7 @@ export function Landing() {
             <h2 style={{ fontSize: 28 }}>See a real submission in under two minutes.</h2>
             <p className="ink2" style={{ marginTop: 8 }}>The example workspace uses a fictional applicant and a clearly labeled test employer — real model calls, real policy checks, real browser, real receipt.</p>
           </div>
-          <button className="btn primary lg" onClick={tryExample} disabled={starting}>{starting ? <Spinner /> : <IBolt size={18} />} Start the example</button>
+          <button className="btn primary lg shimmer" onClick={tryExample} disabled={starting}>{starting ? <Spinner /> : <IBolt size={18} />} Start the example</button>
         </div>
       </section>
 

@@ -2,6 +2,8 @@
 import { build, context } from "esbuild";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import postcss from "postcss";
+import tailwindcss from "@tailwindcss/postcss";
 
 const watch = process.argv.includes("--watch");
 rmSync("dist", { recursive: true, force: true });
@@ -22,9 +24,14 @@ const options = {
   logLevel: "info",
 };
 
-function finish() {
+async function finish() {
   const js = readFileSync("dist/assets/app.js");
-  const css = readFileSync("src/styles.css");
+  // Tailwind runs over the design system so utilities are available alongside it.
+  // Preflight is deliberately not imported (see styles.css) - its reset would
+  // fight the hand-built component classes every page already uses.
+  const source = readFileSync("src/styles.css", "utf8");
+  const processed = await postcss([tailwindcss()]).process(source, { from: "src/styles.css", to: "dist/assets/app.css" });
+  const css = Buffer.from(processed.css);
   const jh = createHash("sha256").update(js).digest("hex").slice(0, 10);
   const ch = createHash("sha256").update(css).digest("hex").slice(0, 10);
   writeFileSync(`dist/assets/app-${jh}.js`, js);
@@ -36,9 +43,9 @@ function finish() {
 }
 
 if (watch) {
-  const ctx = await context({ ...options, plugins: [{ name: "finish", setup(b) { b.onEnd(() => finish()); } }] });
+  const ctx = await context({ ...options, plugins: [{ name: "finish", setup(b) { b.onEnd(async () => { try { await finish(); } catch (e) { console.error(e); } }); } }] });
   await ctx.watch();
 } else {
   await build(options);
-  finish();
+  await finish();
 }
