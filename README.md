@@ -113,13 +113,21 @@ cd frontend && npm install && npm run build && node dev/mock-server.mjs   # http
 
 ## Deploy
 
-1. One time, in AWS CloudShell (us-east-1):
+1. One time, in AWS CloudShell (us-east-1) or anywhere the AWS CLI is configured:
    ```bash
-   curl -sO https://raw.githubusercontent.com/souvikDevloper/career-agent/main/infra/bootstrap.yaml
-   aws cloudformation deploy --stack-name career-agent-bootstrap --template-file bootstrap.yaml --capabilities CAPABILITY_NAMED_IAM
-   aws ssm put-parameter --name /career-agent/deploy-parameters --type String --overwrite \
-     --value "SesSender=you@example.com DemoInbox=you@example.com AlertEmail=you@example.com"
+   git clone https://github.com/souvikDevloper/career-agent && cd career-agent
+   ./scripts/bootstrap.sh you@example.com
    ```
+   That creates the GitHub OIDC provider, the deploy role and the artifacts bucket, and
+   stores the deploy parameters in SSM. It is safe to re-run, reuses an OIDC provider if
+   the account already has one, and warns you if the role ARN it created does not match
+   the `DEPLOY_ROLE` pinned in `.github/workflows/ci-cd.yml`.
+
+   > A brand-new AWS account cannot run this until account verification completes —
+   > CloudShell and CloudFormation both refuse with *"account verification is in
+   > progress"*, which can take up to two days. Re-run it once that clears.
+
+   Then verify the sender address in Amazon SES (it starts in the sandbox).
 2. Push to `main`. GitHub Actions runs tests, assumes the deploy role via OIDC, builds manylinux artifacts, deploys `template.yaml`, publishes the UI, and smoke-tests the live URL.
 3. Optional Telegram: `aws ssm put-parameter --name /career-agent/telegram-bot-token --type SecureString --value <token>` and redeploy.
 
