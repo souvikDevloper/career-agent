@@ -5,8 +5,10 @@ import { dateTime, EVENT_LABEL, STAGE_LABEL, timeAgo } from "../lib/format";
 import { VoiceSession } from "../lib/voice";
 import { Shell } from "../components/Shell";
 import { MatchExplain } from "../components/MatchCard";
-import { Badge, Drawer, EnvBadge, ScoreRing, Skeleton, Spinner, StateBadge, useToast } from "../components/ui";
+import { Badge, Drawer, EnvBadge, Skeleton, Spinner, StateBadge, useToast } from "../components/ui";
 import { IAlert, IBrain, ICheck, IExternal, IMail, IMic, IPause, IPlay, IRefresh, IShield, IStop, IX } from "../components/Icons";
+import KineticScoreGauge from "../components/motion/KineticScoreGauge";
+import confetti from "canvas-confetti";
 
 type Detail = {
   application: Application;
@@ -47,9 +49,9 @@ export function ApplicationDetailPage({ id }: { id: string }) {
 
   return (
     <Shell title="Application">
-      <div className="card pad" style={{ marginBottom: 18 }}>
+      <div className="card pad glass-stripe" style={{ marginBottom: 18 }}>
         <div className="row wrap" style={{ gap: 18, alignItems: "center" }}>
-          <ScoreRing score={a.score} size="lg" />
+          <KineticScoreGauge score={a.score} size="lg" />
           <div style={{ flex: 1, minWidth: 240 }}>
             <div className="row wrap" style={{ gap: 8 }}>
               <StateBadge state={a.action_state} />
@@ -121,10 +123,21 @@ export function ApplicationDetailPage({ id }: { id: string }) {
 
           {a.action_state === "NeedsInformation" && p && <Questions app={a} packet={p} onDone={reload} />}
 
-          <div className="card pad">
+          <div className="card pad glass-stripe">
             <div className="card-title">
               <h3>Application packet</h3>
-              {p ? <span className="src" title={p.hash}>v{p.version} · sha256 {p.hash.slice(0, 12)}</span> : <Badge>not prepared</Badge>}
+              <div className="row" style={{ gap: 8 }}>
+                {p && (
+                  <button className="btn sm ghost" onClick={() => {
+                    navigator.clipboard.writeText(JSON.stringify(p.body, null, 2));
+                    confetti({ particleCount: 80, spread: 60, origin: { y: 0.6 } });
+                    toast("Packet copied to clipboard", "success");
+                  }}>
+                    <ICheck size={14} /> Copy packet
+                  </button>
+                )}
+                {p ? <span className="src" title={p.hash}>v{p.version} · sha256 {p.hash.slice(0, 12)}</span> : <Badge>not prepared</Badge>}
+              </div>
             </div>
             {!p ? (
               <p className="muted small">{a.action_state === "Preparing" ? <span className="row"><Spinner /> Reading the employer form and mapping your verified facts…</span> : "Prepare the application to see exactly what would be sent."}</p>
@@ -163,33 +176,33 @@ export function ApplicationDetailPage({ id }: { id: string }) {
 
         <div className="stack">
           {data.tasks.length > 0 && (
-            <div className="card pad">
-              <div className="card-title"><h3>Tasks from employer messages</h3></div>
-              <div className="col">
-                {data.tasks.map((t) => (
-                  <div key={t.task_id} className="app-card" style={{ cursor: "default" }}>
-                    <div className="row between"><h5>{t.title}</h5><Badge tone={t.status === "done" ? "mint" : "amber"}>{t.status}</Badge></div>
-                    {t.due && <div className="small" style={{ color: "var(--amber)", marginTop: 4 }}>Due {dateTime(t.due)}</div>}
-                    {t.note && <div className="small muted" style={{ marginTop: 4 }}>{t.note}</div>}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-          <div className="card pad">
-            <div className="card-title"><h3>Timeline</h3><Badge tone="mint" live>live</Badge></div>
-            <div className="timeline">
-              {[...data.timeline].reverse().map((e) => (
-                <div key={e.event_id} className={`tl-item ${/succeeded|approved|reconciled/.test(e.type) ? "ok" : /denied|failed|unresolved/.test(e.type) ? "bad" : /unknown|form_changed/.test(e.type) ? "warn" : ""}`}>
-                  <div className="t">{EVENT_LABEL[e.type] || e.type}</div>
-                  <div className="d">{eventDetail(e)}{eventDetail(e) ? " · " : ""}{timeAgo(e.at)}</div>
+          <div className="card pad glass-stripe">
+            <div className="card-title"><h3>Tasks from employer messages</h3></div>
+            <div className="col">
+              {data.tasks.map((t) => (
+                <div key={t.task_id} className="app-card" style={{ cursor: "default" }}>
+                  <div className="row between"><h5>{t.title}</h5><Badge tone={t.status === "done" ? "mint" : "amber"}>{t.status}</Badge></div>
+                  {t.due && <div className="small" style={{ color: "var(--amber)", marginTop: 4 }}>Due {dateTime(t.due)}</div>}
+                  {t.note && <div className="small muted" style={{ marginTop: 4 }}>{t.note}</div>}
                 </div>
               ))}
             </div>
           </div>
-          {data.attempts.length > 0 && (
-            <div className="card pad">
-              <div className="card-title"><h3>Submission attempts</h3></div>
+        )}
+        <div className="card pad glass-stripe">
+          <div className="card-title"><h3>Timeline</h3><Badge tone="mint" live>live</Badge></div>
+          <div className="timeline glass-stripe">
+            {[...data.timeline].reverse().map((e) => (
+              <div key={e.event_id} className={`tl-item ${/succeeded|approved|reconciled/.test(e.type) ? "ok" : /denied|failed|unresolved/.test(e.type) ? "bad" : /unknown|form_changed/.test(e.type) ? "warn" : ""}`}>
+                <div className="t">{EVENT_LABEL[e.type] || e.type}</div>
+                <div className="d">{eventDetail(e)}{eventDetail(e) ? " · " : ""}{timeAgo(e.at)}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+        {data.attempts.length > 0 && (
+          <div className="card pad glass-stripe">
+            <div className="card-title"><h3>Submission attempts</h3></div>
               {data.attempts.map((t) => (
                 <div key={t.attempt_id} className="small" style={{ padding: "8px 0", borderBottom: "1px solid var(--line)" }}>
                   <div className="row between"><span className="mono">{t.attempt_id.slice(-10)}</span><Badge tone={t.outcome === "submitted" ? "mint" : t.outcome ? "amber" : "cyan"}>{t.outcome || t.outcome_pending || "in flight"}</Badge></div>
@@ -226,7 +239,7 @@ function Questions({ app, packet, onDone }: { app: Application; packet: NonNulla
   const [busy, setBusy] = useState(false);
   const toast = useToast();
   return (
-    <div className="card pad" style={{ borderColor: "rgba(251,191,36,.45)" }}>
+    <div className="card pad glass-stripe" style={{ borderColor: "rgba(251,191,36,.45)" }}>
       <div className="card-title"><h3><IAlert size={16} /> The employer asks something we won't guess</h3></div>
       <p className="small muted">Answers are saved to your profile and reused for future applications. Nothing is inferred from your resume.</p>
       <form
@@ -281,7 +294,7 @@ function EmployerSim({ app, onDone }: { app: Application; onDone: () => void }) 
     }
   };
   return (
-    <div className="card pad">
+    <div className="card pad glass-stripe">
       <div className="card-title"><h3><IMail size={16} /> Test employer mailbox</h3><Badge tone="amber">test environment</Badge></div>
       <p className="small muted">Have Northwind Labs reply to this application. The message arrives through a signed webhook, is matched by receipt reference, classified by Nova, and turned into dated tasks.</p>
       <div className="row wrap" style={{ marginTop: 12 }}>
@@ -344,7 +357,7 @@ function InterviewPrep({ app }: { app: Application }) {
 
   const qs = prep.data?.prep?.questions || [];
   return (
-    <div className="card pad">
+    <div className="card pad glass-stripe">
       <div className="card-title"><h3><IBrain size={16} /> Interview practice</h3>
         <button className="btn sm" onClick={generate} disabled={busy}>{busy && !active ? <Spinner /> : null} {qs.length ? "Regenerate" : "Generate questions"}</button>
       </div>

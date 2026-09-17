@@ -68,6 +68,17 @@
   --display: "Inter", ui-sans-serif, system-ui, sans-serif;
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   color-scheme: dark;
+
+  /* Extended design tokens for kinetic redesign */
+  --void: #050608;
+  --surface-card: rgba(255, 255, 255, 0.025);
+  --surface-border: rgba(255, 255, 255, 0.08);
+  --surface-hover: rgba(255, 255, 255, 0.05);
+  --racing: #D2FF00;
+  --danger: #FF385C;
+  --text-primary: #F9FAFB;
+  --text-secondary: #94A3B8;
+  --text-muted: #64748B;
 }
 
 * { box-sizing: border-box; }
@@ -77,6 +88,7 @@ body {
   background: var(--bg);
   color: var(--ink);
   font: 15px/1.55 var(--font);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   overflow-x: hidden;
@@ -101,6 +113,68 @@ code, .mono { font-family: var(--mono); font-size: 0.86em; }
 ::selection { background: rgba(123, 92, 255, 0.45); }
 :focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; border-radius: 8px; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+/* ---------- glass-stripe kinetic surfaces ---------- */
+.glass-stripe {
+  background: rgba(255, 255, 255, 0.02);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius);
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.06), 0 20px 40px -15px rgba(0, 0, 0, 0.7);
+}
+.glass-stripe-hover {
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.glass-stripe-hover:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.16);
+  transform: translateY(-2px);
+}
+
+/* Score-tier glow borders */
+.glow-high { box-shadow: 0 0 0 1px rgba(0, 245, 160, 0.3), 0 8px 32px -8px rgba(0, 245, 160, 0.2); }
+.glow-mid  { box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.3), 0 8px 32px -8px rgba(245, 158, 11, 0.2); }
+.glow-low  { box-shadow: 0 0 0 1px rgba(255, 56, 92, 0.3), 0 8px 32px -8px rgba(255, 56, 92, 0.2); }
+
+/* Streaming cursor for agent responses */
+.streaming-cursor {
+  display: inline-block;
+  width: 6px;
+  height: 16px;
+  margin-left: 4px;
+  background: var(--racing);
+  border-radius: 1px;
+  animation: blink-cursor 1s steps(2) infinite;
+  vertical-align: text-bottom;
+}
+@keyframes blink-cursor { 0% { opacity: 1; } 50% { opacity: 0; } }
+
+/* Border beam animation */
+@keyframes border-beam { 100% { offset-distance: 100%; } }
+.border-beam { animation: border-beam calc(var(--duration, 4) * 1s) infinite linear; }
+
+/* Subtle pulse */
+@keyframes subtle-pulse {
+  0%, 100% { opacity: 0.3; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.03); }
+}
+.animate-subtle-pulse { animation: subtle-pulse 4s ease-in-out infinite; }
+
+/* Telemetry banner dot */
+.telemetry-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--mint);
+  box-shadow: 0 0 12px var(--mint);
+  animation: pulse 1.6s infinite;
+}
+
+/* Input glow on focus — enhanced version for forms */
+.input-glow:focus {
+  outline: none;
+  border-color: rgba(99, 102, 241, 0.7);
+  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.15), 0 0 20px -4px rgba(99, 102, 241, 0.3);
+}
 
 /* ---------- primitives ---------- */
 .card {
@@ -223,7 +297,7 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .nav { display: flex; align-items: center; gap: 16px; height: 72px; }
 .brand { display: flex; align-items: center; gap: 10px; font-family: var(--display); font-weight: 800; font-size: 18px; letter-spacing: -0.02em; }
 .brand-mark { width: 34px; height: 34px; border-radius: 11px; background: var(--grad); display: grid; place-items: center; box-shadow: 0 6px 20px -6px rgba(123, 92, 255, 0.8); }
-.hero { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 48px; align-items: center; padding: 56px 0 40px; }
+.hero { position: relative; display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 48px; align-items: center; padding: 56px 0 40px; }
 .hero h1 { font-size: clamp(38px, 5.4vw, 64px); font-weight: 800; line-height: 1.02; letter-spacing: -0.035em; }
 .hero .lede { font-size: 18px; color: var(--ink-2); margin: 22px 0 30px; max-width: 560px; }
 .hero-cta { display: flex; gap: 12px; flex-wrap: wrap; }

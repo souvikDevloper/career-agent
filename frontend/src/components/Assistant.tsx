@@ -70,6 +70,55 @@ export function Assistant({ compact = false }: { compact?: boolean }) {
   const { reload } = useMe();
   const { navigate } = useRouter();
 
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const voiceState = useRef({ listening: false, speaking: false, level: 0 });
+
+  useEffect(() => {
+    voiceState.current = { listening, speaking, level };
+  }, [listening, speaking, level]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    let animId: number;
+    let t = 0;
+    const isReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    function render() {
+      if (!canvas || !ctx) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const { listening: l, speaking: s, level: vLevel } = voiceState.current;
+      const isActive = l || s;
+      const targetScale = 1 + Math.min(vLevel * 2.2, 0.35);
+
+      const cx = canvas.width / 2;
+      const cy = canvas.height / 2;
+      const baseRadius = 35;
+
+      for (let i = 0; i < 4; i++) {
+        const ringScale = isReduced ? 1 : (isActive ? targetScale + Math.sin(t * 0.06 + i * 1.5) * 0.05 : 1);
+        const radius = baseRadius * ringScale + i * 16;
+        ctx.beginPath();
+        ctx.arc(cx, cy, Math.max(0.1, radius), 0, Math.PI * 2);
+        const baseOpacity = isActive ? 0.35 : 0.08;
+        const opacity = Math.max(0, baseOpacity - (i * (isActive ? 0.07 : 0.02)));
+        ctx.strokeStyle = `rgba(99, 102, 241, ${opacity})`;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+
+      t++;
+      animId = requestAnimationFrame(render);
+    }
+
+    animId = requestAnimationFrame(render);
+    return () => cancelAnimationFrame(animId);
+  }, []);
+
   useEffect(() => {
     api<{ messages: ChatMsg[] }>("/api/chat")
       .then((d) => setMessages(d.messages.slice(compact ? -4 : -40)))
@@ -241,14 +290,17 @@ export function Assistant({ compact = false }: { compact?: boolean }) {
           return (
             <article key={i} className="turn agent">
               {m.pending && !m.text ? (
-                <div className="steps" aria-live="polite">
+                <div className="steps glass-stripe" aria-live="polite">
                   {steps.length === 0 && (
-                    <span className="step"><span className="typing"><i /><i /><i /></span> Thinking</span>
+                    <span className="step glass-stripe" style={{ borderLeft: "2px solid indigo" }}>
+                      <span className="typing"><i /><i /><i /></span> Thinking<span className="streaming-cursor" />
+                    </span>
                   )}
                   {steps.map((s, j) => (
-                    <span key={j} className={`step ${j === steps.length - 1 ? "now" : "done"}`}>
+                    <span key={j} className={`step glass-stripe ${j === steps.length - 1 ? "now" : "done"}`} style={{ borderLeft: j === steps.length - 1 ? "2px solid indigo" : "none" }}>
                       {j === steps.length - 1 ? <span className="typing"><i /><i /><i /></span> : <ICheck size={13} />}
                       {s.message}
+                      {j === steps.length - 1 && <span className="streaming-cursor" />}
                     </span>
                   ))}
                 </div>
@@ -294,7 +346,7 @@ export function Assistant({ compact = false }: { compact?: boolean }) {
 
   return (
     <div className={compact ? "" : "split agent-split"}>
-      <div className="card chat-card">
+      <div className="card chat-card glass-stripe">
         {thread}
         <div className="composer-wrap">
           <form
@@ -356,15 +408,25 @@ export function Assistant({ compact = false }: { compact?: boolean }) {
         </div>
       </div>
       {!compact && (
-        <aside className="card pad agent-aside">
-          <div className="orb-wrap">
+        <aside className="card pad agent-aside glass-stripe">
+          <div className="orb-wrap" style={{ position: "relative" }}>
+            <canvas
+              ref={canvasRef}
+              width={160}
+              height={160}
+              style={{
+                position: "absolute",
+                top: "50%",
+                left: "50%",
+                transform: "translate(-50%, -50%)",
+                pointerEvents: "none",
+              }}
+            />
             <button
               className={`orb ${listening ? "listening" : ""} ${speaking ? "speaking" : ""}`}
               onClick={toggleVoice}
               aria-label="Voice mode"
             >
-              <span className="ring" />
-              <span className="ring r2" />
               <span className="core" style={{ transform: `scale(${scale})` }}>{listening ? <IStop size={26} /> : <IMic size={28} />}</span>
             </button>
           </div>

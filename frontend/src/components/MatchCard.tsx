@@ -2,14 +2,18 @@ import type { MatchCard as M } from "../lib/api";
 import { timeAgo } from "../lib/format";
 import { IArrow, IBuilding, IClock, IPin } from "./Icons";
 import { Badge, Bar, EnvBadge, ScoreRing } from "./ui";
+import SpotlightCard from "./motion/SpotlightCard";
+import KineticScoreGauge from "./motion/KineticScoreGauge";
 
 export function MatchRow({ m, onOpen }: { m: M; onOpen: () => void }) {
   const req = (m.skills || []).filter((s) => s.required);
   const hit = req.filter((s) => s.evidence).length;
+  const glowClass = m.score >= 85 ? "glow-high" : m.score >= 65 ? "glow-mid" : "glow-low";
   return (
-    <div className="card hover match fade-in" onClick={onOpen} role="button" tabIndex={0} onKeyDown={(e) => e.key === "Enter" && onOpen()}>
-      <ScoreRing score={m.score} />
-      <div style={{ minWidth: 0 }}>
+    <SpotlightCard className={`card hover match fade-in cursor-pointer ${glowClass}`} onClick={onOpen} role="button" tabIndex={0} onKeyDown={(e) => e.key === "Enter" && onOpen()}>
+      <div className="row" style={{ width: "100%", gap: 16, alignItems: "center" }}>
+        <ScoreRing score={m.score} />
+        <div style={{ minWidth: 0, flex: 1 }}>
         <div className="row wrap" style={{ gap: 8 }}>
           <h4>{m.job.title}</h4>
           <EnvBadge env={m.job.environment} />
@@ -23,11 +27,12 @@ export function MatchRow({ m, onOpen }: { m: M; onOpen: () => void }) {
         </div>
         {m.explanation && <p className="small ink2" style={{ marginTop: 8, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{m.explanation}</p>}
       </div>
-      <div className="col" style={{ alignItems: "flex-end", gap: 8 }}>
-        <span className="small muted">{req.length ? `${hit}/${req.length} must-haves evidenced` : "—"}</span>
-        <span className="btn sm">Explain <IArrow size={14} /></span>
+        <div className="col" style={{ alignItems: "flex-end", gap: 8 }}>
+          <span className="small muted">{req.length ? `${hit}/${req.length} must-haves evidenced` : "—"}</span>
+          <span className="btn sm">Explain <IArrow size={14} /></span>
+        </div>
       </div>
-    </div>
+    </SpotlightCard>
   );
 }
 
@@ -42,7 +47,7 @@ export function MatchExplain({ m }: { m: M }) {
   return (
     <div className="stack">
       <div className="row" style={{ gap: 18, alignItems: "center" }}>
-        <ScoreRing score={m.score} size="lg" />
+        <KineticScoreGauge score={m.score} size="lg" />
         <div>
           <div className="eyebrow">Explained fit · {m.rubric_version}</div>
           <h2 style={{ fontSize: 24, marginTop: 4 }}>{m.job.title}</h2>
@@ -54,7 +59,7 @@ export function MatchExplain({ m }: { m: M }) {
           </div>
         </div>
       </div>
-      {m.explanation && <div className="card pad" style={{ background: "var(--grad-soft)" }}><p className="ink2">{m.explanation}</p></div>}
+      {m.explanation && <div className="card pad glass-stripe" style={{ background: "var(--grad-soft)" }}><p className="ink2">{m.explanation}</p></div>}
 
       <div>
         <div className="eyebrow" style={{ marginBottom: 10 }}>How the score adds up</div>

@@ -21,14 +21,14 @@ export function TasksPage() {
         <div><h1>Assessments, interviews & reminders</h1><p>Created from employer messages with the deadline quoted from the message. Reminders are cancelled when you complete a task.</p></div>
       </div>
       <div className="grid g2">
-        <div className="card pad">
+        <div className="card pad glass-stripe">
           <div className="card-title"><h3><IClock size={16} /> Open</h3><Badge tone="amber">{open.length}</Badge></div>
           {open.length === 0 ? <Empty icon={<IList />} title="All clear">Tasks appear when an employer invites you to an assessment or interview.</Empty> : (
             <div className="col">
               {open.map((t) => {
                 const overdue = t.due && new Date(t.due).getTime() < Date.now();
                 return (
-                  <div key={t.task_id} className="app-card" style={{ cursor: "default" }}>
+                  <div key={t.task_id} className="app-card glass-stripe-hover" style={{ cursor: "default" }}>
                     <div className="row between"><h5>{t.title}</h5><Badge tone={t.kind === "assessment_invite" ? "amber" : t.kind === "interview_invite" ? "violet" : "cyan"}>{t.kind.replace(/_/g, " ")}</Badge></div>
                     {t.note && <p className="small muted" style={{ marginTop: 4 }}>{t.note}</p>}
                     <div className="row between" style={{ marginTop: 10 }}>
@@ -44,7 +44,7 @@ export function TasksPage() {
             </div>
           )}
         </div>
-        <div className="card pad">
+        <div className="card pad glass-stripe">
           <div className="card-title"><h3><ICheck size={16} /> Completed</h3><Badge tone="mint">{done.length}</Badge></div>
           {done.length === 0 ? <p className="muted small">Nothing completed yet.</p> : done.map((t) => (
             <div key={t.task_id} className="row between small" style={{ padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
