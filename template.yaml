@@ -33,9 +33,20 @@ Parameters:
   MonthlyBudgetUsd:
     Type: Number
     Default: 30
+  UseCloudFront:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "false"
+    Description: >
+      CloudFront is the intended front door. A new AWS account cannot create a
+      distribution until activation completes - CreateDistribution returns 403 no
+      matter what IAM allows - so this defaults to false and the HTTP API serves the
+      UI itself on the same origin. Set to true once the account is activated.
 
 Conditions:
   HasAlertEmail: !Not [!Equals [!Ref AlertEmail, ""]]
+  WithCloudFront: !Equals [!Ref UseCloudFront, "true"]
+  WithoutCloudFront: !Equals [!Ref UseCloudFront, "false"]
 
 Globals:
   Function:
@@ -57,8 +68,8 @@ Globals:
         NOTIFY_QUEUE_URL: !Ref NotifyQueue
         USER_POOL_ID: !Ref UserPool
         USER_POOL_CLIENT_ID: !Ref UserPoolClient
-        PUBLIC_BASE_URL: !Sub "https://${Distribution.DomainName}"
-        API_BASE_URL: !Sub "https://${Distribution.DomainName}"
+        PUBLIC_BASE_URL: !If [WithCloudFront, !Sub "https://${Distribution.DomainName}", !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"]
+        API_BASE_URL: !If [WithCloudFront, !Sub "https://${Distribution.DomainName}", !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"]
         INTERNAL_SECRET_ARN: !Ref InternalSecret
         GREENHOUSE_BOARDS: !Ref GreenhouseBoards
         SES_SENDER: !Ref SesSender
@@ -129,7 +140,7 @@ Resources:
       CorsConfiguration:
         CorsRules:
           - AllowedMethods: [POST]
-            AllowedOrigins: [!Sub "https://${Distribution.DomainName}"]
+            AllowedOrigins: [!If [WithCloudFront, !Sub "https://${Distribution.DomainName}", !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"]]
             AllowedHeaders: ["*"]
             MaxAge: 3000
 
@@ -392,7 +403,7 @@ Resources:
       Environment:
         Variables:
           GATE_FUNCTION: !Ref GateFunction
-          ALLOWED_TARGET_HOSTS: !GetAtt Distribution.DomainName
+          ALLOWED_TARGET_HOSTS: !If [WithCloudFront, !GetAtt Distribution.DomainName, !Sub "${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"]
           HOME: /tmp
       Policies:
         - LambdaInvokePolicy: { FunctionName: !Ref GateFunction }
@@ -540,6 +551,46 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*"
 
+  # Serves the built SPA when CloudFront is unavailable, on the same origin as
+  # /api and /portal so authentication and the microphone keep working.
+  WebFunction:
+    Type: AWS::Serverless::Function
+    Condition: WithoutCloudFront
+    Properties:
+      CodeUri: build/backend/
+      Handler: career_agent.handlers.web.handler
+      MemorySize: 512
+      Timeout: 29
+      Environment:
+        Variables:
+          WEB_BUCKET: !Ref WebBucket
+      Policies:
+        - S3ReadPolicy: { BucketName: !Ref WebBucket }
+  WebIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Condition: WithoutCloudFront
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt WebFunction.Arn
+      PayloadFormatVersion: "2.0"
+      TimeoutInMillis: 29000
+  RouteWeb:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: WithoutCloudFront
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: "$default"
+      Target: !Sub "integrations/${WebIntegration}"
+  WebInvokePermission:
+    Type: AWS::Lambda::Permission
+    Condition: WithoutCloudFront
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref WebFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*"
+
   # ------------------------------------------------------------------ web hosting
   WebBucket:
     Type: AWS::S3::Bucket
@@ -554,6 +605,7 @@ Resources:
         RestrictPublicBuckets: true
   WebOac:
     Type: AWS::CloudFront::OriginAccessControl
+    Condition: WithCloudFront
     Properties:
       OriginAccessControlConfig:
         Name: !Sub "${AWS::StackName}-web-oac"
@@ -562,6 +614,7 @@ Resources:
         SigningProtocol: sigv4
   WebBucketPolicy:
     Type: AWS::S3::BucketPolicy
+    Condition: WithCloudFront
     Properties:
       Bucket: !Ref WebBucket
       PolicyDocument:
@@ -574,6 +627,7 @@ Resources:
               StringEquals: { "AWS:SourceArn": !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}" }
   SpaRewrite:
     Type: AWS::CloudFront::Function
+    Condition: WithCloudFront
     Properties:
       Name: !Sub "${AWS::StackName}-spa-rewrite"
       AutoPublish: true
@@ -586,6 +640,7 @@ Resources:
         }
   SecurityHeaders:
     Type: AWS::CloudFront::ResponseHeadersPolicy
+    Condition: WithCloudFront
     Properties:
       ResponseHeadersPolicyConfig:
         Name: !Sub "${AWS::StackName}-security"
@@ -599,6 +654,7 @@ Resources:
             - { Header: Permissions-Policy, Value: "microphone=(self), camera=(), geolocation=()", Override: true }
   Distribution:
     Type: AWS::CloudFront::Distribution
+    Condition: WithCloudFront
     Properties:
       DistributionConfig:
         Enabled: true
@@ -692,14 +748,15 @@ Resources:
 
 Outputs:
   AppUrl:
-    Value: !Sub "https://${Distribution.DomainName}"
+    Value: !If [WithCloudFront, !Sub "https://${Distribution.DomainName}", !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"]
   PortalUrl:
-    Value: !Sub "https://${Distribution.DomainName}/portal"
+    Value: !If [WithCloudFront, !Sub "https://${Distribution.DomainName}/portal", !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/portal"]
   ApiEndpoint:
     Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
   WebBucketName:
     Value: !Ref WebBucket
   DistributionId:
+    Condition: WithCloudFront
     Value: !Ref Distribution
   UserPoolId:
     Value: !Ref UserPool

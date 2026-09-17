@@ -114,7 +114,14 @@ jobs:
           aws s3 sync dist "s3://${{ steps.out.outputs.bucket }}" --delete --exclude index.html --exclude config.json --cache-control "public,max-age=31536000,immutable"
           aws s3 cp dist/index.html "s3://${{ steps.out.outputs.bucket }}/index.html" --cache-control "no-cache"
           aws s3 cp dist/config.json "s3://${{ steps.out.outputs.bucket }}/config.json" --cache-control "no-cache"
-          aws cloudfront create-invalidation --distribution-id "${{ steps.out.outputs.dist }}" --paths "/index.html" "/config.json" > /dev/null
+          # No distribution when the stack is deployed with UseCloudFront=false;
+          # the API-Gateway web handler serves index.html and config.json no-cache.
+          DIST="${{ steps.out.outputs.dist }}"
+          if [ -n "$DIST" ] && [ "$DIST" != "None" ]; then
+            aws cloudfront create-invalidation --distribution-id "$DIST" --paths "/index.html" "/config.json" > /dev/null
+          else
+            echo "No CloudFront distribution; nothing to invalidate."
+          fi
       - name: Telegram webhook (if a bot token is configured)
         run: |
           TOKEN=$(aws ssm get-parameter --name "/$APP_STACK/telegram-bot-token" --with-decryption --query Parameter.Value --output text 2>/dev/null || echo "")
