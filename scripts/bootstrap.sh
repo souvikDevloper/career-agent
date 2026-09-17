@@ -16,6 +16,12 @@
 
 set -euo pipefail
 
+# Git Bash / MSYS rewrites arguments that start with a slash into Windows paths, so
+# "/career-agent/deploy-parameters" would be stored as
+# "C:/Program Files/Git/career-agent/deploy-parameters" and the deploy would never
+# find it. Harmless everywhere else.
+export MSYS2_ARG_CONV_EXCL='*' MSYS_NO_PATHCONV=1
+
 EMAIL="${1:-}"
 REGION="${2:-us-east-1}"
 STACK="career-agent-bootstrap"
