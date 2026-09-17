@@ -409,10 +409,12 @@ class Workflow:
         packet = self.latest_packet(p.user_id, app_id)
         decision = self.decide_submission(p, app, settings, packet=packet)
         if not decision.allowed:
-            reasons = decision.reasons
-            if reasons == ["forbid-during-cooldown"]:
-                return {"action": "denied", "decision": decision.to_dict(), "retry_later": True}
-            to = "Paused" if "forbid-daily-cap-exhausted" in reasons or "forbid-during-cooldown" in reasons else "NeedsApproval"
+            # Classify the denial from facts, not from engine-specific reason strings.
+            if self.decide_submission(p, app, settings, packet=packet, reserve_check=True).allowed:
+                return {"action": "denied", "decision": decision.to_dict(), "retry_later": True}  # only the cooldown blocks
+            ledger_now = self.store.get(U(p.user_id), self.ledger_key(p.user_id, settings)) or {}
+            cap_hit = int(ledger_now.get("used", 0)) >= int(settings.get("daily_cap", 5))
+            to = "Paused" if cap_hit else "NeedsApproval"
             ops = [self._transition(app, to, {"last_decision": decision.to_dict(), "paused": to == "Paused"}),
                    self.event_put(p.user_id, "submission.denied", decision.to_dict(), app_id)]
             try:

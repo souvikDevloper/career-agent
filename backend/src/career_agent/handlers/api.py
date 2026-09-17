@@ -157,11 +157,11 @@ def demo_session(event, p, cid):
             return error(429, "busy", "Too many example workspaces were started this hour. Please try again shortly.", cid)
         raise
     idp = boto3.client("cognito-idp")
-    username = f"judge-{secrets.token_hex(6)}"
+    username = f"judge-{secrets.token_hex(6)}@example.com"  # the pool uses email as the username attribute
     password = "Aa1!" + secrets.token_urlsafe(24)
     pool = cfg().user_pool_id
     idp.admin_create_user(UserPoolId=pool, Username=username, MessageAction="SUPPRESS",
-                          UserAttributes=[{"Name": "email", "Value": f"{username}@example.com"}, {"Name": "email_verified", "Value": "true"}])
+                          UserAttributes=[{"Name": "email", "Value": username}, {"Name": "email_verified", "Value": "true"}])
     idp.admin_set_user_password(UserPoolId=pool, Username=username, Password=password, Permanent=True)
     idp.admin_add_user_to_group(UserPoolId=pool, Username=username, GroupName="judge")
     auth = idp.admin_initiate_auth(UserPoolId=pool, ClientId=cfg().user_pool_client_id, AuthFlow="ADMIN_USER_PASSWORD_AUTH",
