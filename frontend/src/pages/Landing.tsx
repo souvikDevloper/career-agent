@@ -129,7 +129,7 @@ export function Landing() {
               <ScoreRing score={step >= 2 ? 86 : 0} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 700 }}>Cloud Engineer Intern (AWS)</div>
-                <div className="small muted">Northwind Labs · Pune (Hybrid) · <span style={{ color: "#fde68a" }}>test employer</span></div>
+                <div className="small muted">Northwind Labs · Pune (Hybrid) · <span style={{ color: "var(--amber)", fontWeight: 600 }}>test employer</span></div>
                 <div className="progress" style={{ marginTop: 10 }}><span style={{ width: `${((s + 1) / STEPS.length) * 100}%` }} /></div>
               </div>
             </div>

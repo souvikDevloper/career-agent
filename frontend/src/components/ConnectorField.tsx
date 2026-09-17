@@ -82,7 +82,7 @@ export function ConnectorField({ className }: { className?: string }) {
           const d = Math.hypot(a.x - b.x, a.y - b.y);
           if (d > LINK_DISTANCE) continue;
           const depth = (a.z + b.z) / 2;
-          ctx.strokeStyle = `rgba(255, 180, 84, ${(1 - d / LINK_DISTANCE) * 0.2 * depth})`;
+          ctx.strokeStyle = `rgba(37, 99, 235, ${(1 - d / LINK_DISTANCE) * 0.28 * depth})`;
           ctx.lineWidth = 0.6 * depth;
           ctx.beginPath();
           ctx.moveTo(a.x, a.y);
@@ -91,7 +91,7 @@ export function ConnectorField({ className }: { className?: string }) {
         }
       }
       for (const n of nodes) {
-        ctx.fillStyle = `rgba(255, 201, 120, ${0.16 + n.z * 0.3})`;
+        ctx.fillStyle = `rgba(37, 99, 235, ${0.18 + n.z * 0.32})`;
         ctx.beginPath();
         ctx.arc(n.x, n.y, 1.5 * n.z, 0, Math.PI * 2);
         ctx.fill();
