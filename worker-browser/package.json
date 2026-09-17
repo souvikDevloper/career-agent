@@ -1,0 +1,16 @@
+{
+  "name": "career-agent-browser-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Isolated Playwright submission worker for Career Agent (AWS Lambda, Node.js 22).",
+  "main": "src/index.mjs",
+  "engines": { "node": ">=22.17" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@sparticuz/chromium": "153.0.0",
+    "playwright-core": "1.63.0"
+  }
+}

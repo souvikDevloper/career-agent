@@ -1,0 +1,147 @@
+import { useMemo, useState } from "react";
+import { api, requestId, waitForOperation, type MatchCard } from "../lib/api";
+import { useApi } from "../lib/hooks";
+import { useMe } from "../lib/me";
+import { useRouter } from "../lib/router";
+import { timeAgo } from "../lib/format";
+import { Shell } from "../components/Shell";
+import { MatchExplain, MatchRow } from "../components/MatchCard";
+import { Badge, Drawer, Empty, Skeleton, Spinner, useToast } from "../components/ui";
+import { IBriefcase, IRadar, ISend, ITrash } from "../components/Icons";
+
+export function JobsPage() {
+  const { data, loading, reload } = useApi<{ matches: MatchCard[]; sources: any[] }>("/api/jobs/matches", [], 10000);
+  const { me, reload: reloadMe } = useMe();
+  const { navigate } = useRouter();
+  const toast = useToast();
+  const [q, setQ] = useState("");
+  const [minScore, setMinScore] = useState(0);
+  const [env, setEnv] = useState<"all" | "test" | "live">("all");
+  const [searching, setSearching] = useState<string | null>(null);
+  const [watchKw, setWatchKw] = useState("");
+  const open = new URLSearchParams(window.location.search).get("job");
+  const [selected, setSelected] = useState<string | null>(open);
+
+  const list = useMemo(() => (data?.matches || []).filter((m) =>
+    m.score >= minScore && (env === "all" || (m.job.environment || "live") === env) &&
+    (!q || `${m.job.title} ${m.job.company} ${m.job.location}`.toLowerCase().includes(q.toLowerCase()))), [data, q, minScore, env]);
+  const current = data?.matches.find((m) => m.job_key === selected) || null;
+
+  async function search() {
+    setSearching("Starting search…");
+    try {
+      const { operation } = await api("/api/search", { body: { keywords: q, client_request_id: requestId("search") } });
+      const done = await waitForOperation(operation.op_id, (op) => {
+        setSearching(op.progress?.[op.progress.length - 1]?.message || "Working…");
+        if (op.results?.length) reload();
+      });
+      if (done.status === "failed") toast(done.final?.error || "Search failed", "error");
+      reload();
+    } catch (e) {
+      toast((e as Error).message, "error");
+    } finally {
+      setSearching(null);
+    }
+  }
+
+  async function prepare(jobKey: string) {
+    try {
+      const { application } = await api("/api/applications", { body: { job_key: jobKey } });
+      toast("Preparing the application packet…", "success");
+      navigate(`/app/applications/${application.app_id}`);
+    } catch (e) {
+      toast((e as Error).message, "error");
+    }
+  }
+
+  return (
+    <Shell title="Matches">
+      <div className="page-head">
+        <div>
+          <h1>Explained matches</h1>
+          <p>Every score links requirements to evidence in your resume. Sources are checked on a declared schedule.</p>
+        </div>
+      </div>
+
+      <div className="grid" style={{ gridTemplateColumns: "minmax(0,1fr) 320px", gap: 18, alignItems: "start" }}>
+        <div className="stack">
+          <div className="card pad">
+            <form className="row wrap" onSubmit={(e) => { e.preventDefault(); search(); }}>
+              <input className="input" style={{ flex: 1, minWidth: 220 }} placeholder="Search roles, e.g. “backend intern python”" value={q} onChange={(e) => setQ(e.target.value)} />
+              <select className="select" style={{ width: 150 }} value={env} onChange={(e) => setEnv(e.target.value as typeof env)} aria-label="Environment">
+                <option value="all">All sources</option><option value="test">Test employer</option><option value="live">Live sources</option>
+              </select>
+              <select className="select" style={{ width: 130 }} value={minScore} onChange={(e) => setMinScore(Number(e.target.value))} aria-label="Minimum score">
+                <option value={0}>Any score</option><option value={50}>50+</option><option value={65}>65+</option><option value={81}>Above 80</option>
+              </select>
+              <button className="btn primary" disabled={!!searching}>{searching ? <Spinner /> : <IRadar size={16} />} Find & score</button>
+            </form>
+            {searching && <p className="small muted" style={{ marginTop: 10 }}>{searching}</p>}
+          </div>
+
+          {loading && !data ? (
+            <div className="col">{[0, 1, 2].map((i) => <Skeleton key={i} h={96} />)}</div>
+          ) : list.length === 0 ? (
+            <div className="card"><Empty icon={<IBriefcase />} title="No matches yet">Search above, or ask the agent to find roles for you.</Empty></div>
+          ) : (
+            <div className="col" style={{ gap: 10 }}>{list.map((m) => <MatchRow key={m.job_key} m={m} onOpen={() => setSelected(m.job_key)} />)}</div>
+          )}
+        </div>
+
+        <div className="stack">
+          <div className="card pad">
+            <div className="card-title"><h3><IRadar size={16} /> Source freshness</h3></div>
+            <div className="col" style={{ gap: 12 }}>
+              {(data?.sources || me?.sources || []).map((s: any) => (
+                <div key={s.source}>
+                  <div className="row between">
+                    <span style={{ fontWeight: 600, fontSize: 14 }}>{s.source.replace("greenhouse:", "Greenhouse · ").replace("northwind-test-portal", "Northwind Labs")}</span>
+                    <Badge tone={s.last_error ? "rose" : s.environment === "test" ? "amber" : "cyan"}>{s.environment === "test" ? "test" : "live"}</Badge>
+                  </div>
+                  <div className="tiny muted">Last success {timeAgo(s.last_success_at)} · every {s.interval_minutes} min{s.job_count != null ? ` · ${s.job_count} jobs` : ""}</div>
+                  {s.last_error && <div className="tiny" style={{ color: "var(--rose)" }}>{s.last_error}</div>}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="card pad">
+            <div className="card-title"><h3>Watches</h3><Badge>{me?.watches.length ?? 0}</Badge></div>
+            <p className="small muted">Runs in AWS every 5 minutes, even when your laptop is off. Unchanged feeds cost no model calls.</p>
+            <form className="row" style={{ marginTop: 12 }} onSubmit={async (e) => {
+              e.preventDefault();
+              if (!watchKw.trim()) return;
+              await api("/api/watches", { body: { keywords: watchKw } }).catch((err) => toast(err.message, "error"));
+              setWatchKw("");
+              reloadMe();
+            }}>
+              <input className="input" placeholder="keywords" value={watchKw} onChange={(e) => setWatchKw(e.target.value)} />
+              <button className="btn">Add</button>
+            </form>
+            <div className="col" style={{ marginTop: 12, gap: 8 }}>
+              {(me?.watches || []).map((w) => (
+                <div key={w.watch_id} className="row between small">
+                  <span><Badge tone="mint" live>{w.keywords}</Badge></span>
+                  <button className="btn icon ghost sm" aria-label="Delete watch" onClick={async () => { await api(`/api/watches/${w.watch_id}`, { method: "DELETE" }); reloadMe(); }}><ITrash size={15} /></button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <Drawer open={!!current} onClose={() => { setSelected(null); history.replaceState(null, "", "/app/jobs"); }} label="Match explanation">
+        {current && (
+          <>
+            <MatchExplain m={current} />
+            <div className="row" style={{ marginTop: 22, gap: 10, position: "sticky", bottom: 0, paddingTop: 12, background: "#0c1128" }}>
+              <button className="btn primary lg" style={{ flex: 1 }} onClick={() => prepare(current.job_key)} disabled={current.blocked}>
+                <ISend size={16} /> {current.blocked ? "Not eligible" : "Prepare application"}
+              </button>
+              {current.job.url && <a className="btn lg" href={current.job.url} target="_blank" rel="noreferrer">View posting</a>}
+            </div>
+          </>
+        )}
+      </Drawer>
+    </Shell>
+  );
+}

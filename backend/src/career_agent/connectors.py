@@ -1,0 +1,64 @@
+"""Connector capability registry.
+
+A connected identity is not evidence that a capability exists. Every connector
+declares exactly what it can do and in which environment, and the UI renders
+that status verbatim (verified live / test environment / needs setup / manual handoff).
+"""
+
+from __future__ import annotations
+
+CAPABILITIES = ("discover", "read_details", "read_form", "fill", "submit", "reconcile",
+                "read_messages", "send_messages", "update_profile")
+
+CONNECTORS: dict[str, dict] = {
+    "northwind-test-portal": {
+        "label": "Northwind Labs careers (test employer)",
+        "environment": "test",
+        "status": "test_environment",
+        "capabilities": ["discover", "read_details", "read_form", "fill", "submit", "reconcile", "read_messages"],
+        "note": "A separately hosted test employer portal. Real form, real browser submission, real receipts. Not a real company.",
+    },
+    "greenhouse-public": {
+        "label": "Greenhouse public job boards",
+        "environment": "live",
+        "status": "verified_live",
+        "capabilities": ["discover", "read_details"],
+        "note": "Public GET endpoints need no key. Submission requires the employer's Job Board API key, so applying is a prepared manual handoff.",
+    },
+    "email-ses": {
+        "label": "Email (Amazon SES)",
+        "environment": "live",
+        "status": "needs_setup",
+        "capabilities": ["send_messages"],
+        "note": "SES sandbox delivers only to verified recipients until production access is granted.",
+    },
+    "telegram": {
+        "label": "Telegram bot",
+        "environment": "live",
+        "status": "needs_setup",
+        "capabilities": ["send_messages", "read_messages"],
+        "note": "Link your chat with /start <code> to receive updates and approve applications.",
+    },
+    "gmail": {
+        "label": "Gmail replies",
+        "environment": "live",
+        "status": "needs_setup",
+        "capabilities": [],
+        "note": "Reading Gmail needs restricted OAuth scopes and Google verification. Not enabled in this release.",
+    },
+    "linkedin": {
+        "label": "LinkedIn",
+        "environment": "live",
+        "status": "manual_handoff",
+        "capabilities": [],
+        "note": "LinkedIn prohibits unauthorized automation. We prepare drafts and links; you act on LinkedIn yourself.",
+    },
+}
+
+
+def can(connector: str, capability: str) -> bool:
+    return capability in CONNECTORS.get(connector, {}).get("capabilities", [])
+
+
+def environment(connector: str) -> str:
+    return CONNECTORS.get(connector, {}).get("environment", "live")

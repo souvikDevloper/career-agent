@@ -1,0 +1,709 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Career Agent - voice/chat job-search agent. Bedrock (Nova 2 Lite) + Strands Agents, Cedar authorization,
+  DynamoDB transactional outbox, SQS, EventBridge Scheduler, Playwright on Lambda, Transcribe, Polly, Cognito, CloudFront.
+
+Parameters:
+  Stage:
+    Type: String
+    Default: prod
+  ModelId:
+    Type: String
+    Default: us.amazon.nova-2-lite-v1:0
+  GreenhouseBoards:
+    Type: String
+    Default: ""
+    Description: Comma-separated public Greenhouse board tokens to monitor (live, read-only).
+  SesSender:
+    Type: String
+    Default: ""
+    Description: Verified SES identity used as the From address. Empty disables email.
+  DemoInbox:
+    Type: String
+    Default: ""
+    Description: Verified inbox that receives example-workspace emails.
+  AlertEmail:
+    Type: String
+    Default: ""
+    Description: Receives budget and dead-letter alarms. Empty disables alerts.
+  TelegramBotUsername:
+    Type: String
+    Default: ""
+  MonthlyBudgetUsd:
+    Type: Number
+    Default: 30
+
+Conditions:
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, ""]]
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [x86_64]
+    MemorySize: 512
+    Timeout: 30
+    Tracing: PassThrough
+    LoggingConfig:
+      LogFormat: Text
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref Table
+        BUCKET_NAME: !Ref DataBucket
+        MODEL_ID: !Ref ModelId
+        STAGE: !Ref Stage
+        WORK_QUEUE_URL: !Ref WorkQueue
+        SUBMIT_QUEUE_URL: !Ref SubmitQueue
+        NOTIFY_QUEUE_URL: !Ref NotifyQueue
+        USER_POOL_ID: !Ref UserPool
+        USER_POOL_CLIENT_ID: !Ref UserPoolClient
+        PUBLIC_BASE_URL: !Sub "https://${Distribution.DomainName}"
+        API_BASE_URL: !Sub "https://${Distribution.DomainName}"
+        INTERNAL_SECRET_ARN: !Ref InternalSecret
+        GREENHOUSE_BOARDS: !Ref GreenhouseBoards
+        SES_SENDER: !Ref SesSender
+        DEMO_INBOX: !Ref DemoInbox
+        TELEGRAM_SECRET_PARAM: !Sub "/${AWS::StackName}/telegram-bot-token"
+        TELEGRAM_BOT_USERNAME: !Ref TelegramBotUsername
+        TRANSCRIBE_ROLE_ARN: !GetAtt TranscribeRole.Arn
+        POLICY_FILE: /var/task/career_agent/policies/career_agent.cedar
+        LOG_LEVEL: INFO
+
+Resources:
+  # ------------------------------------------------------------------ secrets
+  InternalSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: HMAC key for signed calls between Career Agent and the test employer portal.
+      GenerateSecretString:
+        SecretStringTemplate: "{}"
+        GenerateStringKey: hmac
+        PasswordLength: 48
+        ExcludePunctuation: true
+
+  # ------------------------------------------------------------------ data
+  Table:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: pk, AttributeType: S }
+        - { AttributeName: sk, AttributeType: S }
+        - { AttributeName: gsi1pk, AttributeType: S }
+        - { AttributeName: gsi1sk, AttributeType: S }
+      KeySchema:
+        - { AttributeName: pk, KeyType: HASH }
+        - { AttributeName: sk, KeyType: RANGE }
+      GlobalSecondaryIndexes:
+        - IndexName: gsi1
+          KeySchema:
+            - { AttributeName: gsi1pk, KeyType: HASH }
+            - { AttributeName: gsi1sk, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+      StreamSpecification: { StreamViewType: NEW_IMAGE }
+      TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
+      SSESpecification: { SSEEnabled: true }
+
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      LifecycleConfiguration:
+        Rules:
+          - { Id: voice, Status: Enabled, Prefix: voice/, ExpirationInDays: 1 }
+          - { Id: portal, Status: Enabled, Prefix: portal-applications/, ExpirationInDays: 30 }
+          - { Id: evidence, Status: Enabled, Prefix: evidence/, ExpirationInDays: 90 }
+          - { Id: abort-mpu, Status: Enabled, AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 } }
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [POST]
+            AllowedOrigins: [!Sub "https://${Distribution.DomainName}"]
+            AllowedHeaders: ["*"]
+            MaxAge: 3000
+
+  DataBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DataBucket
+      PolicyDocument:
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!GetAtt DataBucket.Arn, !Sub "${DataBucket.Arn}/*"]
+            Condition: { Bool: { "aws:SecureTransport": "false" } }
+
+  # ------------------------------------------------------------------ queues
+  WorkDLQ:
+    Type: AWS::SQS::Queue
+    Properties: { MessageRetentionPeriod: 1209600, SqsManagedSseEnabled: true }
+  WorkQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 360
+      SqsManagedSseEnabled: true
+      RedrivePolicy: { deadLetterTargetArn: !GetAtt WorkDLQ.Arn, maxReceiveCount: 3 }
+  SubmitDLQ:
+    Type: AWS::SQS::Queue
+    Properties: { FifoQueue: true, MessageRetentionPeriod: 1209600, SqsManagedSseEnabled: true }
+  SubmitQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      FifoQueue: true
+      VisibilityTimeout: 200
+      SqsManagedSseEnabled: true
+      RedrivePolicy: { deadLetterTargetArn: !GetAtt SubmitDLQ.Arn, maxReceiveCount: 5 }
+  NotifyDLQ:
+    Type: AWS::SQS::Queue
+    Properties: { MessageRetentionPeriod: 1209600, SqsManagedSseEnabled: true }
+  NotifyQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 60
+      SqsManagedSseEnabled: true
+      RedrivePolicy: { deadLetterTargetArn: !GetAtt NotifyDLQ.Arn, maxReceiveCount: 4 }
+
+  # ------------------------------------------------------------------ identity
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${AWS::StackName}-users"
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      MfaConfiguration: "OFF"
+      AccountRecoverySetting:
+        RecoveryMechanisms: [{ Name: verified_email, Priority: 1 }]
+      Policies:
+        PasswordPolicy: { MinimumLength: 10, RequireLowercase: true, RequireNumbers: true, RequireUppercase: true, RequireSymbols: false }
+      VerificationMessageTemplate:
+        DefaultEmailOption: CONFIRM_WITH_CODE
+        EmailSubject: Your Career Agent verification code
+        EmailMessage: "Your Career Agent verification code is {####}"
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      PreventUserExistenceErrors: ENABLED
+      ExplicitAuthFlows: [ALLOW_USER_PASSWORD_AUTH, ALLOW_ADMIN_USER_PASSWORD_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
+      AccessTokenValidity: 60
+      IdTokenValidity: 60
+      RefreshTokenValidity: 7
+      TokenValidityUnits: { AccessToken: minutes, IdToken: minutes, RefreshToken: days }
+  JudgeGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      UserPoolId: !Ref UserPool
+      GroupName: judge
+      Description: Short-lived example workspaces with restricted capabilities.
+
+  TranscribeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-transcribe-stream"
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root" }
+            Action: sts:AssumeRole
+            Condition:
+              ArnLike: { "aws:PrincipalArn": !Sub "arn:aws:iam::${AWS::AccountId}:role/${AWS::StackName}-ApiFunctionRole*" }
+      Policies:
+        - PolicyName: stream-only
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action: [transcribe:StartStreamTranscriptionWebSocket]
+                Resource: "*"
+
+  # ------------------------------------------------------------------ functions
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: build/backend/
+      Handler: career_agent.handlers.api.handler
+      MemorySize: 768
+      Timeout: 29
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - S3CrudPolicy: { BucketName: !Ref DataBucket }
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref InternalSecret }
+        - Statement:
+            - Effect: Allow
+              Action: [cognito-idp:AdminCreateUser, cognito-idp:AdminSetUserPassword, cognito-idp:AdminAddUserToGroup,
+                       cognito-idp:AdminInitiateAuth, cognito-idp:AdminGetUser]
+              Resource: !GetAtt UserPool.Arn
+            - Effect: Allow
+              Action: sts:AssumeRole
+              Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${AWS::StackName}-transcribe-stream"
+            - Effect: Allow
+              Action: [polly:SynthesizeSpeech]
+              Resource: "*"
+            - Effect: Allow
+              Action: [ses:VerifyEmailIdentity, ses:GetIdentityVerificationAttributes]
+              Resource: "*"
+            - Effect: Allow
+              Action: [ssm:GetParameter]
+              Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/*"
+
+  WorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: build/backend/
+      Handler: career_agent.handlers.worker.handler
+      MemorySize: 1024
+      Timeout: 300
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - S3ReadPolicy: { BucketName: !Ref DataBucket }
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref InternalSecret }
+        - Statement:
+            - Effect: Allow
+              Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream, bedrock:Converse, bedrock:ConverseStream]
+              Resource:
+                - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*"
+                - "arn:aws:bedrock:*::foundation-model/amazon.nova-*"
+      Events:
+        Work:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt WorkQueue.Arn
+            BatchSize: 1
+            FunctionResponseTypes: [ReportBatchItemFailures]
+            ScalingConfig: { MaximumConcurrency: 5 }
+
+  RelayFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: build/backend/
+      Handler: career_agent.handlers.relay.handler
+      Timeout: 60
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref InternalSecret }
+        - SQSSendMessagePolicy: { QueueName: !GetAtt WorkQueue.QueueName }
+        - SQSSendMessagePolicy: { QueueName: !GetAtt SubmitQueue.QueueName }
+        - SQSSendMessagePolicy: { QueueName: !GetAtt NotifyQueue.QueueName }
+      Events:
+        Stream:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt Table.StreamArn
+            StartingPosition: LATEST
+            BatchSize: 25
+            MaximumRetryAttempts: 5
+            BisectBatchOnFunctionError: true
+            FunctionResponseTypes: [ReportBatchItemFailures]
+            FilterCriteria:
+              Filters:
+                - Pattern: '{"eventName": ["INSERT"], "dynamodb": {"NewImage": {"entity": {"S": ["outbox"]}}}}'
+
+  ScheduledFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: build/backend/
+      Handler: career_agent.handlers.scheduled.handler
+      Timeout: 120
+      MemorySize: 768
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - S3CrudPolicy: { BucketName: !Ref DataBucket }
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref InternalSecret }
+        - SQSSendMessagePolicy: { QueueName: !GetAtt WorkQueue.QueueName }
+        - SQSSendMessagePolicy: { QueueName: !GetAtt SubmitQueue.QueueName }
+        - SQSSendMessagePolicy: { QueueName: !GetAtt NotifyQueue.QueueName }
+        - Statement:
+            - Effect: Allow
+              Action: [cognito-idp:AdminDeleteUser]
+              Resource: !GetAtt UserPool.Arn
+
+  NotifierFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: build/backend/
+      Handler: career_agent.handlers.notifier.handler
+      Timeout: 30
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref InternalSecret }
+        - Statement:
+            - Effect: Allow
+              Action: [ses:SendEmail]
+              Resource: "*"
+            - Effect: Allow
+              Action: [ssm:GetParameter]
+              Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/*"
+      Events:
+        Notify:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt NotifyQueue.Arn
+            BatchSize: 5
+            FunctionResponseTypes: [ReportBatchItemFailures]
+
+  GateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: build/backend/
+      Handler: career_agent.handlers.gate.handler
+      Timeout: 30
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - S3ReadPolicy: { BucketName: !Ref DataBucket }
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref InternalSecret }
+
+  PortalFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: build/backend/
+      Handler: career_agent.handlers.portal.handler
+      Timeout: 29
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref InternalSecret }
+        - Statement:
+            - Effect: Allow
+              Action: [s3:PutObject]
+              Resource: !Sub "${DataBucket.Arn}/portal-applications/*"
+
+  BrowserFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: build/worker-browser/
+      Handler: src/index.handler
+      Runtime: nodejs22.x
+      MemorySize: 2048
+      Timeout: 150
+      EphemeralStorage: { Size: 1024 }
+      Environment:
+        Variables:
+          GATE_FUNCTION: !Ref GateFunction
+          ALLOWED_TARGET_HOSTS: !GetAtt Distribution.DomainName
+          HOME: /tmp
+      Policies:
+        - LambdaInvokePolicy: { FunctionName: !Ref GateFunction }
+        - Statement:
+            - Effect: Allow
+              Action: [s3:PutObject]
+              Resource: !Sub "${DataBucket.Arn}/evidence/*"
+      Events:
+        Submit:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt SubmitQueue.Arn
+            BatchSize: 1
+            FunctionResponseTypes: [ReportBatchItemFailures]
+            ScalingConfig: { MaximumConcurrency: 2 }
+
+  # ------------------------------------------------------------------ schedules
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition: { StringEquals: { "aws:SourceAccount": !Ref AWS::AccountId } }
+      Policies:
+        - PolicyName: invoke
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: [!GetAtt ScheduledFunction.Arn]
+  MonitorSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Description: Poll job sources, send due reminders, repair the outbox.
+      ScheduleExpression: rate(5 minutes)
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt ScheduledFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"task":"monitor"}'
+        RetryPolicy: { MaximumRetryAttempts: 1, MaximumEventAgeInSeconds: 240 }
+  CleanupSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Description: Remove expired example workspaces.
+      ScheduleExpression: rate(6 hours)
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt ScheduledFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"task":"cleanup"}'
+
+  # ------------------------------------------------------------------ HTTP API
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub "${AWS::StackName}-api"
+      ProtocolType: HTTP
+  ApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: $default
+      AutoDeploy: true
+      DefaultRouteSettings: { ThrottlingBurstLimit: 60, ThrottlingRateLimit: 25 }
+  JwtAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref HttpApi
+      Name: cognito
+      AuthorizerType: JWT
+      IdentitySource: ["$request.header.Authorization"]
+      JwtConfiguration:
+        Audience: [!Ref UserPoolClient]
+        Issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}"
+  ApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt ApiFunction.Arn
+      PayloadFormatVersion: "2.0"
+      TimeoutInMillis: 29000
+  PortalIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt PortalFunction.Arn
+      PayloadFormatVersion: "2.0"
+      TimeoutInMillis: 29000
+  RouteApiPrivate:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: ANY /api/{proxy+}
+      AuthorizationType: JWT
+      AuthorizerId: !Ref JwtAuthorizer
+      Target: !Sub "integrations/${ApiIntegration}"
+  RouteApiPublic:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: ANY /api/public/{proxy+}
+      Target: !Sub "integrations/${ApiIntegration}"
+  RouteInbound:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: POST /api/inbound/portal
+      Target: !Sub "integrations/${ApiIntegration}"
+  RouteTelegram:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: POST /api/telegram/webhook
+      Target: !Sub "integrations/${ApiIntegration}"
+  RoutePortalRoot:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: ANY /portal
+      Target: !Sub "integrations/${PortalIntegration}"
+  RoutePortal:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: ANY /portal/{proxy+}
+      Target: !Sub "integrations/${PortalIntegration}"
+  ApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ApiFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*"
+  PortalInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref PortalFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*"
+
+  # ------------------------------------------------------------------ web hosting
+  WebBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+  WebOac:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-web-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub "${WebBucket.Arn}/*"
+            Condition:
+              StringEquals: { "AWS:SourceArn": !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}" }
+  SpaRewrite:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub "${AWS::StackName}-spa-rewrite"
+      AutoPublish: true
+      FunctionConfig: { Comment: SPA routes to index.html, Runtime: cloudfront-js-2.0 }
+      FunctionCode: |
+        function handler(event) {
+          var r = event.request;
+          if (!r.uri.includes('.') ) { r.uri = '/index.html'; }
+          return r;
+        }
+  SecurityHeaders:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "${AWS::StackName}-security"
+        SecurityHeadersConfig:
+          StrictTransportSecurity: { AccessControlMaxAgeSec: 31536000, IncludeSubdomains: true, Override: true }
+          ContentTypeOptions: { Override: true }
+          FrameOptions: { FrameOption: DENY, Override: true }
+          ReferrerPolicy: { ReferrerPolicy: strict-origin-when-cross-origin, Override: true }
+        CustomHeadersConfig:
+          Items:
+            - { Header: Permissions-Policy, Value: "microphone=(self), camera=(), geolocation=()", Override: true }
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: Career Agent
+        HttpVersion: http2and3
+        PriceClass: PriceClass_200
+        DefaultRootObject: index.html
+        Origins:
+          - Id: web
+            DomainName: !GetAtt WebBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt WebOac.Id
+            S3OriginConfig: { OriginAccessIdentity: "" }
+          - Id: api
+            DomainName: !Sub "${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+            CustomOriginConfig: { OriginProtocolPolicy: https-only, OriginSSLProtocols: [TLSv1.2] }
+        DefaultCacheBehavior:
+          TargetOriginId: web
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          ResponseHeadersPolicyId: !Ref SecurityHeaders
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt SpaRewrite.FunctionMetadata.FunctionARN
+        CacheBehaviors:
+          - PathPattern: /api/*
+            TargetOriginId: api
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            Compress: true
+          - PathPattern: /portal*
+            TargetOriginId: api
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            Compress: true
+
+  # ------------------------------------------------------------------ operations
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Condition: HasAlertEmail
+    Properties:
+      Subscription: [{ Endpoint: !Ref AlertEmail, Protocol: email }]
+  DeadLetterAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAlertEmail
+    Properties:
+      AlarmDescription: Messages landed in a dead-letter queue.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions: [{ Name: QueueName, Value: !GetAtt SubmitDLQ.QueueName }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+  WorkDeadLetterAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAlertEmail
+    Properties:
+      AlarmDescription: Work messages landed in the dead-letter queue.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions: [{ Name: QueueName, Value: !GetAtt WorkDLQ.QueueName }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+  CostBudget:
+    Type: AWS::Budgets::Budget
+    Condition: HasAlertEmail
+    Properties:
+      Budget:
+        BudgetName: !Sub "${AWS::StackName}-monthly"
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit: { Amount: !Ref MonthlyBudgetUsd, Unit: USD }
+      NotificationsWithSubscribers:
+        - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 50 }
+          Subscribers: [{ SubscriptionType: EMAIL, Address: !Ref AlertEmail }]
+        - Notification: { NotificationType: FORECASTED, ComparisonOperator: GREATER_THAN, Threshold: 90 }
+          Subscribers: [{ SubscriptionType: EMAIL, Address: !Ref AlertEmail }]
+
+Outputs:
+  AppUrl:
+    Value: !Sub "https://${Distribution.DomainName}"
+  PortalUrl:
+    Value: !Sub "https://${Distribution.DomainName}/portal"
+  ApiEndpoint:
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  WebBucketName:
+    Value: !Ref WebBucket
+  DistributionId:
+    Value: !Ref Distribution
+  UserPoolId:
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
+  TableName:
+    Value: !Ref Table
