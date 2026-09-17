@@ -1,3 +1,32 @@
+/* Tailwind utilities, layered alongside the hand-built design system.
+   Preflight is intentionally omitted: this stylesheet already sets its own
+   box-sizing and element defaults, and Tailwind's reset would unstyle the
+   component classes every page depends on. Theme values are mapped onto the
+   existing custom properties so a utility and a component class can never
+   drift apart. */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+@source "./";
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-line: var(--line);
+  --color-ink: var(--ink);
+  --color-ink2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-mint: var(--mint);
+  --color-amber: var(--amber);
+  --color-rose: var(--rose);
+  --font-sans: var(--font);
+  --font-mono: var(--mono);
+  --animate-marquee: marquee 46s linear infinite;
+}
+
+@keyframes marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+
 /* Career Agent design system — "Aurora" */
 :root {
   /* Warm near-black, not blue-black: the blue/violet cast is what reads as
@@ -357,6 +386,47 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .viz-colbar { width: 100%; max-width: 24px; border-radius: 4px 4px 0 0; transition: height 0.6s cubic-bezier(.2, .8, .2, 1); }
 .viz-axis-x { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 10px; margin-top: 9px; }
 .viz-axis-x span { text-align: center; font-size: 12px; color: var(--muted); }
+
+/* ---------- effects ---------- */
+/* A light that travels around a border. @property makes the angle animatable;
+   the mask punches out the middle so only the 1px ring is painted. Purely
+   decorative - it draws over the card and never affects what is inside it. */
+@property --beam-angle { syntax: "<angle>"; initial-value: 0deg; inherits: false; }
+.border-beam { position: relative; }
+.border-beam::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: conic-gradient(from var(--beam-angle), transparent 0 62%, rgba(200, 244, 85, 0.9) 76%, #eaffb8 82%, transparent 92%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  animation: beam 6s linear infinite;
+  pointer-events: none;
+}
+@keyframes beam { to { --beam-angle: 360deg; } }
+
+/* A highlight that sweeps across a button. Sits above the fill and below nothing,
+   so the label is never obscured. */
+.shimmer { position: relative; overflow: hidden; isolation: isolate; }
+.shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(110deg, transparent 35%, rgba(255, 255, 255, 0.45) 50%, transparent 65%);
+  transform: translateX(-100%);
+  animation: shimmer-sweep 4.5s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes shimmer-sweep { 0%, 55% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .border-beam::before, .shimmer::after { animation: none; }
+  .shimmer::after { opacity: 0; }
+}
 
 /* ---------- entrance ---------- */
 /* Deliberately CSS, not an observer. The animation's final frame is the visible
