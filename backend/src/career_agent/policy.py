@@ -107,8 +107,8 @@ class CedarEngine:
         try:
             ann = diag.id_annotations_by_reason
             reasons = [ann.get(r, r) for r in reasons] if isinstance(ann, dict) else reasons
-        except Exception:
-            pass
+        except (AttributeError, TypeError):  # older cedarpy without @id annotation mapping
+            reasons = list(diag.reasons)
         return Decision(allowed=result.allowed, reasons=reasons, engine="cedar", errors=list(diag.errors))
 
 

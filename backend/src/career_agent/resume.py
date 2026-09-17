@@ -126,8 +126,8 @@ def verify_facts(facts: dict, text: str) -> dict:
 def heuristic_facts(text: str) -> dict:
     email = re.search(r"[\w.+-]+@[\w-]+\.[\w.]+", text)
     phone = re.search(r"\+?\d[\d \-]{8,}\d", text)
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    skills_line = next((l for l in lines if l.lower().startswith("skills")), "")
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    skills_line = next((ln for ln in lines if ln.lower().startswith("skills")), "")
     skills = [s.strip() for s in re.split(r"[,:|•]", skills_line)[1:] if s.strip()]
     grad = re.search(r"(20\d{2})", text)
     return {

@@ -69,10 +69,10 @@ DEMO_PREFERENCES = {"roles": ["intern"], "locations": ["Bengaluru", "Pune", "Rem
 
 def minimal_pdf(text: str) -> bytes:
     """Tiny dependency-free text PDF so the example resume is a real uploadable file."""
-    lines = [l.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)") for l in text.splitlines()]
+    lines = [ln.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)") for ln in text.splitlines()]
     stream_lines = ["BT", "/F1 10 Tf", "13 TL", "50 800 Td"]
-    for l in lines:
-        stream_lines.append(f"({l.encode('latin-1', 'replace').decode('latin-1')}) Tj T*")
+    for ln in lines:
+        stream_lines.append(f"({ln.encode('latin-1', 'replace').decode('latin-1')}) Tj T*")
     stream_lines.append("ET")
     content = zlib.compress("\n".join(stream_lines).encode("latin-1", "replace"))
     objs = [
