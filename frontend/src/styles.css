@@ -589,3 +589,82 @@ html { scroll-behavior: smooth; }
 .list-row:last-child { border-bottom: 0; }
 .list-row .chips { margin-top: 8px; }
 .plain-list { list-style: none; padding-left: 0; margin: 0; }
+
+/* ---------- agent conversation ----------
+   Assistant turns run full width. A bubble capped at 82% is fine for "ok" and
+   bad for a four-point answer with job cards under it, which is what this agent
+   actually returns. */
+.split.agent-split { grid-template-columns: minmax(0, 1fr) 300px; }
+/* A definite height, not min-height. With min-height the card grows with the
+   conversation and the whole page scrolls instead of the thread, which loses
+   the composer off the bottom of the screen. 64px topbar + 26px content pad
+   + 60px content pad below. */
+.chat-card { display: flex; flex-direction: column; height: calc(100vh - 156px); height: calc(100dvh - 156px);
+  min-height: 420px; padding: 0; overflow: hidden; }
+.thread-wrap { position: relative; flex: 1; min-height: 0; display: flex; }
+.thread { flex: 1; overflow-y: auto; padding: 22px 20px; display: flex; flex-direction: column; gap: 22px; scroll-behavior: smooth; }
+.thread.compact { max-height: 360px; }
+.thread-empty { margin: auto; text-align: center; max-width: 42ch; }
+.thread-empty h3 { font-family: var(--display); font-size: 19px; color: var(--ink); margin-bottom: 6px; }
+
+.turn { display: flex; flex-direction: column; gap: 8px; min-width: 0; animation: fadeIn 0.22s ease; }
+.turn.user { align-items: flex-end; }
+.turn.user .bubble { max-width: min(82%, 60ch); padding: 11px 15px; border-radius: 16px 16px 6px 16px;
+  background: var(--grad); color: var(--accent-ink); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.turn.agent { align-items: stretch; }
+.turn-meta { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--muted); }
+.turn-foot { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 4px; }
+.turn-copy { margin-left: auto; background: none; border: 0; color: var(--muted); font: inherit; font-size: 11.5px;
+  cursor: pointer; padding: 2px 6px; border-radius: var(--radius-sm); }
+.turn-copy:hover { color: var(--ink); background: var(--panel-2); }
+.turn-results { display: grid; gap: 8px; margin-top: 6px; }
+
+/* The thinking trail is real: these are the operation's own progress entries. */
+.steps { display: flex; flex-direction: column; gap: 7px; }
+.step { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.step.done { color: var(--faint); }
+.step.now { color: var(--ink-2); }
+.did { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+.did-item { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--mint); }
+
+.to-bottom { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 2;
+  height: 32px; padding: 0 14px; border-radius: 99px; border: 1px solid var(--line-strong);
+  background: var(--panel-solid); color: var(--ink-2); font: inherit; font-size: 12.5px; cursor: pointer;
+  box-shadow: var(--shadow); }
+.to-bottom:hover { color: var(--ink); border-color: var(--accent); }
+
+.composer-wrap { padding: 14px 16px 16px; border-top: 1px solid var(--line); background: var(--bg-2); }
+.composer { display: flex; align-items: flex-end; gap: 10px; padding: 8px 8px 8px 14px;
+  border: 1px solid var(--line-strong); border-radius: 14px; background: var(--panel-solid);
+  transition: border-color 0.15s, box-shadow 0.15s; }
+.composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(229, 9, 20, 0.16); }
+.composer textarea { flex: 1; min-width: 0; resize: none; border: 0; outline: none; background: transparent;
+  color: var(--ink); font: inherit; line-height: 1.5; padding: 8px 0; max-height: 180px; }
+.composer textarea::placeholder { color: var(--faint); }
+.composer-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.composer-hint { margin-top: 8px; }
+
+/* Markdown inside a reply. The agent answers in short bullets; this is what
+   makes them read as bullets instead of literal "- " at the start of a line. */
+.md { display: flex; flex-direction: column; gap: 10px; line-height: 1.6; overflow-wrap: anywhere; }
+.md p { margin: 0; }
+.md ul, .md ol { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 6px; }
+.md li { padding-left: 2px; }
+.md li::marker { color: var(--muted); }
+.md h3, .md h4, .md h5 { font-family: var(--display); color: var(--ink); margin: 2px 0 0; }
+.md h3 { font-size: 17px; } .md h4 { font-size: 15px; } .md h5 { font-size: 14px; }
+.md code { font-family: var(--mono); font-size: 0.9em; padding: 1px 5px; border-radius: var(--radius-sm);
+  background: var(--panel-2); border: 1px solid var(--line); }
+.md strong { color: var(--ink); font-weight: 650; }
+.md a { color: var(--cyan); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+
+@media (max-width: 900px) {
+  .split.agent-split { grid-template-columns: minmax(0, 1fr); }
+  /* the bottom tab bar takes its own strip on small screens */
+  .chat-card { height: calc(100vh - 210px); height: calc(100dvh - 210px); }
+}
+@media (max-width: 560px) {
+  .thread { padding: 16px 14px; gap: 18px; }
+  .turn.user .bubble { max-width: 92%; }
+  .composer-wrap { padding: 12px; }
+}
