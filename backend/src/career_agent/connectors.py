@@ -28,6 +28,14 @@ CONNECTORS: dict[str, dict] = {
     "lever-public": {"label": "Lever public job boards", "environment": "live", "status": "verified_live",
                      "capabilities": ["discover", "read_details"],
                      "note": "Public postings endpoint. Submitting needs the employer's key, so applying is a prepared manual handoff."},
+    "amazon-jobs": {
+        "label": "Amazon Jobs",
+        "environment": "live", "status": "verified_live",
+        "capabilities": ["discover", "read_details"],
+        "note": ("amazon.jobs serves its own search as public JSON. The only board here that publishes "
+                 "basic and preferred qualifications separately, which is the shape the matcher wants. "
+                 "Submitting needs an Amazon candidate account, so applying is a prepared manual handoff."),
+    },
     "oraclehcm-public": {
         "label": "Oracle HCM careers sites (JPMorgan Chase)",
         "environment": "live", "status": "verified_live",

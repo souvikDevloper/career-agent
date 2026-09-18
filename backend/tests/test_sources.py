@@ -7,7 +7,7 @@ depends on cannot quietly stop being populated.
 import unittest
 
 from career_agent.scoring import work_mode_of
-from career_agent.sources import ashby, greenhouse, lever, oraclehcm, workday
+from career_agent.sources import amazon, ashby, greenhouse, lever, oraclehcm, workday
 
 
 class LeverNormalize(unittest.TestCase):
@@ -213,3 +213,46 @@ class OracleHcmNormalize(unittest.TestCase):
         for bad in ("jpmc", "", "../x:CX_1001", "jpmc:CX_1001:INDIA", "jpmc:CX 1001"):
             with self.assertRaises(ValueError, msg=bad):
                 oraclehcm.parse_spec(bad)
+
+
+class AmazonNormalize(unittest.TestCase):
+    def raw(self, **over):
+        base = {"id_icims": "10552765", "title": "Software Dev Engineer Intern",
+                "job_path": "/en/jobs/10552765/software-dev-engineer-intern",
+                "normalized_location": "Bengaluru, Karnataka, IND", "country_code": "IND",
+                "posted_date": "September 18, 2026", "description_short": "Build services.",
+                "basic_qualifications": "Python, data structures.",
+                "preferred_qualifications": "AWS experience.", "job_category": "Software Development"}
+        base.update(over)
+        return base
+
+    def test_qualifications_are_kept_as_written(self):
+        """This board publishes requirements as requirements rather than prose."""
+        got = amazon.normalize(self.raw())["description"]
+        self.assertIn("Basic qualifications", got)
+        self.assertIn("Python, data structures", got)
+        self.assertIn("Preferred qualifications", got)
+
+    def test_an_internship_is_recognised_from_the_title(self):
+        """is_intern is documented but absent from the search response."""
+        self.assertEqual(amazon.normalize(self.raw())["employment_type"], "internship")
+        self.assertEqual(amazon.normalize(self.raw(title="Internship - Cloud"))["employment_type"], "internship")
+
+    def test_a_word_merely_starting_with_intern_is_not_one(self):
+        for title in ("International Trade Manager", "Internal Audit Lead"):
+            self.assertIsNone(amazon.normalize(self.raw(title=title))["employment_type"], title)
+
+    def test_the_url_is_the_posting_a_person_can_open(self):
+        job = amazon.normalize(self.raw())
+        self.assertEqual(job["url"], "https://www.amazon.jobs/en/jobs/10552765/software-dev-engineer-intern")
+        self.assertEqual(job["apply"]["kind"], "external")
+
+    def test_country_is_carried_for_filtering(self):
+        self.assertEqual(amazon.normalize(self.raw())["country"], "IND")
+
+    def test_spec_parsing(self):
+        self.assertEqual(amazon.parse_spec("IND"), ("IND", ""))
+        self.assertEqual(amazon.parse_spec("IND:intern"), ("IND", "intern"))
+        for bad in ("", "INDIA_LONG_NAME", "IND:" + "x" * 80):
+            with self.assertRaises(ValueError, msg=bad):
+                amazon.parse_spec(bad)
