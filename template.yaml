@@ -11,6 +11,22 @@ Parameters:
   ModelId:
     Type: String
     Default: us.amazon.nova-2-lite-v1:0
+  ModelProvider:
+    Type: String
+    Default: bedrock
+    AllowedValues: [bedrock, openai]
+    Description: >
+      Which model serves the agent. Bedrock is the default and the model this project is built on.
+      "openai" selects an OpenAI-compatible endpoint and exists only because this account cannot
+      reach Bedrock; the UI always reports which engine answered.
+  ModelApiBase:
+    Type: String
+    Default: ""
+    Description: Base URL of the OpenAI-compatible endpoint, e.g. https://api.groq.com/openai/v1
+  FallbackModelId:
+    Type: String
+    Default: ""
+    Description: Model id at that endpoint.
   GreenhouseBoards:
     Type: String
     Default: ""
@@ -52,6 +68,7 @@ Parameters:
       UI itself on the same origin. Set to true once the account is activated.
 
 Conditions:
+  UseFallbackModel: !Equals [!Ref ModelProvider, openai]
   HasAlertEmail: !Not [!Equals [!Ref AlertEmail, ""]]
   WithCloudFront: !Equals [!Ref UseCloudFront, "true"]
   WithoutCloudFront: !Equals [!Ref UseCloudFront, "false"]
@@ -79,6 +96,10 @@ Globals:
         PUBLIC_BASE_URL: !If [WithCloudFront, !Sub "https://${Distribution.DomainName}", !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"]
         API_BASE_URL: !If [WithCloudFront, !Sub "https://${Distribution.DomainName}", !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"]
         INTERNAL_SECRET_ARN: !Ref InternalSecret
+        MODEL_PROVIDER: !Ref ModelProvider
+        MODEL_API_BASE: !Ref ModelApiBase
+        FALLBACK_MODEL_ID: !Ref FallbackModelId
+        MODEL_API_KEY_PARAM: !If [UseFallbackModel, !Sub "/${AWS::StackName}/model-api-key", !Ref "AWS::NoValue"]
         GREENHOUSE_BOARDS: !Ref GreenhouseBoards
         LEVER_BOARDS: !Ref LeverBoards
         ASHBY_BOARDS: !Ref AshbyBoards
@@ -298,6 +319,11 @@ Resources:
               Resource:
                 - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*"
                 - "arn:aws:bedrock:*::foundation-model/amazon.nova-*"
+            # The worker is where the model runs, so it is the function that reads
+            # the fallback provider's key when one is configured.
+            - Effect: Allow
+              Action: [ssm:GetParameter]
+              Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/*"
       Events:
         Work:
           Type: SQS

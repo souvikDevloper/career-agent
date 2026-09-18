@@ -1,4 +1,4 @@
-"""Amazon Bedrock (Nova 2 Lite) access through the Converse API.
+"""Model access. Amazon Bedrock by default, with a selectable fallback.
 
 All model output is treated as untrusted data: JSON is parsed defensively and
 validated by callers; nothing here grants permissions or performs side effects.
@@ -7,6 +7,7 @@ validated by callers; nothing here grants permissions or performs side effects.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from typing import Any
@@ -48,24 +49,10 @@ def client():
 
 def converse(system: str, content: list[dict], *, max_tokens: int = 1500, temperature: float = 0.2,
              correlation_id: str | None = None) -> tuple[str, dict]:
-    started = time.time()
-    try:
-        res = client().converse(
-            modelId=settings().model_id,
-            system=[{"text": system}],
-            messages=[{"role": "user", "content": content}],
-            inferenceConfig={"maxTokens": max_tokens, "temperature": temperature},
-        )
-    except Exception as exc:  # botocore ClientError, throttling, access denied
-        log(logger, "model.error", error=type(exc).__name__, detail=str(exc)[:300], correlation_id=correlation_id)
-        raise ModelUnavailable(str(exc)) from exc
-    parts = res.get("output", {}).get("message", {}).get("content", [])
-    text = "".join(p.get("text", "") for p in parts if "text" in p)
-    usage = res.get("usage", {})
-    log(logger, "model.call", model=settings().model_id, input_tokens=usage.get("inputTokens"),
-        output_tokens=usage.get("outputTokens"), stop_reason=res.get("stopReason"),
-        ms=int((time.time() - started) * 1000), correlation_id=correlation_id)
-    return text, usage
+    """A single user turn. Returns (text, usage)."""
+    res = chat(system, [{"role": "user", "content": content}], max_tokens=max_tokens,
+               temperature=temperature, correlation_id=correlation_id)
+    return response_text(res), res.get("usage", {})
 
 
 def _close_truncated(fragment: str) -> str | None:
@@ -184,3 +171,187 @@ def json_call(system: str, prompt: str, *, documents: list[dict] | None = None, 
         text2, _ = converse(system, [{"text": f"Convert this into valid JSON only, no prose:\n{text[:6000]}"}],
                             max_tokens=max_tokens, temperature=0, correlation_id=correlation_id)
         return extract_json(text2)
+
+
+# ---------------------------------------------------------------------------
+# Providers
+#
+# Bedrock is the model this project is built on and stays the default. This
+# account cannot reach it: every runtime call returns ValidationException
+# "Operation not allowed", for every model family and both APIs, while the
+# control plane answers normally - an account-level hold, not a permissions or
+# model-access problem. SageMaker is not a way round it either; endpoint quota
+# on this account is 0 for every instance type except ml.t2.medium, which has
+# no GPU.
+#
+# So the provider is selectable. A second provider speaks the OpenAI chat
+# completions shape, which most hosted models offer, and its response is
+# translated into Bedrock's Converse shape so that every caller - including the
+# agent's tool loop - stays written against one format. Switching back when AWS
+# lifts the hold is one environment variable, not a code change.
+#
+# Which engine answered is reported, never hidden: the reply already carries a
+# runtime label to the UI, and a demo that quietly swaps its model out is a
+# demo that lies.
+# ---------------------------------------------------------------------------
+
+_api_key: str | None = None
+
+
+def _openai_key() -> str:
+    """Read the key from SSM once per execution environment, never from the repo."""
+    global _api_key
+    if _api_key is None:
+        param = settings().model_api_key_param
+        if param:
+            import boto3
+
+            try:
+                _api_key = boto3.client("ssm").get_parameter(Name=param, WithDecryption=True)["Parameter"]["Value"].strip()
+            except Exception as exc:
+                raise ModelUnavailable(f"could not read the model API key: {type(exc).__name__}") from exc
+        else:
+            _api_key = os.environ.get("MODEL_API_KEY", "")
+    if not _api_key:
+        raise ModelUnavailable("no API key configured for the fallback model provider")
+    return _api_key
+
+
+def _blocks_to_text(content: list[dict]) -> str:
+    """Flatten Bedrock content blocks. Documents become their text, not a file."""
+    parts = []
+    for block in content or []:
+        if "text" in block:
+            parts.append(block["text"])
+        elif "document" in block:
+            doc = block["document"]
+            raw = (doc.get("source") or {}).get("bytes") or b""
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf8", "ignore")
+            parts.append(f"[{doc.get('name', 'document')}]\n{raw}")
+    return "\n\n".join(p for p in parts if p)
+
+
+def _to_openai_messages(system: str, messages: list[dict]) -> list[dict]:
+    out: list[dict] = [{"role": "system", "content": system}] if system else []
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content") or []
+        tool_results = [b["toolResult"] for b in content if isinstance(b, dict) and "toolResult" in b]
+        tool_uses = [b["toolUse"] for b in content if isinstance(b, dict) and "toolUse" in b]
+        if tool_results:
+            # Each result is its own message in the OpenAI shape.
+            for result in tool_results:
+                out.append({"role": "tool", "tool_call_id": result.get("toolUseId", ""),
+                            "content": _blocks_to_text(result.get("content") or [])})
+            continue
+        entry: dict[str, Any] = {"role": "assistant" if role == "assistant" else "user",
+                                 "content": _blocks_to_text(content)}
+        if tool_uses:
+            entry["tool_calls"] = [{"id": u.get("toolUseId", ""), "type": "function",
+                                    "function": {"name": u.get("name", ""),
+                                                 "arguments": json.dumps(u.get("input") or {})}}
+                                   for u in tool_uses]
+            entry["content"] = entry["content"] or None
+        out.append(entry)
+    return out
+
+
+def _to_bedrock_response(data: dict) -> dict:
+    """Translate an OpenAI completion into the Converse response shape."""
+    choice = (data.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    blocks: list[dict] = []
+    text = message.get("content")
+    if text:
+        blocks.append({"text": text})
+    for call in message.get("tool_calls") or []:
+        fn = call.get("function") or {}
+        try:
+            arguments = json.loads(fn.get("arguments") or "{}")
+        except json.JSONDecodeError:
+            arguments = {}
+        blocks.append({"toolUse": {"toolUseId": call.get("id") or fn.get("name", ""),
+                                   "name": fn.get("name", ""), "input": arguments}})
+    finish = choice.get("finish_reason") or ""
+    usage = data.get("usage") or {}
+    return {
+        "output": {"message": {"role": "assistant", "content": blocks or [{"text": ""}]}},
+        "stopReason": {"tool_calls": "tool_use", "length": "max_tokens"}.get(finish, "end_turn"),
+        "usage": {"inputTokens": usage.get("prompt_tokens"), "outputTokens": usage.get("completion_tokens")},
+    }
+
+
+def _openai_chat(system: str, messages: list[dict], tools: list[dict] | None,
+                 max_tokens: int, temperature: float) -> dict:
+    import urllib.error
+    import urllib.request
+
+    s = settings()
+    payload: dict[str, Any] = {
+        "model": s.fallback_model_id,
+        "messages": _to_openai_messages(system, messages),
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    if tools:
+        payload["tools"] = [{"type": "function",
+                             "function": {"name": t["toolSpec"]["name"],
+                                          "description": t["toolSpec"]["description"],
+                                          "parameters": t["toolSpec"]["inputSchema"]["json"]}}
+                            for t in tools]
+    request = urllib.request.Request(
+        s.model_api_base.rstrip("/") + "/chat/completions",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json", "Authorization": "Bearer " + _openai_key()},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response:  # noqa: S310 - fixed https base from config
+            return _to_bedrock_response(json.loads(response.read().decode()))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf8", "ignore")[:300]
+        raise ModelUnavailable(f"model provider returned {exc.code}: {detail}") from exc
+    except Exception as exc:
+        raise ModelUnavailable(f"model provider unreachable: {type(exc).__name__}") from exc
+
+
+def provider() -> str:
+    return "openai" if settings().model_provider == "openai" else "bedrock"
+
+
+def chat(system: str, messages: list[dict], *, tools: list[dict] | None = None, max_tokens: int = 1500,
+         temperature: float = 0.2, correlation_id: str | None = None) -> dict:
+    """One call, in Bedrock's Converse response shape, whichever provider answered."""
+    started = time.time()
+    which = provider()
+    try:
+        if which == "openai":
+            res = _openai_chat(system, messages, tools, max_tokens, temperature)
+        else:
+            kwargs: dict[str, Any] = {
+                "modelId": settings().model_id,
+                "messages": messages,
+                "inferenceConfig": {"maxTokens": max_tokens, "temperature": temperature},
+            }
+            if system:
+                kwargs["system"] = [{"text": system}]
+            if tools:
+                kwargs["toolConfig"] = {"tools": tools}
+            res = client().converse(**kwargs)
+    except Exception as exc:
+        log(logger, "model.error", provider=which, error=type(exc).__name__,
+            detail=str(exc)[:300], correlation_id=correlation_id)
+        raise ModelUnavailable(str(exc)) from exc
+    usage = res.get("usage") or {}
+    log(logger, "model.call", provider=which,
+        model=settings().fallback_model_id if which == "openai" else settings().model_id,
+        input_tokens=usage.get("inputTokens"), output_tokens=usage.get("outputTokens"),
+        stop_reason=res.get("stopReason"), ms=int((time.time() - started) * 1000),
+        correlation_id=correlation_id)
+    return res
+
+
+def response_text(res: dict) -> str:
+    parts = ((res.get("output") or {}).get("message") or {}).get("content") or []
+    return "".join(p.get("text", "") for p in parts if isinstance(p, dict) and "text" in p)

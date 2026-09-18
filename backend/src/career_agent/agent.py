@@ -264,7 +264,9 @@ def run(ctx: ToolContext, history: list[dict]) -> tuple[str, str]:
                 raise
             log(logger, "agent.strands_failed", error=type(exc).__name__, detail=str(exc)[:200],
                 correlation_id=ctx.correlation_id)
-        return _converse_loop(ctx, history), "bedrock-converse"
+        from . import llm as _llm
+
+        return _converse_loop(ctx, history), f"{_llm.provider()}-converse"
     finally:
         CTX.current = None
 
@@ -332,8 +334,10 @@ def _converse_loop(ctx: ToolContext, history: list[dict]) -> str:
 
     messages = list(history) + [{"role": "user", "content": [{"text": ctx.user_text}]}]
     for _ in range(6):
-        res = llm.client().converse(modelId=cfg().model_id, system=[{"text": SYSTEM_PROMPT}], messages=messages,
-                                    toolConfig={"tools": _tool_specs()}, inferenceConfig={"maxTokens": 900, "temperature": 0.3})
+        # Provider-agnostic: llm.chat returns the Converse response shape whichever
+        # engine answered, so this loop is written once.
+        res = llm.chat(SYSTEM_PROMPT, messages, tools=_tool_specs(), max_tokens=900, temperature=0.3,
+                       correlation_id=ctx.correlation_id)
         msg = res["output"]["message"]
         messages.append(msg)
         uses = [c["toolUse"] for c in msg.get("content", []) if "toolUse" in c]

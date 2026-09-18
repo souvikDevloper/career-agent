@@ -16,6 +16,13 @@ class Settings:
     bucket: str = field(default_factory=lambda: _env("BUCKET_NAME"))
     region: str = field(default_factory=lambda: _env("AWS_REGION", "us-east-1"))
     model_id: str = field(default_factory=lambda: _env("MODEL_ID", "us.amazon.nova-2-lite-v1:0"))
+    # Bedrock is the default and the model this project is built on. "openai"
+    # selects an OpenAI-compatible endpoint, used only while Bedrock is blocked
+    # on this account; which one answered is always reported, never hidden.
+    model_provider: str = field(default_factory=lambda: _env("MODEL_PROVIDER", "bedrock").lower())
+    model_api_base: str = field(default_factory=lambda: _env("MODEL_API_BASE"))
+    model_api_key_param: str = field(default_factory=lambda: _env("MODEL_API_KEY_PARAM"))
+    fallback_model_id: str = field(default_factory=lambda: _env("FALLBACK_MODEL_ID"))
     work_queue_url: str = field(default_factory=lambda: _env("WORK_QUEUE_URL"))
     submit_queue_url: str = field(default_factory=lambda: _env("SUBMIT_QUEUE_URL"))
     notify_queue_url: str = field(default_factory=lambda: _env("NOTIFY_QUEUE_URL"))
