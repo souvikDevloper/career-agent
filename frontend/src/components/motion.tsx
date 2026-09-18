@@ -72,3 +72,10 @@ export function Ticker({ value, className }: { value: number; className?: string
   }, [value, still]);
   return <span className={className}>{shown}</span>;
 }
+
+// Re-export modern kinetic motion primitives
+export { SmoothScroll } from "./motion/SmoothScroll";
+export { AtmosphericCanvas } from "./motion/AtmosphericCanvas";
+export { SpotlightCard } from "./motion/SpotlightCard";
+export { MagneticButton } from "./motion/MagneticButton";
+export { KineticScoreGauge } from "./motion/KineticScoreGauge";

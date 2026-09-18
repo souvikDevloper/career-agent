@@ -87,7 +87,7 @@ export function ConnectorsPage() {
 
   return (
     <Shell title="Connectors">
-      <section className="card rise">
+      <section className="card rise glass-stripe">
           <div className="between">
             <div>
               <p className="eyebrow"><ILink /> Model Context Protocol</p>
@@ -159,7 +159,7 @@ export function ConnectorsPage() {
           )}
         </section>
 
-      <section className="card rise rise-1">
+      <section className="card rise rise-1 glass-stripe">
         <p className="eyebrow">Set it up</p>
         <h3 className="card-title">Add the connector</h3>
         <p className="muted">
@@ -169,7 +169,7 @@ export function ConnectorsPage() {
         <div className="field">
           <label className="label" htmlFor="mcp-endpoint">Endpoint</label>
           <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-            <input id="mcp-endpoint" className="input" style={{ flex: "1 1 220px", minWidth: 0 }} readOnly value={endpoint}
+            <input id="mcp-endpoint" className="input input-glow" style={{ flex: "1 1 220px", minWidth: 0 }} readOnly value={endpoint}
               onFocus={(e) => e.currentTarget.select()} />
             <button className="btn ghost" onClick={() => copy(endpoint, "Endpoint")}>Copy</button>
           </div>
@@ -189,7 +189,7 @@ export function ConnectorsPage() {
         <p className="hint"><IShield /> Signing out everywhere ends every connection you have granted.</p>
       </section>
 
-      <section className="card rise rise-2">
+      <section className="card rise rise-2 glass-stripe">
           <p className="eyebrow"><IGlobe /> Job sources</p>
           <h3 className="card-title">Where openings come from</h3>
           {sources.length === 0 ? (
@@ -219,7 +219,7 @@ export function ConnectorsPage() {
           )}
         </section>
 
-      <section className="card rise rise-3">
+      <section className="card rise rise-3 glass-stripe">
           <p className="eyebrow"><ILayers /> Capabilities</p>
           <h3 className="card-title">What each connector may actually do</h3>
           <ul className="stack plain-list">

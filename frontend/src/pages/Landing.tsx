@@ -5,6 +5,10 @@ import { BrandMark } from "../components/Shell";
 import { Badge, ScoreRing, Spinner, useToast } from "../components/ui";
 import { IArrow, IBolt, IBrain, ICheck, IEye, IFile, IMic, IRadar, ISend, IShield, ITarget } from "../components/Icons";
 import { Spotlight, useScrolled } from "../components/motion";
+import { AtmosphericCanvas } from "../components/motion/AtmosphericCanvas";
+import { SpotlightCard } from "../components/motion/SpotlightCard";
+import { MagneticButton } from "../components/motion/MagneticButton";
+import { motion } from "motion/react";
 import { AuroraField } from "../components/AuroraField";
 
 const STEPS = [
@@ -80,29 +84,71 @@ export function Landing() {
         <Link to="/login" className="btn sm">Sign in</Link>
       </header>
 
-      <section className="hero">
-        <div>
-          <div className="rise"><Badge tone="violet" live>Built on AWS · WeMakeDevs “Ship It”</Badge></div>
-          <h1 className="rise rise-1" style={{ marginTop: 18 }}>
-            Your career agent that <span className="grad-text">finds, applies and follows up</span> — truthfully.
-          </h1>
-          <p className="lede rise rise-2">
-            Talk to it. It watches for new openings while your laptop is off, explains exactly why you fit, fills
-            applications only with facts you verified, submits under rules you set, and turns recruiter replies into
-            deadlines and interview prep.
-          </p>
-          <div className="hero-cta rise rise-3">
-            <button className="btn primary lg shimmer" onClick={tryExample} disabled={starting}>
-              {starting ? <Spinner /> : <IBolt size={18} />} Try the example workspace
-            </button>
-            <Link to="/signup" className="btn lg">Use my own profile <IArrow size={16} /></Link>
+      <div style={{ position: "relative" }}>
+        <AtmosphericCanvas />
+        <section className="hero">
+          <div>
+            <div className="telemetry-pill rise glass-stripe" style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "6px 14px", borderRadius: 999, fontSize: 13, marginBottom: 16 }}>
+              <span className="telemetry-dot" />
+              ✨ Autonomous Agent Pipeline Online · 1,200+ Opportunities Synced
+            </div>
+            <div className="rise"><Badge tone="violet" live>Built on AWS · WeMakeDevs “Ship It”</Badge></div>
+            <h1 className="rise rise-1" style={{ marginTop: 18 }}>
+              {["Your", "career", "agent", "that"].map((word, i) => (
+                <motion.span
+                  key={`w1-${i}`}
+                  initial={{ y: 40, opacity: 0 }}
+                  animate={{ y: 0, opacity: 1 }}
+                  transition={{ delay: i * 0.06 }}
+                  style={{ display: "inline-block", marginRight: "0.25em" }}
+                >
+                  {word}
+                </motion.span>
+              ))}
+              <span className="grad-text">
+                {["finds,", "applies", "and", "follows", "up"].map((word, i) => (
+                  <motion.span
+                    key={`w2-${i}`}
+                    initial={{ y: 40, opacity: 0 }}
+                    animate={{ y: 0, opacity: 1 }}
+                    transition={{ delay: (4 + i) * 0.06 }}
+                    style={{ display: "inline-block", marginRight: "0.25em" }}
+                  >
+                    {word}
+                  </motion.span>
+                ))}
+              </span>
+              {["—", "truthfully."].map((word, i) => (
+                <motion.span
+                  key={`w3-${i}`}
+                  initial={{ y: 40, opacity: 0 }}
+                  animate={{ y: 0, opacity: 1 }}
+                  transition={{ delay: (9 + i) * 0.06 }}
+                  style={{ display: "inline-block", marginRight: i === 1 ? 0 : "0.25em" }}
+                >
+                  {word}
+                </motion.span>
+              ))}
+            </h1>
+            <p className="lede rise rise-2">
+              Talk to it. It watches for new openings while your laptop is off, explains exactly why you fit, fills
+              applications only with facts you verified, submits under rules you set, and turns recruiter replies into
+              deadlines and interview prep.
+            </p>
+            <div className="hero-cta rise rise-3">
+              <MagneticButton className="btn primary lg shimmer" onClick={tryExample} disabled={starting}>
+                {starting ? <Spinner /> : <IBolt size={18} />} Try the example workspace
+              </MagneticButton>
+              <MagneticButton className="btn lg" onClick={() => navigate("/signup")}>
+                Use my own profile <IArrow size={16} />
+              </MagneticButton>
+            </div>
+            <div className="trust rise rise-3">
+              <Badge tone="mint">No invented qualifications</Badge>
+              <Badge tone="cyan">Every action authorized by Cedar</Badge>
+              <Badge tone="amber">Test employer clearly labeled</Badge>
+            </div>
           </div>
-          <div className="trust rise rise-3">
-            <Badge tone="mint">No invented qualifications</Badge>
-            <Badge tone="cyan">Every action authorized by Cedar</Badge>
-            <Badge tone="amber">Test employer clearly labeled</Badge>
-          </div>
-        </div>
 
         <div className="preview rise rise-2">
           <div className="preview-glow" />
@@ -144,12 +190,60 @@ export function Landing() {
           </div>
         </div>
       </section>
+      </div>
 
       <section className="section reveal-soft" id="how">
-        <div className="eyebrow">What makes it different</div>
-        <h2 style={{ marginTop: 8 }}>Autonomy you can audit.</h2>
-        <p className="sub">Most “auto-apply” bots spray applications and hallucinate answers. Career Agent treats every submission like a payment: explicit rules, exact packets, receipts.</p>
-        <div className="grid g3" style={{ marginTop: 26 }}>
+        <div className="between" style={{ alignItems: "flex-end", flexWrap: "wrap", gap: 20 }}>
+          <div>
+            <div className="eyebrow" style={{ color: "var(--racing)" }}>Kinetic Execution Engine · Igloo Scroll-Storytelling</div>
+            <h2 style={{ marginTop: 8, fontSize: "clamp(32px, 4.5vw, 56px)", letterSpacing: "-0.04em" }}>
+              Autonomy you can audit.<br />
+              <span className="grad-text">From raw feed to signed receipt.</span>
+            </h2>
+          </div>
+          <div className="telemetry-pill glass-stripe" style={{ padding: "8px 16px", borderRadius: 999, fontSize: 13, border: "1px solid rgba(210, 255, 0, 0.3)" }}>
+            <span style={{ color: "var(--racing)", fontWeight: 700 }}>01 — 04</span> Autonomous Lifecycle
+          </div>
+        </div>
+
+        {/* Cinematic 4-Stage Scroll-Storytelling Deck */}
+        <div className="grid g4" style={{ marginTop: 32, gap: 16 }}>
+          {[
+            { num: "01", stage: "Ingest & Vectorize", tag: "Bedrock Nova", desc: "Monitors parse unstructured employer JDs and vector-embed skills against your verified resume graph." },
+            { num: "02", stage: "Rubric Fit Scoring", tag: "Strict 0-100", desc: "No vibes. 4-part weighted score with exact passage citations and explicit gap analysis." },
+            { num: "03", stage: "Cedar Policy Gate", tag: "DynamoDB Outbox", desc: "Hard transactional authorization. Caps, cooldowns, and mandatory user consents verified atomically." },
+            { num: "04", stage: "Isolated Dispatch", tag: "Playwright Worker", desc: "Headless browser navigates employer portal, fills verifiable answers, and captures cryptographic receipt." },
+          ].map((item, idx) => (
+            <motion.div
+              key={item.num}
+              initial={{ opacity: 0, y: 30 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true }}
+              transition={{ delay: idx * 0.1, duration: 0.5 }}
+            >
+              <SpotlightCard className="feature glass-stripe" spotlightColor="rgba(210, 255, 0, 0.12)">
+                <div className="row between" style={{ marginBottom: 14 }}>
+                  <span className="mono" style={{ fontSize: 24, fontWeight: 800, color: "var(--racing)" }}>{item.num}</span>
+                  <Badge tone="violet">{item.tag}</Badge>
+                </div>
+                <h3 style={{ fontSize: 18, marginBottom: 8 }}>{item.stage}</h3>
+                <p style={{ fontSize: 13.5, color: "var(--text-secondary)", lineHeight: 1.6 }}>{item.desc}</p>
+              </SpotlightCard>
+            </motion.div>
+          ))}
+        </div>
+
+        <motion.div
+          className="grid g3"
+          style={{ marginTop: 24 }}
+          initial="hidden"
+          whileInView="visible"
+          viewport={{ once: true, margin: "-80px" }}
+          variants={{
+            hidden: { opacity: 0 },
+            visible: { opacity: 1, transition: { staggerChildren: 0.08 } }
+          }}
+        >
           {[
             [ITarget, "Explained fit, not vibes", "A versioned 0–100 rubric. Every must-have links to the exact line in your resume that proves it — or shows the gap."],
             [IShield, "Rules the model can't bypass", "Cedar policies + DynamoDB transactions enforce approvals, daily caps, cooldowns and packet hashes right before the click."],
@@ -160,14 +254,22 @@ export function Landing() {
           ].map(([Icon, title, body]) => {
             const I = Icon as typeof ITarget;
             return (
-              <Spotlight key={title as string} className="card feature hover reveal">
-                <div className="ic"><I size={20} /></div>
-                <h3>{title as string}</h3>
-                <p>{body as string}</p>
-              </Spotlight>
+              <motion.div
+                key={title as string}
+                variants={{
+                  hidden: { y: 24, opacity: 0 },
+                  visible: { y: 0, opacity: 1, transition: { type: "spring", bounce: 0, duration: 0.6 } }
+                }}
+              >
+                <SpotlightCard className="feature">
+                  <div className="ic"><I size={20} /></div>
+                  <h3>{title as string}</h3>
+                  <p>{body as string}</p>
+                </SpotlightCard>
+              </motion.div>
             );
           })}
-        </div>
+        </motion.div>
       </section>
 
       <section className="section reveal-soft" id="architecture">

@@ -8,6 +8,7 @@ import { Shell } from "../components/Shell";
 import { MatchExplain, MatchRow } from "../components/MatchCard";
 import { Badge, Drawer, Empty, Skeleton, Spinner, useToast } from "../components/ui";
 import { IBriefcase, IRadar, ISend, ITrash } from "../components/Icons";
+import { motion } from "motion/react";
 
 export function JobsPage() {
   const { data, loading, reload } = useApi<{ matches: MatchCard[]; sources: any[] }>("/api/jobs/matches", [], 10000);
@@ -84,12 +85,16 @@ export function JobsPage() {
           ) : list.length === 0 ? (
             <div className="card"><Empty icon={<IBriefcase />} title="No matches yet">Search above, or ask the agent to find roles for you.</Empty></div>
           ) : (
-            <div className="col" style={{ gap: 10 }}>{list.map((m) => <MatchRow key={m.job_key} m={m} onOpen={() => setSelected(m.job_key)} />)}</div>
+            <div className="col" style={{ gap: 10 }}>{list.map((m, index) => (
+              <motion.div key={m.job_key} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.06 }}>
+                <MatchRow m={m} onOpen={() => setSelected(m.job_key)} />
+              </motion.div>
+            ))}</div>
           )}
         </div>
 
         <div className="stack">
-          <div className="card pad">
+          <div className="card pad glass-stripe">
             <div className="card-title"><h3><IRadar size={16} /> Source freshness</h3></div>
             <div className="col" style={{ gap: 12 }}>
               {(data?.sources || me?.sources || []).map((s: any) => (
@@ -104,7 +109,7 @@ export function JobsPage() {
               ))}
             </div>
           </div>
-          <div className="card pad">
+          <div className="card pad glass-stripe">
             <div className="card-title"><h3>Watches</h3><Badge>{me?.watches.length ?? 0}</Badge></div>
             <p className="small muted">Runs in AWS every 5 minutes, even when your laptop is off. Unchanged feeds cost no model calls.</p>
             <form className="row" style={{ marginTop: 12 }} onSubmit={async (e) => {
