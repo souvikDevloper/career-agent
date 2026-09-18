@@ -7,7 +7,7 @@ depends on cannot quietly stop being populated.
 import unittest
 
 from career_agent.scoring import work_mode_of
-from career_agent.sources import ashby, greenhouse, lever
+from career_agent.sources import ashby, greenhouse, lever, workday
 
 
 class LeverNormalize(unittest.TestCase):
@@ -121,3 +121,53 @@ class GreenhouseCanonicalKey(unittest.TestCase):
     def test_the_same_posting_keeps_a_stable_key(self):
         self.assertEqual(greenhouse.normalize("stripe", self.raw(7, "REQ-1"))["canonical_key"],
                          greenhouse.normalize("stripe", self.raw(7, "REQ-1"))["canonical_key"])
+
+
+class WorkdayNormalize(unittest.TestCase):
+    """Most large employers run their careers site on Workday, and every one of
+    them answers the same public JSON its own pages call."""
+
+    def raw(self, **over):
+        base = {"title": "Staff Software Engineer",
+                "externalPath": "/job/Chennai-Tamil-Nadu-India/Staff-Software-Engineer_R0138155",
+                "locationsText": "Chennai, Tamil Nadu, India",
+                "postedOn": "Posted Today", "bulletFields": ["R0138155"]}
+        base.update(over)
+        return base
+
+    def test_the_requisition_becomes_the_identity(self):
+        job = workday.normalize("paypal", "wd1", "jobs", self.raw())
+        self.assertEqual(job["external_id"], "R0138155")
+        self.assertEqual(job["canonical_key"], "workday:paypal:R0138155")
+
+    def test_a_missing_requisition_falls_back_to_the_path(self):
+        a = workday.normalize("paypal", "wd1", "jobs", self.raw(bulletFields=[]))
+        b = workday.normalize("paypal", "wd1", "jobs",
+                              self.raw(bulletFields=[], externalPath="/job/Pune/Other-Role_R999"))
+        self.assertNotEqual(a["canonical_key"], b["canonical_key"])
+
+    def test_the_url_is_the_page_a_person_can_open(self):
+        job = workday.normalize("paypal", "wd1", "jobs", self.raw())
+        self.assertEqual(job["url"],
+                         "https://paypal.wd1.myworkdayjobs.com/en-US/jobs"
+                         "/job/Chennai-Tamil-Nadu-India/Staff-Software-Engineer_R0138155")
+        self.assertEqual(job["apply"]["kind"], "external")
+
+    def test_remote_is_read_from_the_location_text(self):
+        self.assertEqual(workday.normalize("x", "wd1", "s", self.raw(locationsText="Remote, India"))["work_mode"], "remote")
+        self.assertIsNone(workday.normalize("x", "wd1", "s", self.raw())["work_mode"])
+
+    def test_the_description_is_left_for_later(self):
+        """The listing does not carry it; fetching it for every posting on every
+        poll would be hundreds of requests for text nobody reads."""
+        self.assertEqual(workday.normalize("paypal", "wd1", "jobs", self.raw())["description"], "")
+
+    def test_a_malformed_board_is_refused_before_it_reaches_a_url(self):
+        for bad in ("paypal", "paypal:jobs", "paypal:x1:jobs", "../etc:wd1:jobs", ""):
+            with self.assertRaises(ValueError, msg=bad):
+                workday.parse_spec(bad)
+
+    def test_a_valid_board_parses(self):
+        self.assertEqual(workday.parse_spec("paypal:wd1:jobs"), ("paypal", "wd1", "jobs"))
+        self.assertEqual(workday.parse_spec("nvidia:wd5:NVIDIAExternalCareerSite"),
+                         ("nvidia", "wd5", "NVIDIAExternalCareerSite"))
