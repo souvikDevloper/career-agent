@@ -86,7 +86,7 @@ export function ConnectorField({ className }: { className?: string }) {
           // depth drives the line's weight and how much it fades into the ground
           const depth = (a.k + b.k) / 2;
           const near = 1 - d / LINK;
-          ctx.strokeStyle = `rgba(0, 224, 138, ${near * 0.3 * depth * depth})`;
+          ctx.strokeStyle = `rgba(229, 9, 20, ${near * 0.3 * depth * depth})`;
           ctx.lineWidth = Math.max(0.35, 1.1 * depth * near);
           ctx.beginPath();
           ctx.moveTo(a.sx, a.sy);
@@ -98,7 +98,7 @@ export function ConnectorField({ className }: { className?: string }) {
       // far points first so near ones land on top
       for (const p of [...proj].sort((m, n) => m.k - n.k)) {
         const r = Math.max(0.6, 2.6 * p.k * p.k);
-        ctx.fillStyle = `rgba(77, 255, 176, ${0.1 + p.k * p.k * 0.55})`;
+        ctx.fillStyle = `rgba(255, 90, 98, ${0.1 + p.k * p.k * 0.55})`;
         ctx.beginPath();
         ctx.arc(p.sx, p.sy, r, 0, Math.PI * 2);
         ctx.fill();
