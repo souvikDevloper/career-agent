@@ -71,6 +71,8 @@ def poll(wf, source: str, force: bool = False) -> dict[str, Any]:
         return {"source": source, "error": str(exc), "new": [], "changed": []}
     new, changed = [], []
     for job in jobs:
+        # Which configured feed this came from, so search can ask for it by name.
+        job["feed"] = source
         is_new, is_changed = save_job_snapshot(wf, job)
         if is_new:
             new.append(job)
