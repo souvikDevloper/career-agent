@@ -82,28 +82,66 @@ def cached_jobs(wf, source: str, limit: int = 300) -> list[dict]:
     return wf.store.query(f"SOURCE#{source}", "", index="gsi1", limit=limit, newest_first=True)
 
 
+def _dedupe(jobs: list[dict]) -> list[dict]:
+    """One row per real opening.
+
+    The test portal can publish the same role repeatedly, and a company on two
+    boards appears twice. Three identical cards in one answer reads as a broken
+    product regardless of why they are there.
+    """
+    seen: set = set()
+    out = []
+    for j in jobs:
+        key = j.get("canonical_key") or (
+            (j.get("company") or "").lower().strip(),
+            (j.get("title") or "").lower().strip(),
+            (j.get("location") or "").lower().strip(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(j)
+    return out
+
+
 def keyword_filter(jobs: list[dict], keywords: str, prefs: dict) -> list[dict]:
+    """Every meaningful word in the query has to appear somewhere in the job.
+
+    This was an OR: one matching word was enough to qualify. So "microsoft
+    internship" matched anything containing "internship", and a search for a
+    company we do not cover came back full of confident results from a company
+    the person never asked about. Returning nothing is the honest answer to a
+    query nothing matches, and the caller says so.
+
+    Words are still scored for ranking - a hit in the title counts for more than
+    one buried in the description - but scoring only orders what already
+    qualified.
+    """
     words = [w for w in re.split(r"[^a-z0-9+#.]+", (keywords or "").lower()) if len(w) > 1 and w not in STOP]
     roles = [r.lower() for r in prefs.get("roles", [])]
     excluded = {c.lower() for c in prefs.get("excluded_companies", [])}
     out = []
-    for j in jobs:
+    for j in _dedupe(jobs):
         if (j.get("company") or "").lower() in excluded:
             continue
-        hay = f"{j.get('title', '')} {j.get('location', '')} {j.get('company', '')} {(j.get('description') or '')[:1500]}".lower()
         title = (j.get("title") or "").lower()
-        score = sum(3 if w in title else 1 for w in words if w in hay)
+        hay = f"{title} {j.get('location', '')} {j.get('company', '')} {(j.get('description') or '')[:1500]}".lower()
+        if words and not all(w in hay for w in words):
+            continue
+        score = sum(3 if w in title else 1 for w in words)
         score += sum(4 for r in roles if r and r in title)
         if not words and not roles:
             score = 1
         if score > 0:
             out.append((score, j))
-    out.sort(key=lambda t: (-t[0], t[1].get("first_seen_at") or ""), reverse=False)
+    out.sort(key=lambda t: (-t[0], t[1].get("first_seen_at") or ""))
     return [j for _, j in out]
 
 
 STOP = {"find", "me", "jobs", "job", "roles", "role", "for", "in", "the", "and", "or", "a", "an", "with", "show", "search",
-        "looking", "want", "please", "any", "new", "openings", "opening", "positions", "position", "at", "to", "of", "i", "am"}
+        "looking", "want", "please", "any", "new", "openings", "opening", "positions", "position", "at", "to", "of", "i", "am",
+        "my", "that", "fit", "fits", "relevant", "some", "good", "best", "get", "give", "resume", "match", "matching", "is",
+        "are", "can", "you", "it", "on", "near", "around"}
 
 
 def source_status(wf) -> list[dict]:

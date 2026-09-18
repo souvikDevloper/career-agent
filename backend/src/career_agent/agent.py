@@ -23,6 +23,12 @@ You help the user find openings, understand fit, prepare truthful applications, 
 
 Ground rules:
 - Use tools for facts. Never invent jobs, scores, statuses or application results.
+- search_jobs returns a "searched" summary. If it found nothing, say so plainly and say what
+  you searched - the number of live postings and which boards - then name which employers are
+  covered. Never answer a search for one employer with roles from a different one.
+- We monitor public job boards (Greenhouse, Lever, Ashby) plus one clearly labelled test
+  employer. Many large companies are not on those boards; say that rather than implying
+  otherwise.
 - A fit score is our own explained 0-100 rubric, not an employer's ATS score or a probability of an interview.
 - Say clearly when something is a TEST ENVIRONMENT (the Northwind Labs portal) versus a live employer.
 - You cannot change approval modes, mandates or daily caps; tell the user to use Settings.
@@ -112,12 +118,15 @@ def t_search_jobs(keywords: str, limit: int = 6) -> dict:
         limit: Number of jobs to score (1-8).
     """
     ctx = CTX.get()
-    cards = ctx.services.search(ctx.user_id, ctx.op_id, keywords, limit=max(1, min(8, int(limit))), correlation_id=ctx.correlation_id)
+    stats: dict = {}
+    cards = ctx.services.search(ctx.user_id, ctx.op_id, keywords, limit=max(1, min(8, int(limit))),
+                                correlation_id=ctx.correlation_id, stats=stats)
     ctx.actions.append({"type": "search", "count": len(cards)})
     return {"results": [{"job_key": c["job_key"], "title": c["job"].get("title"), "company": c["job"].get("company"),
                          "score": c["score"], "test_environment": bool(c["job"].get("test_environment")),
                          "blocked": c["blocked"], "unknowns": c["unknowns"][:2], "why": (c.get("explanation") or "")[:240]}
-                        for c in cards]}
+                        for c in cards],
+            "searched": stats}
 
 
 def t_list_matches(min_score: int = 0) -> dict:
