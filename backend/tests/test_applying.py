@@ -69,3 +69,27 @@ class FormReading(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UnsupportedNumberBoundaries(unittest.TestCase):
+    """A figure only counts as supported when it appears as a figure.
+
+    Substring matching let a fabricated claim through whenever its digits
+    happened to sit inside a larger number in the source.
+    """
+
+    SOURCE = "Graduated 2027. Reduced latency from 900 ms to 350 ms."
+
+    def test_fabricated_number_inside_a_larger_one_is_dropped(self):
+        self.assertEqual(strip_unsupported_numbers("I have 5 years of experience.", self.SOURCE), "")
+
+    def test_real_numbers_are_kept(self):
+        for claim in ("Cut latency to 350 ms.", "Graduating in 2027."):
+            self.assertEqual(strip_unsupported_numbers(claim, self.SOURCE), claim)
+
+    def test_sentence_without_numbers_is_untouched(self):
+        claim = "I build serverless services on AWS."
+        self.assertEqual(strip_unsupported_numbers(claim, self.SOURCE), claim)
+
+    def test_percentage_not_in_source_is_dropped(self):
+        self.assertEqual(strip_unsupported_numbers("I improved it by 90%.", self.SOURCE), "")

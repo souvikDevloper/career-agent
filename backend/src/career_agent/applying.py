@@ -120,13 +120,26 @@ def draft_cover_note(wf, uid: str, job: dict, profile: dict, *, is_judge: bool, 
     return strip_unsupported_numbers(text.strip(), (profile.get("resume_text") or "") + " " + (job.get("description") or ""))
 
 
+def _number_is_supported(num: str, sources: str) -> bool:
+    """Whether a figure genuinely appears in the source, as a figure.
+
+    A plain substring test is not enough: "5" is inside "350 ms" and "2027", so
+    "I have 5 years of experience" passed a guard whose whole job is to stop that
+    sentence. The number has to sit on digit boundaries to count.
+    """
+    token = num.strip(".,")
+    if not token:
+        return True
+    return re.search(r"(?<!\d)" + re.escape(token) + r"(?!\d)", sources) is not None
+
+
 def strip_unsupported_numbers(text: str, sources: str) -> str:
     """Remove sentences containing numbers that do not appear in the resume or job text."""
     sentences = re.split(r"(?<=[.!?])\s+", text)
     kept = []
     for sent in sentences:
         nums = re.findall(r"\d[\d,.%+]*", sent)
-        if all(n.strip(".,") in sources for n in nums):
+        if all(_number_is_supported(n, sources) for n in nums):
             kept.append(sent)
     return " ".join(kept).strip()
 
