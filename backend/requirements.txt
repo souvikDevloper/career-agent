@@ -1,5 +1,7 @@
 # Runtime dependencies packaged into the Lambda deployment artifact (manylinux x86_64, CPython 3.12)
-strands-agents>=1.10,<2
+# [openai] pulls the OpenAI client, which Strands uses to drive an
+# OpenAI-compatible endpoint while this account cannot reach Bedrock.
+strands-agents[openai]>=1.10,<2
 cedarpy>=4.1,<5
 pypdf>=5,<7
 pydantic>=2.7,<3

@@ -232,13 +232,37 @@ TOOL_NAMES = {f.__name__[2:]: f for f in TOOLS}
 # ---------------------------------------------------------------------------
 
 
-def _strands_agent(history: list[dict]):
-    from strands import Agent, tool
+def _strands_model():
+    """The model Strands drives, chosen the same way the rest of the app chooses one.
+
+    Strands is the agent framework here regardless of what sits behind it, which
+    matters: it is an AWS open-source project and it stays in the loop even when
+    Bedrock cannot be reached. Hardcoding BedrockModel meant a blocked account
+    took Strands out of the picture entirely and fell through to our own tool
+    loop - losing the framework for a reason that has nothing to do with it.
+    """
+    from . import llm
+
+    if llm.provider() == "openai":
+        from strands.models.openai import OpenAIModel
+
+        s = cfg()
+        return OpenAIModel(
+            client_args={"api_key": llm.openai_key(), "base_url": s.model_api_base.rstrip("/")},
+            model_id=s.fallback_model_id,
+            params={"temperature": 0.3, "max_tokens": 900},
+        )
     from strands.models import BedrockModel
 
+    return BedrockModel(model_id=cfg().model_id, region_name=cfg().region, temperature=0.3, max_tokens=900)
+
+
+def _strands_agent(history: list[dict]):
+    from strands import Agent, tool
+
     wrapped = [tool(name=fn.__name__[2:])(fn) for fn in TOOLS]
-    model = BedrockModel(model_id=cfg().model_id, region_name=cfg().region, temperature=0.3, max_tokens=900)
-    return Agent(model=model, tools=wrapped, system_prompt=SYSTEM_PROMPT, messages=history, callback_handler=None)
+    return Agent(model=_strands_model(), tools=wrapped, system_prompt=SYSTEM_PROMPT, messages=history,
+                 callback_handler=None)
 
 
 def run(ctx: ToolContext, history: list[dict]) -> tuple[str, str]:
