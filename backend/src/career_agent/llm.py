@@ -51,8 +51,78 @@ def converse(system: str, content: list[dict], *, max_tokens: int = 1500, temper
     text = "".join(p.get("text", "") for p in parts if "text" in p)
     usage = res.get("usage", {})
     log(logger, "model.call", model=settings().model_id, input_tokens=usage.get("inputTokens"),
-        output_tokens=usage.get("outputTokens"), ms=int((time.time() - started) * 1000), correlation_id=correlation_id)
+        output_tokens=usage.get("outputTokens"), stop_reason=res.get("stopReason"),
+        ms=int((time.time() - started) * 1000), correlation_id=correlation_id)
     return text, usage
+
+
+def _close_truncated(fragment: str) -> str | None:
+    """Rebuild JSON that the output token limit cut off mid-value.
+
+    Running out of maxTokens is the ordinary way a good response fails, and the
+    damage is always at the tail: a half-written value inside some still-open
+    containers. Walking the containers finds the last point that was complete at
+    every level, so the fields the model did finish survive without paying for a
+    second call to ask for them again.
+
+    Returns None when nothing complete was found - an empty object here would be
+    a guess, and the caller's fallback is better than a fabricated answer.
+    """
+    # frame: [closer, index after the last complete member, seen a member, reading a value]
+    frames: list[list] = []
+    in_string = escaped = False
+    literal = -1  # start of a bare number/true/false/null, or -1
+
+    def end_literal(at: int) -> None:
+        nonlocal literal
+        if literal >= 0:
+            if frames and frames[-1][3]:
+                frames[-1][1], frames[-1][2] = at, True
+            literal = -1
+
+    for i, ch in enumerate(fragment):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+                if frames and frames[-1][3]:  # a value, not an object key
+                    frames[-1][1], frames[-1][2] = i + 1, True
+            continue
+        if ch == '"':
+            end_literal(i)
+            in_string = True
+        elif ch in "{[":
+            end_literal(i)
+            # an array's members are always values; an object starts on a key
+            frames.append(["}" if ch == "{" else "]", i + 1, False, ch == "["])
+        elif ch in "}]":
+            end_literal(i)
+            if not frames or frames[-1][0] != ch:
+                return None  # not truncation - the text is malformed
+            frames.pop()
+            if frames:
+                frames[-1][1], frames[-1][2] = i + 1, True
+        elif ch == ":":
+            if frames:
+                frames[-1][3] = True
+        elif ch == ",":
+            end_literal(i)
+            if frames and frames[-1][0] == "}":
+                frames[-1][3] = False  # back to expecting a key
+        elif ch not in " \t\r\n" and literal < 0:
+            literal = i
+    if not frames:
+        return None  # balanced already, so truncation is not what broke it
+    # The innermost container that finished a member is the furthest point that
+    # is clean at every level above it too.
+    for depth in range(len(frames) - 1, -1, -1):
+        if frames[depth][2]:
+            head = fragment[:frames[depth][1]].rstrip().rstrip(",")
+            return head + "".join(f[0] for f in reversed(frames[:depth + 1]))
+    return None
 
 
 def extract_json(text: str) -> Any:
@@ -60,14 +130,29 @@ def extract_json(text: str) -> Any:
     fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
     if fence:
         text = fence.group(1).strip()
-    for opener, closer in (("{", "}"), ("[", "]")):
+    # Take whichever container the text actually opens with, and finish with it
+    # before considering the other. Always preferring "{" turns a one-element
+    # array into its first element, so a caller that asked for a list silently
+    # receives a single object instead.
+    pairs = [("{", "}"), ("[", "]")]
+    pairs.sort(key=lambda pair: text.find(pair[0]) if pair[0] in text else len(text) + 1)
+    for opener, closer in pairs:
         start = text.find(opener)
+        if start == -1:
+            continue
+        fragment = text[start:]
         end = text.rfind(closer)
-        if start != -1 and end > start:
+        if end > start:
             try:
                 return json.loads(text[start:end + 1])
             except json.JSONDecodeError:
-                continue
+                pass
+        repaired = _close_truncated(fragment)
+        if repaired:
+            try:
+                return json.loads(repaired)
+            except json.JSONDecodeError:
+                pass
     raise ValueError("model did not return JSON")
 
 
@@ -81,6 +166,9 @@ def json_call(system: str, prompt: str, *, documents: list[dict] | None = None, 
     try:
         return extract_json(text)
     except ValueError:
+        # Last resort: a second billed call the caller's usage reservation did
+        # not account for, so it is logged to keep that cost visible.
+        log(logger, "model.json_repair", chars=len(text), correlation_id=correlation_id)
         text2, _ = converse(system, [{"text": f"Convert this into valid JSON only, no prose:\n{text[:6000]}"}],
                             max_tokens=max_tokens, temperature=0, correlation_id=correlation_id)
         return extract_json(text2)
