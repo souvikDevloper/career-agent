@@ -251,6 +251,19 @@ def run(ctx: ToolContext, history: list[dict]) -> tuple[str, str]:
             return _result_text(result), "strands-agents"
         except ImportError as exc:
             log(logger, "agent.strands_unavailable", error=str(exc))
+        except Exception as exc:
+            from . import llm
+
+            # Strands failed for its own reasons - a version mismatch, a change in
+            # how it wraps tools. Our own Converse loop can still answer, but only
+            # under two conditions. If the model itself is unreachable, a second
+            # attempt just fails again more slowly and bills twice. And if a tool
+            # already ran, re-running the turn would run it a second time; the
+            # actions list is the record of that, so it is the thing to check.
+            if ctx.actions or llm.is_unavailable(exc):
+                raise
+            log(logger, "agent.strands_failed", error=type(exc).__name__, detail=str(exc)[:200],
+                correlation_id=ctx.correlation_id)
         return _converse_loop(ctx, history), "bedrock-converse"
     finally:
         CTX.current = None

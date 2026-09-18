@@ -36,6 +36,7 @@ Career Agent takes the useful part of automation — finding and filling — and
 | 🤖 **Real submissions with receipts** | Playwright + Chromium on Lambda fills and submits, records the employer's reference and a screenshot. Timeouts become *confirming*, never a silent double-apply. |
 | 📬 **Follows up** | Employer replies are matched by receipt, classified, and turned into dated tasks, reminders and grounded interview practice (voice mock interview). |
 | 🔔 **One record, every channel** | Dashboard, email (SES) and Telegram approvals hit the same endpoint and the same application record. |
+| 🔌 **Works from your own client** | An **MCP** server at `/api/mcp` serves the agent's own tool registry, authenticated as you by the same Cognito JWT. One registry, two front doors - so a connector cannot be told something the voice agent isn't. Approving a submission is deliberately **not** on that surface. |
 
 ## Honest integration status
 
@@ -48,6 +49,7 @@ Career Agent takes the useful part of automation — finding and filling — and
 | Email (SES) · Telegram | Needs setup per user | send · approvals |
 | Gmail reply reading | Not enabled (restricted OAuth scopes need Google verification) | — |
 | LinkedIn | **Manual handoff** — LinkedIn prohibits unauthorized automation | drafts and links only |
+| Model Context Protocol (`/api/mcp`) | **Verified live** | 9 of the agent's 10 tools — `approve_application` is withheld, because approving is the one irreversible act and a tool call from another model cannot evidence that a person asked for it |
 
 ## Architecture
 

@@ -27,19 +27,12 @@ def handler(event: dict, context: Any) -> dict:
     return {"batchItemFailures": failures}
 
 
-MODEL_DOWN_SIGNS = ("Operation not allowed", "account is currently being verified",
-                    "AccessDeniedException", "ThrottlingException", "ServiceUnavailable",
-                    "ModelNotReady", "don't have access to the model")
 
 
 def _model_unavailable(exc: Exception) -> bool:
-    """True when the failure is the model being unreachable, not a bug in our request."""
-    from ..llm import ModelUnavailable
+    from ..llm import is_unavailable
 
-    if isinstance(exc, ModelUnavailable):
-        return True
-    text = str(exc)
-    return any(sign in text for sign in MODEL_DOWN_SIGNS)
+    return is_unavailable(exc)
 
 
 def _finish_op_error(uid: str, op_id: str | None, exc: Exception) -> None:

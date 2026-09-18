@@ -119,6 +119,42 @@ change was already committed before the work was dispatched.
 
 ---
 
+## The agent's tools, and the second front door
+
+The agent has a registry of allowlisted, typed business tools (`agent.TOOLS`). They are
+plain functions: no shell, no arbitrary fetch, no credential access, no policy editing.
+Each one re-derives the owner from the verified session rather than taking a user id, and
+authorization is enforced by backend code and Cedar, never by the prompt.
+
+That registry is served two ways. The voice and chat agent calls it through Strands (or a
+Bedrock Converse tool loop when Strands is unavailable). An **MCP** server at `POST
+/api/mcp` serves the same registry to any Model Context Protocol client, so a judge can
+add the connector in their own client and drive the real system.
+
+`describe_tool()` builds the schema for both. The Bedrock `toolSpec` and the MCP
+`inputSchema` come from one function reading one set of docstrings, including the `Args:`
+block, which becomes per-parameter documentation. A tool therefore cannot be described one
+way to the voice agent and another way to a connector, and the Connectors page in the app
+proves it by running a real handshake against the live endpoint instead of describing one.
+
+Three properties matter more than the protocol plumbing:
+
+- **Identity.** `/api/mcp` sits under the existing `ANY /api/{proxy+}` route, so API
+  Gateway's JWT authorizer runs before any of this code does. The owner comes from the
+  validated token; no tool accepts a user id, so a body that names one is rejected outright.
+- **Approval is not on this surface.** Submitting is the one irreversible act in the
+  product, and the guard on it is that a person asked in their own words — which a tool call
+  arriving from another model cannot evidence. `prepare_application` is served; approving
+  stays in the app. Calling it anyway returns an `isError` result saying where to go, and
+  the function never runs.
+- **Tool failures are results, not protocol errors.** A JSON-RPC error aborts the caller's
+  turn; an `isError` result lets its model read what went wrong and try something else.
+
+Reads do not write an operation record — only `search_jobs` needs one to stream progress
+into, and a DynamoDB write nobody reads still costs money.
+
+---
+
 ## Application state machine
 
 Defined in `backend/src/career_agent/workflow.py` as `STATES` and `TRANSITIONS`, and
