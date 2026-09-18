@@ -155,6 +155,40 @@ into, and a DynamoDB write nobody reads still costs money.
 
 ---
 
+### Reaching the model while bedrock-runtime is held
+
+This account cannot call `bedrock-runtime`: every model, every region, both Converse
+and InvokeModel, returns `ValidationException: Operation not allowed` while the control
+plane answers normally. That is an account verification hold, confirmed by CloudFront
+refusing `CreateDistribution` with "Your account must be verified".
+
+The agent still runs on Amazon Bedrock. The **bedrock-mantle** endpoint is a separate
+API surface on the same service and is not under the hold, and it authenticates with a
+Bedrock API key rather than SigV4:
+
+    https://bedrock-mantle.us-east-1.api.aws/v1/chat/completions
+
+Three things about it cost time and are worth writing down:
+
+- **It routes by model, and the native route is `/v1`.** `/openai/v1` and `/anthropic/v1`
+  are compatibility shims that each serve one model family; anything else on them returns
+  "isn't supported on this route". The model list lives at `/v1/models`, not
+  `/openai/v1/models`, which was the clue that `/v1` is the real namespace.
+- **The catalog is not the entitlement list.** `/v1/models` returns 55 models; almost none
+  are callable. `anthropic.claude-haiku-4-5` returns 403 "not available for this account",
+  which is a different error from the routing one and the distinction matters when
+  diagnosing.
+- **`zai.glm-5` is what this account can actually call**, found by trying the Workbench
+  rather than by guessing at the API.
+
+So `MODEL_PROVIDER=openai` here does not mean OpenAI. It means "speak the OpenAI chat
+completions wire format", which is what the mantle endpoint speaks. The model is served
+by Amazon Bedrock, on this account, with Strands Agents driving the tool loop. When the
+hold lifts, `MODEL_PROVIDER=bedrock` returns to `bedrock-runtime` and Nova with no code
+change.
+
+---
+
 ### Connecting a client: OAuth 2.1
 
 A client obtains its own token rather than being handed a pasted one. It registers itself
