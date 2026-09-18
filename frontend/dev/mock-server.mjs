@@ -79,7 +79,7 @@ const routes = {
   "GET /api/timeline": () => ({ events: EVENTS }),
   "GET /api/jobs/matches": () => ({ matches: MATCHES, sources: ME.sources }),
   "GET /api/demo/templates": () => ({ templates: [{ slug: "cloud-intern", title: "Cloud Engineer Intern (AWS)", location: "Pune (Hybrid)" }] }),
-  "GET /api/chat": () => ({ messages: [{ role: "user", text: "Find cloud internships that fit me", at: iso(9e5), source: "voice" }, { role: "assistant", text: "I found 3 openings. Cloud Engineer Intern (AWS) at Northwind Labs (test employer) is your best fit at 86 — your Lambda + DynamoDB internship work is strong evidence. The gap: no AWS SAM project listed.", at: iso(8.9e5), runtime: "strands-agents" }] }),
+  "GET /api/chat": () => ({ messages: [{ role: "user", text: "Find cloud internships that fit me", at: iso(9e5), source: "voice" }, { role: "assistant", text: "Three openings fit you today.\n\n- **Cloud Engineer Intern (AWS)** at Northwind Labs \u2014 86. Your Lambda + DynamoDB work at Lotus Fintech is direct evidence.\n- **Backend Intern** at Cloudflare \u2014 71. Strong Python, but they ask for Go.\n- **Platform Intern** at Acme \u2014 64. Hybrid in Pune, which is inside your filters.\n\nThe most common gap across all three is `AWS SAM`. One packet is waiting for your approval.", at: iso(8.9e5), runtime: "strands-agents" }] }),
   "GET /api/insights": () => ({ funnel: { discovered: 5, prepared: 4, submitted: 1, replied: 1, assessment: 1, interview: 0 }, match_count: 4, avg_score: 65, score_histogram: [{ range: "0-49", count: 1 }, { range: "50-64", count: 1 }, { range: "65-80", count: 1 }, { range: "81-100", count: 1 }], top_gaps: [{ skill: "AWS SAM", jobs: 3 }, { skill: "Kubernetes", jobs: 2 }, { skill: "Tableau", jobs: 1 }], enough_data: true, note: null, next_steps: ["'AWS SAM' is the most common unmet requirement (3 jobs). Add a project that shows it, if you have one.", "2 application(s) are waiting on you."] }),
   "GET /api/tasks": () => ({ tasks: DETAIL("app_1").tasks }),
 };
@@ -114,6 +114,24 @@ function mcpReply(message) {
   return { jsonrpc: "2.0", id, error: { code: -32601, message: "Unknown method: " + message.method } };
 }
 
+// A command runs through real states so the thinking trail and the actions
+// strip can be seen locally, not just inferred from the code.
+const OP_STEPS = ["Understanding your request", "Searching Greenhouse, Lever and Ashby",
+                  "Scoring 2 openings against your resume", "Drafting a truthful note"];
+const opStarted = new Map();
+
+function operationState(opId) {
+  const started = opStarted.get(opId) ?? Date.now();
+  opStarted.set(opId, started);
+  const elapsed = Date.now() - started;
+  const shown = Math.min(OP_STEPS.length, Math.floor(elapsed / 700) + 1);
+  const progress = OP_STEPS.slice(0, shown).map((message, i) => ({ at: iso(1e4 * i), message }));
+  if (shown < OP_STEPS.length) return { op_id: opId, kind: "chat", status: "running", progress, results: [], created_at: iso(1e4) };
+  return { op_id: opId, kind: "chat", status: "succeeded", progress, results: MATCHES.slice(0, 2), created_at: iso(1e4),
+    final: { reply: "Two openings worth your time.\n\n- **Cloud Engineer Intern (AWS)** at Northwind Labs \u2014 86.\n- **Backend Intern** at Cloudflare \u2014 71.\n\nI started a packet for the Northwind role. It is waiting for your approval.", runtime: "strands-agents",
+             actions: [{ type: "search", count: 2 }, { type: "prepare_requested", app_id: "app_1" }] } };
+}
+
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".json": "application/json" };
 http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
@@ -134,6 +152,17 @@ http.createServer(async (req, res) => {
     return res.end(JSON.stringify(reply));
   }
   let body = routes[key]?.();
+  if (key === "POST /api/commands") {
+    const opId = "op_" + Math.random().toString(36).slice(2, 10);
+    opStarted.set(opId, Date.now());
+    res.writeHead(202, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ operation: operationState(opId) }));
+  }
+  const op = url.pathname.match(/^\/api\/operations\/(op_\w+)$/);
+  if (op) {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ operation: operationState(op[1]) }));
+  }
   const m = url.pathname.match(/^\/api\/applications\/(app_\w+)$/);
   if (m) body = DETAIL(m[1]);
   if (url.pathname.startsWith("/api/applications/") && url.pathname.endsWith("/interview")) body = { prep: null };

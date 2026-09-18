@@ -1,13 +1,35 @@
-import { useEffect, useRef, useState } from "react";
+/**
+ * The agent conversation.
+ *
+ * Replies are markdown, because the agent is told to answer in short bullets and
+ * was previously rendered as one run-on line. Assistant turns are full width
+ * rather than bubbles - a bubble capped at 82% is fine for "ok" and bad for a
+ * four-point answer with job cards under it.
+ *
+ * The thinking trail and the actions strip are not decoration: progress entries
+ * and ctx.actions both come back on the real operation, so what you see is what
+ * the agent did, in the order it did it.
+ */
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, requestId, waitForOperation, type MatchCard, type Operation } from "../lib/api";
 import { VoiceSession, speak, stopSpeaking } from "../lib/voice";
 import { useRouter } from "../lib/router";
 import { useMe } from "../lib/me";
-import { IMic, ISend, IStop, IVolume } from "./Icons";
+import { Markdown } from "../lib/markdown";
+import { ICheck, IClock, IMic, ISend, IStop, IVolume } from "./Icons";
 import { MatchRow } from "./MatchCard";
 import { Badge, useToast } from "./ui";
 
-type ChatMsg = { role: "user" | "assistant"; text: string; source?: string; at?: string; runtime?: string; pending?: boolean; op?: Operation };
+type ChatMsg = {
+  role: "user" | "assistant";
+  text: string;
+  source?: string;
+  at?: string;
+  runtime?: string;
+  pending?: boolean;
+  stopped?: boolean;
+  op?: Operation;
+};
 
 const SUGGESTIONS = [
   "Find backend internships that fit my resume",
@@ -15,6 +37,19 @@ const SUGGESTIONS = [
   "What's waiting for my approval?",
   "Prepare an application for my best match",
 ];
+
+const ACTION_COPY: Record<string, (a: any) => string> = {
+  search: (a) => `Scored ${a.count} opening${a.count === 1 ? "" : "s"}`,
+  watch_created: () => "Created a watch",
+  preferences_updated: () => "Updated your preferences",
+  prepare_requested: () => "Started preparing a packet",
+  approved: () => "Approved a packet for submission",
+};
+
+function runtimeLabel(runtime?: string) {
+  if (!runtime) return null;
+  return runtime === "strands-agents" ? "Strands Agents on Bedrock" : "Bedrock Converse";
+}
 
 export function Assistant({ compact = false }: { compact?: boolean }) {
   const [messages, setMessages] = useState<ChatMsg[]>([]);
@@ -25,25 +60,63 @@ export function Assistant({ compact = false }: { compact?: boolean }) {
   const [caption, setCaption] = useState("");
   const [level, setLevel] = useState(0);
   const [voiceReplies, setVoiceReplies] = useState(true);
+  const [atBottom, setAtBottom] = useState(true);
+  const [copied, setCopied] = useState<number | null>(null);
   const voice = useRef<VoiceSession | null>(null);
+  const abort = useRef<AbortController | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
+  const composer = useRef<HTMLTextAreaElement>(null);
   const toast = useToast();
   const { reload } = useMe();
   const { navigate } = useRouter();
 
   useEffect(() => {
-    api<{ messages: { role: "user" | "assistant"; text: string; source?: string; at: string; runtime?: string }[] }>("/api/chat")
+    api<{ messages: ChatMsg[] }>("/api/chat")
       .then((d) => setMessages(d.messages.slice(compact ? -4 : -40)))
       .catch(() => {});
     return () => {
       voice.current?.stop();
+      abort.current?.abort();
       stopSpeaking();
     };
   }, [compact]);
 
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
+    const el = scroller.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior });
+  }, []);
+
+  // Only follow the conversation when the reader is already at the bottom;
+  // yanking them down while they scroll back through an answer is hostile.
+  useLayoutEffect(() => {
+    if (atBottom) scrollToBottom();
+  }, [messages, atBottom, scrollToBottom]);
+
+  function onScroll() {
+    const el = scroller.current;
+    if (!el) return;
+    setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 60);
+  }
+
+  const grow = useCallback(() => {
+    const el = composer.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const natural = el.scrollHeight;
+    // A measurement taken while the pane has no layout reports a bogus height
+    // and would stick the box open at its maximum; leave it alone until there
+    // is something real to measure.
+    if (natural > 0) el.style.height = `${Math.min(natural, 180)}px`;
+  }, []);
+
+  // Size it on mount too. A one-row textarea clips its own placeholder the
+  // moment the placeholder wraps, and only ever grew on the first keystroke.
+  useLayoutEffect(grow, [grow, input, listening, caption]);
+
   useEffect(() => {
-    scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
-  }, [messages]);
+    window.addEventListener("resize", grow);
+    return () => window.removeEventListener("resize", grow);
+  }, [grow]);
 
   async function send(text: string, source: "chat" | "voice" = "chat") {
     const clean = text.trim();
@@ -51,15 +124,25 @@ export function Assistant({ compact = false }: { compact?: boolean }) {
     stopSpeaking();
     setInput("");
     setBusy(true);
+    setAtBottom(true);
+    requestAnimationFrame(grow);
     setMessages((m) => [...m, { role: "user", text: clean, source }, { role: "assistant", text: "", pending: true }]);
+    const controller = new AbortController();
+    abort.current = controller;
     try {
-      const { operation } = await api<{ operation: Operation }>("/api/commands", { body: { text: clean, client_request_id: requestId("cmd"), source } });
-      const done = await waitForOperation(operation.op_id, (op) =>
-        setMessages((m) => {
-          const copy = [...m];
-          copy[copy.length - 1] = { ...copy[copy.length - 1], op };
-          return copy;
-        }),
+      const { operation } = await api<{ operation: Operation }>("/api/commands", {
+        body: { text: clean, client_request_id: requestId("cmd"), source },
+        signal: controller.signal,
+      });
+      const done = await waitForOperation(
+        operation.op_id,
+        (op) =>
+          setMessages((m) => {
+            const copy = [...m];
+            copy[copy.length - 1] = { ...copy[copy.length - 1], op };
+            return copy;
+          }),
+        controller.signal,
       );
       const reply = done.status === "succeeded" ? done.final?.reply || "Done." : done.final?.error || "That didn't work. Please try again.";
       setMessages((m) => {
@@ -72,12 +155,20 @@ export function Assistant({ compact = false }: { compact?: boolean }) {
         speak(reply, () => setSpeaking(true), () => setSpeaking(false)).catch((e) => toast((e as Error).message, "error"));
       }
     } catch (e) {
+      const stopped = controller.signal.aborted;
       setMessages((m) => {
         const copy = [...m];
-        copy[copy.length - 1] = { role: "assistant", text: (e as Error).message };
+        copy[copy.length - 1] = {
+          ...copy[copy.length - 1],
+          pending: false,
+          stopped,
+          // The work keeps running on the backend; saying otherwise would be a lie.
+          text: stopped ? "Stopped watching this one. It may still finish in the background." : (e as Error).message,
+        };
         return copy;
       });
     } finally {
+      abort.current = null;
       setBusy(false);
     }
   }
@@ -112,75 +203,166 @@ export function Assistant({ compact = false }: { compact?: boolean }) {
     }
   }
 
+  async function copyMessage(text: string, index: number) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(index);
+      setTimeout(() => setCopied((c) => (c === index ? null : c)), 1600);
+    } catch {
+      toast("Clipboard is blocked here — select the text and copy it", "error");
+    }
+  }
+
   const scale = 1 + Math.min(level * 2.2, 0.35);
 
-  return (
-    <div className={compact ? "" : "grid"} style={compact ? undefined : { gridTemplateColumns: "minmax(0,1fr) 300px", gap: 18, alignItems: "start" }}>
-      <div className="card" style={{ display: "flex", flexDirection: "column", minHeight: compact ? 0 : "calc(100vh - 190px)" }}>
-        <div ref={scroller} style={{ flex: 1, overflowY: "auto", padding: 20, maxHeight: compact ? 360 : undefined }}>
-          {messages.length === 0 && (
-            <div className="empty">
-              <div style={{ color: "var(--ink)", fontWeight: 700, fontSize: 18, fontFamily: "var(--display)" }}>What should we do today?</div>
-              <p className="muted small" style={{ marginTop: 6 }}>Type or tap the mic. Every action goes through the same authorization checks as the dashboard.</p>
-            </div>
-          )}
-          <div className="chat">
-            {messages.map((m, i) => (
-              <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: m.role === "user" ? "flex-end" : "flex-start", gap: 8 }}>
-                <div className={`msg ${m.role}`}>
-                  {m.pending && !m.text ? (
-                    <span className="row small muted">
-                      <span className="typing"><i /><i /><i /></span>
-                      {m.op?.progress?.length ? m.op.progress[m.op.progress.length - 1].message : "Thinking"}
-                    </span>
-                  ) : (
-                    m.text
+  const thread = (
+    <div className="thread-wrap">
+      <div ref={scroller} className={`thread ${compact ? "compact" : ""}`} onScroll={onScroll}>
+        {messages.length === 0 && (
+          <div className="thread-empty">
+            <h3>What should we do today?</h3>
+            <p className="muted small">
+              Type or tap the mic. Every action goes through the same authorization checks as the dashboard.
+            </p>
+          </div>
+        )}
+        {messages.map((m, i) => {
+          if (m.role === "user") {
+            return (
+              <article key={i} className="turn user">
+                <div className="bubble">{m.text}</div>
+                {m.source === "voice" && <span className="turn-meta"><IMic size={12} /> spoken</span>}
+              </article>
+            );
+          }
+          const steps = m.op?.progress ?? [];
+          const actions = (m.op?.final?.actions ?? []) as { type: string }[];
+          const results = m.op?.results ?? [];
+          return (
+            <article key={i} className="turn agent">
+              {m.pending && !m.text ? (
+                <div className="steps" aria-live="polite">
+                  {steps.length === 0 && (
+                    <span className="step"><span className="typing"><i /><i /><i /></span> Thinking</span>
                   )}
-                  {(m.source === "voice" || m.runtime) && (
-                    <div className="meta">
-                      {m.source === "voice" && <><IMic size={12} /> voice</>}
-                      {m.runtime && <span>via {m.runtime === "strands-agents" ? "Strands Agents · Bedrock" : "Bedrock Converse"}</span>}
+                  {steps.map((s, j) => (
+                    <span key={j} className={`step ${j === steps.length - 1 ? "now" : "done"}`}>
+                      {j === steps.length - 1 ? <span className="typing"><i /><i /><i /></span> : <ICheck size={13} />}
+                      {s.message}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <>
+                  <Markdown text={m.text} />
+                  {actions.length > 0 && (
+                    <div className="did">
+                      {actions.map((a, j) => (
+                        <span key={j} className="did-item"><ICheck size={13} /> {ACTION_COPY[a.type]?.(a) ?? a.type.replace(/_/g, " ")}</span>
+                      ))}
                     </div>
                   )}
-                </div>
-                {m.op?.results && m.op.results.length > 0 && (
-                  <div style={{ width: "100%", display: "grid", gap: 8 }}>
-                    {m.op.results.map((r: MatchCard) => (
-                      <MatchRow key={r.job_key} m={r} onOpen={() => navigate(`/app/jobs?job=${encodeURIComponent(r.job_key)}`)} />
-                    ))}
+                  <div className="turn-foot">
+                    {runtimeLabel(m.runtime) && <span className="turn-meta">via {runtimeLabel(m.runtime)}</span>}
+                    {m.stopped && <span className="turn-meta"><IClock size={12} /> stopped</span>}
+                    {m.text && (
+                      <button className="turn-copy" onClick={() => copyMessage(m.text, i)} aria-label="Copy this reply">
+                        {copied === i ? "Copied" : "Copy"}
+                      </button>
+                    )}
                   </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-        <div style={{ padding: 14, borderTop: "1px solid var(--line)" }}>
-          <form className="command-input" onSubmit={(e) => { e.preventDefault(); send(input); }}>
-            <input
+                </>
+              )}
+              {results.length > 0 && (
+                <div className="turn-results">
+                  {results.map((r: MatchCard) => (
+                    <MatchRow key={r.job_key} m={r} onOpen={() => navigate(`/app/jobs?job=${encodeURIComponent(r.job_key)}`)} />
+                  ))}
+                </div>
+              )}
+            </article>
+          );
+        })}
+      </div>
+      {!atBottom && messages.length > 0 && (
+        <button className="to-bottom" onClick={() => { setAtBottom(true); scrollToBottom(); }}>
+          Jump to latest
+        </button>
+      )}
+    </div>
+  );
+
+  return (
+    <div className={compact ? "" : "split agent-split"}>
+      <div className="card chat-card">
+        {thread}
+        <div className="composer-wrap">
+          <form
+            className="composer"
+            onSubmit={(e) => {
+              e.preventDefault();
+              send(input);
+            }}
+          >
+            <textarea
+              ref={composer}
+              id="agent-composer"
+              rows={1}
               value={listening ? caption : input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder={listening ? "Listening…" : "Ask your agent: “find remote React internships and explain fit”"}
+              onChange={(e) => {
+                setInput(e.target.value);
+                grow();
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  send(input);
+                }
+              }}
+              placeholder={listening ? "Listening…" : "Ask your agent anything about your search…"}
               aria-label="Message the agent"
               disabled={listening}
             />
-            <button type="button" className={`btn icon ${listening ? "danger" : ""}`} onClick={toggleVoice} aria-label={listening ? "Stop listening" : "Speak"}>
-              {listening ? <IStop /> : <IMic />}
-            </button>
-            <button className="btn primary" disabled={busy || !input.trim()} aria-label="Send">
-              <ISend size={16} /> {compact ? "" : "Send"}
-            </button>
+            <div className="composer-actions">
+              <button
+                type="button"
+                className={`btn icon ${listening ? "danger" : ""}`}
+                onClick={toggleVoice}
+                aria-label={listening ? "Stop listening" : "Speak"}
+              >
+                {listening ? <IStop /> : <IMic />}
+              </button>
+              {busy ? (
+                <button type="button" className="btn ghost" onClick={() => abort.current?.abort()} aria-label="Stop generating">
+                  <IStop size={16} /> Stop
+                </button>
+              ) : (
+                <button className="btn primary" disabled={!input.trim()} aria-label="Send">
+                  <ISend size={16} /> {compact ? "" : "Send"}
+                </button>
+              )}
+            </div>
           </form>
-          <div className="chips">
-            {SUGGESTIONS.map((s) => (
-              <button key={s} className="chip" onClick={() => send(s)} disabled={busy}>{s}</button>
-            ))}
-          </div>
+          <p className="composer-hint tiny muted">Enter sends · Shift + Enter for a new line</p>
+          {messages.length === 0 && (
+            <div className="chips">
+              {SUGGESTIONS.map((s) => (
+                <button key={s} className="chip" onClick={() => send(s)} disabled={busy}>
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
       {!compact && (
-        <aside className="card pad" style={{ position: "sticky", top: 84 }}>
+        <aside className="card pad agent-aside">
           <div className="orb-wrap">
-            <button className={`orb ${listening ? "listening" : ""} ${speaking ? "speaking" : ""}`} onClick={toggleVoice} aria-label="Voice mode">
+            <button
+              className={`orb ${listening ? "listening" : ""} ${speaking ? "speaking" : ""}`}
+              onClick={toggleVoice}
+              aria-label="Voice mode"
+            >
               <span className="ring" />
               <span className="ring r2" />
               <span className="core" style={{ transform: `scale(${scale})` }}>{listening ? <IStop size={26} /> : <IMic size={28} />}</span>
