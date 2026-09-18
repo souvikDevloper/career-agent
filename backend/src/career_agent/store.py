@@ -416,6 +416,16 @@ class DynamoStore(Store):
         def s(d: dict) -> dict:
             return {k: ser.serialize(v) for k, v in to_dynamo(d).items()}
 
+        def sv(d: dict) -> dict:
+            """Serialize expression attribute values.
+
+            Item attributes may be dropped when they are None, but an expression
+            value may not: the expression still names it, and DynamoDB rejects the
+            whole transaction with "an expression attribute value used in
+            expression is not defined". A None here has to survive as NULL.
+            """
+            return {k: ser.serialize(to_dynamo(v)) for k, v in d.items()}
+
         items = []
         for op in ops:
             if isinstance(op, Put):
@@ -425,21 +435,21 @@ class DynamoStore(Store):
                     p["ConditionExpression"] = b.cond(op.condition)
                     b.apply(p)
                     if "ExpressionAttributeValues" in p:
-                        p["ExpressionAttributeValues"] = s(p["ExpressionAttributeValues"])
+                        p["ExpressionAttributeValues"] = sv(p["ExpressionAttributeValues"])
                 items.append({"Put": p})
             elif isinstance(op, Update):
                 p = _update_params(op)
                 p["TableName"] = self._name
                 p["Key"] = s(p["Key"])
                 if "ExpressionAttributeValues" in p:
-                    p["ExpressionAttributeValues"] = s(p["ExpressionAttributeValues"])
+                    p["ExpressionAttributeValues"] = sv(p["ExpressionAttributeValues"])
                 items.append({"Update": p})
             elif isinstance(op, Check):
                 b = _ExprBuilder()
                 p = {"TableName": self._name, "Key": s({"pk": op.pk, "sk": op.sk}), "ConditionExpression": b.cond(op.condition)}
                 b.apply(p)
                 if "ExpressionAttributeValues" in p:
-                    p["ExpressionAttributeValues"] = s(p["ExpressionAttributeValues"])
+                    p["ExpressionAttributeValues"] = sv(p["ExpressionAttributeValues"])
                 items.append({"ConditionCheck": p})
             elif isinstance(op, Delete):
                 p = {"TableName": self._name, "Key": s({"pk": op.pk, "sk": op.sk})}
@@ -448,7 +458,7 @@ class DynamoStore(Store):
                     p["ConditionExpression"] = b.cond(op.condition)
                     b.apply(p)
                     if "ExpressionAttributeValues" in p:
-                        p["ExpressionAttributeValues"] = s(p["ExpressionAttributeValues"])
+                        p["ExpressionAttributeValues"] = sv(p["ExpressionAttributeValues"])
                 items.append({"Delete": p})
         if items:
             self._wrap(self._raw.transact_write_items, TransactItems=items)
