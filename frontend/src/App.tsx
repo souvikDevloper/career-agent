@@ -12,6 +12,7 @@ import { ApplicationsPage } from "./pages/Applications";
 import { ApplicationDetailPage } from "./pages/ApplicationDetail";
 import { TasksPage } from "./pages/Tasks";
 import { InsightsPage } from "./pages/Insights";
+import { ConnectorsPage } from "./pages/Connectors";
 import { ProfilePage } from "./pages/Profile";
 import { SettingsPage } from "./pages/Settings";
 
@@ -41,6 +42,7 @@ function Routes() {
         : path === "/app/applications" ? <ApplicationsPage />
         : path === "/app/tasks" ? <TasksPage />
         : path === "/app/insights" ? <InsightsPage />
+        : path === "/app/connectors" ? <ConnectorsPage />
         : path === "/app/profile" ? <ProfilePage />
         : path === "/app/settings" ? <SettingsPage />
         : <Home />}

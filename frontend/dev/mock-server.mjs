@@ -1,5 +1,6 @@
 // Local UI preview with realistic fixtures (no AWS). Usage: node build.mjs && node dev/mock-server.mjs
 import http from "node:http";
+import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { extname, join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -83,10 +84,55 @@ const routes = {
   "GET /api/tasks": () => ({ tasks: DETAIL("app_1").tasks }),
 };
 
+// The MCP panel speaks the real protocol, so the mock answers it for real too -
+// and takes the tool list straight from the Python module rather than keeping a
+// copy here that would quietly drift from what the deployed server serves.
+function realToolList() {
+  try {
+    const out = execFileSync("python", ["-c",
+      "import json,sys; sys.path.insert(0,'src'); from career_agent import mcp; print(json.dumps(mcp.tool_list()))"],
+      { cwd: resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "backend"), encoding: "utf8" });
+    return JSON.parse(out);
+  } catch (err) {
+    console.warn("mock: could not read the real tool list: " + String(err.message).slice(0, 120));
+    return [{ name: "search_jobs", description: "Search current openings and explain fit for each.",
+              inputSchema: { type: "object", properties: { keywords: { type: "string", description: "What to look for." } }, required: ["keywords"] } }];
+  }
+}
+const TOOLS = realToolList();
+
+function mcpReply(message) {
+  const id = message?.id;
+  if (id === undefined) return null; // notification
+  if (message.method === "initialize") {
+    return { jsonrpc: "2.0", id, result: { protocolVersion: message.params?.protocolVersion || "2025-06-18",
+      capabilities: { tools: { listChanged: false } }, serverInfo: { name: "career-agent", title: "Career Agent", version: "1.0.0" },
+      instructions: "Local preview. Preparing an application never submits it - the user approves each submission in the Career Agent app." } };
+  }
+  if (message.method === "tools/list") return { jsonrpc: "2.0", id, result: { tools: TOOLS } };
+  if (message.method === "ping") return { jsonrpc: "2.0", id, result: {} };
+  return { jsonrpc: "2.0", id, error: { code: -32601, message: "Unknown method: " + message.method } };
+}
+
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".json": "application/json" };
-http.createServer((req, res) => {
+http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
   const key = `${req.method} ${url.pathname}`;
+  if (key === "POST /api/mcp") {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    let message = null;
+    try {
+      message = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    } catch {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Invalid JSON" } }));
+    }
+    const reply = mcpReply(message);
+    if (!reply) { res.writeHead(202); return res.end(); }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify(reply));
+  }
   let body = routes[key]?.();
   const m = url.pathname.match(/^\/api\/applications\/(app_\w+)$/);
   if (m) body = DETAIL(m[1]);

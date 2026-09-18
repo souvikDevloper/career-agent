@@ -6,7 +6,7 @@ import { timeAgo } from "../lib/format";
 import { api } from "../lib/api";
 import { Badge } from "./ui";
 import { Pet, type Mood } from "./Pet";
-import { IBell, IBriefcase, IChart, IChat, IHome, IList, ILogout, ISend, ISettings, IUser } from "./Icons";
+import { IBell, IBriefcase, IChart, IChat, IHome, ILink, IList, ILogout, ISend, ISettings, IUser } from "./Icons";
 
 const NAV = [
   { to: "/app", label: "Command center", icon: IHome, exact: true },
@@ -15,6 +15,7 @@ const NAV = [
   { to: "/app/applications", label: "Applications", icon: ISend },
   { to: "/app/tasks", label: "Tasks", icon: IList },
   { to: "/app/insights", label: "Insights", icon: IChart },
+  { to: "/app/connectors", label: "Connectors", icon: ILink },
   { to: "/app/profile", label: "Profile", icon: IUser },
   { to: "/app/settings", label: "Settings", icon: ISettings },
 ];
