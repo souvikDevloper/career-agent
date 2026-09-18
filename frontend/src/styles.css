@@ -574,3 +574,18 @@ html { scroll-behavior: smooth; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
+
+/* MCP tool rows: the name and the parameter count share a line; the description
+   wraps under them, so nothing has to shrink below its content on a phone. */
+.mcp-tool { display: flex; flex-direction: column; gap: 6px; width: 100%; padding: 0; text-align: left;
+  background: none; border: 0; color: inherit; cursor: pointer; font: inherit; }
+.mcp-tool-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.mcp-tool-head .chip { display: inline-flex; align-items: center; cursor: inherit; }
+.mcp-tool:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: var(--pill); }
+.scroll-x { overflow-x: auto; max-width: 100%; }
+/* A plain divided list. Not .check-row - that one reserves a 22px status
+   icon column, and content placed in it lands in the narrow cell. */
+.list-row { padding: 12px 0; border-bottom: 1px dashed var(--line); }
+.list-row:last-child { border-bottom: 0; }
+.list-row .chips { margin-top: 8px; }
+.plain-list { list-style: none; padding-left: 0; margin: 0; }
