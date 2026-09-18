@@ -43,6 +43,8 @@ Career Agent takes the useful part of automation — finding and filling — and
 |---|---|---|
 | Northwind Labs careers | **Test environment** (fictional employer, clearly labeled) | discover · read form · fill · submit · reconcile · messages |
 | Greenhouse public boards | **Verified live** | discover · read details — submitting requires the employer's key, so applying is a prepared **manual handoff** |
+| Lever public boards | **Verified live** | discover · read details — submitting requires the employer's key, so applying is a prepared **manual handoff** |
+| Ashby public boards | **Verified live** | discover · read details — submitting requires the employer's key, so applying is a prepared **manual handoff** |
 | Email (SES) · Telegram | Needs setup per user | send · approvals |
 | Gmail reply reading | Not enabled (restricted OAuth scopes need Google verification) | — |
 | LinkedIn | **Manual handoff** — LinkedIn prohibits unauthorized automation | drafts and links only |
