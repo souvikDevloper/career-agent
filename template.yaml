@@ -68,7 +68,9 @@ Parameters:
       UI itself on the same origin. Set to true once the account is activated.
 
 Conditions:
-  UseFallbackModel: !Equals [!Ref ModelProvider, openai]
+  # Any provider other than Bedrock needs the key parameter wired in. Matching
+  # only "openai" meant selecting "anthropic" silently dropped it.
+  UseFallbackModel: !Not [!Equals [!Ref ModelProvider, bedrock]]
   HasAlertEmail: !Not [!Equals [!Ref AlertEmail, ""]]
   WithCloudFront: !Equals [!Ref UseCloudFront, "true"]
   WithoutCloudFront: !Equals [!Ref UseCloudFront, "false"]
