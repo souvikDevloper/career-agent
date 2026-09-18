@@ -321,6 +321,69 @@ def _update_params(op: Update) -> dict:
     return b.apply(params)
 
 
+def build_transact_items(ops: Iterable[Any], table_name: str) -> list[dict]:
+    """Turn ops into TransactWriteItems entries.
+
+    Pure and module-level on purpose. Every marshalling bug this project has hit
+    lived in here - values serialized twice, values dropped for being None - and
+    none of them could be reached by a test, because MemoryStore marshals nothing
+    and the only other path was a live DynamoDB call. Building the request
+    separately from sending it makes that layer testable.
+    """
+    from boto3.dynamodb.types import TypeSerializer
+
+    ser = TypeSerializer()
+
+    def s(d: dict) -> dict:
+        return {k: ser.serialize(v) for k, v in to_dynamo(d).items()}
+
+    def sv(d: dict) -> dict:
+        """Serialize expression attribute values.
+
+        Item attributes may be dropped when they are None, but an expression
+        value may not: the expression still names it, and DynamoDB rejects the
+        whole transaction with "an expression attribute value used in
+        expression is not defined". A None here has to survive as NULL.
+        """
+        return {k: ser.serialize(to_dynamo(v)) for k, v in d.items()}
+
+    items = []
+    for op in ops:
+        if isinstance(op, Put):
+            p: dict[str, Any] = {"TableName": table_name, "Item": s(op.item)}
+            if op.condition is not None:
+                b = _ExprBuilder()
+                p["ConditionExpression"] = b.cond(op.condition)
+                b.apply(p)
+                if "ExpressionAttributeValues" in p:
+                    p["ExpressionAttributeValues"] = sv(p["ExpressionAttributeValues"])
+            items.append({"Put": p})
+        elif isinstance(op, Update):
+            p = _update_params(op)
+            p["TableName"] = table_name
+            p["Key"] = s(p["Key"])
+            if "ExpressionAttributeValues" in p:
+                p["ExpressionAttributeValues"] = sv(p["ExpressionAttributeValues"])
+            items.append({"Update": p})
+        elif isinstance(op, Check):
+            b = _ExprBuilder()
+            p = {"TableName": table_name, "Key": s({"pk": op.pk, "sk": op.sk}), "ConditionExpression": b.cond(op.condition)}
+            b.apply(p)
+            if "ExpressionAttributeValues" in p:
+                p["ExpressionAttributeValues"] = sv(p["ExpressionAttributeValues"])
+            items.append({"ConditionCheck": p})
+        elif isinstance(op, Delete):
+            p = {"TableName": table_name, "Key": s({"pk": op.pk, "sk": op.sk})}
+            if op.condition is not None:
+                b = _ExprBuilder()
+                p["ConditionExpression"] = b.cond(op.condition)
+                b.apply(p)
+                if "ExpressionAttributeValues" in p:
+                    p["ExpressionAttributeValues"] = sv(p["ExpressionAttributeValues"])
+            items.append({"Delete": p})
+    return items
+
+
 class DynamoStore(Store):
     def __init__(self, table_name: str, resource: Any = None) -> None:
         import boto3  # local import keeps unit tests dependency-free
@@ -409,56 +472,6 @@ class DynamoStore(Store):
         return [from_dynamo(i) for i in items[:limit]]
 
     def transact(self, ops):
-        from boto3.dynamodb.types import TypeSerializer
-
-        ser = TypeSerializer()
-
-        def s(d: dict) -> dict:
-            return {k: ser.serialize(v) for k, v in to_dynamo(d).items()}
-
-        def sv(d: dict) -> dict:
-            """Serialize expression attribute values.
-
-            Item attributes may be dropped when they are None, but an expression
-            value may not: the expression still names it, and DynamoDB rejects the
-            whole transaction with "an expression attribute value used in
-            expression is not defined". A None here has to survive as NULL.
-            """
-            return {k: ser.serialize(to_dynamo(v)) for k, v in d.items()}
-
-        items = []
-        for op in ops:
-            if isinstance(op, Put):
-                p: dict[str, Any] = {"TableName": self._name, "Item": s(op.item)}
-                if op.condition is not None:
-                    b = _ExprBuilder()
-                    p["ConditionExpression"] = b.cond(op.condition)
-                    b.apply(p)
-                    if "ExpressionAttributeValues" in p:
-                        p["ExpressionAttributeValues"] = sv(p["ExpressionAttributeValues"])
-                items.append({"Put": p})
-            elif isinstance(op, Update):
-                p = _update_params(op)
-                p["TableName"] = self._name
-                p["Key"] = s(p["Key"])
-                if "ExpressionAttributeValues" in p:
-                    p["ExpressionAttributeValues"] = sv(p["ExpressionAttributeValues"])
-                items.append({"Update": p})
-            elif isinstance(op, Check):
-                b = _ExprBuilder()
-                p = {"TableName": self._name, "Key": s({"pk": op.pk, "sk": op.sk}), "ConditionExpression": b.cond(op.condition)}
-                b.apply(p)
-                if "ExpressionAttributeValues" in p:
-                    p["ExpressionAttributeValues"] = sv(p["ExpressionAttributeValues"])
-                items.append({"ConditionCheck": p})
-            elif isinstance(op, Delete):
-                p = {"TableName": self._name, "Key": s({"pk": op.pk, "sk": op.sk})}
-                if op.condition is not None:
-                    b = _ExprBuilder()
-                    p["ConditionExpression"] = b.cond(op.condition)
-                    b.apply(p)
-                    if "ExpressionAttributeValues" in p:
-                        p["ExpressionAttributeValues"] = sv(p["ExpressionAttributeValues"])
-                items.append({"Delete": p})
+        items = build_transact_items(ops, self._name)
         if items:
             self._wrap(self._raw.transact_write_items, TransactItems=items)
