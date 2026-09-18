@@ -20,7 +20,7 @@ from ..resume import ResumeError, resume_doc_id
 from ..store import C, Put, Update
 from ..util import get_logger, log, new_id
 from ..workflow import Principal, WorkflowError
-from .common import body_json, correlation, error, portal_signature, principal, respond, services, verify_signature
+from .common import SECURITY_HEADERS, body_json, correlation, error, portal_signature, principal, respond, services, verify_signature
 
 logger = get_logger("api")
 
@@ -723,3 +723,52 @@ def speak(event, p, cid):
 
 
 __all__ = ["handler", "Put"]
+
+
+# ---------------------------------------------------------------------------
+# MCP (Model Context Protocol) - the agent's tools as a connector
+# ---------------------------------------------------------------------------
+
+
+@route("POST", r"/api/mcp")
+def mcp_endpoint(event, p, cid):
+    """Streamable HTTP transport for the MCP server.
+
+    API Gateway's JWT authorizer has already run, so the caller is a real signed-in
+    user and every tool re-derives the owner from that identity. The protocol
+    handling itself lives in career_agent.mcp and knows nothing about Lambda.
+    """
+    from .. import mcp as mcp_proto
+    from ..agent import CTX, TOOL_NAMES, ToolContext
+
+    try:
+        message = json.loads(event.get("body") or "null")
+    except json.JSONDecodeError:
+        return respond(200, {"jsonrpc": "2.0", "id": None,
+                             "error": {"code": mcp_proto.PARSE_ERROR, "message": "Invalid JSON"}})
+
+    svc = _svc()
+
+    def call_tool(name: str, arguments: dict):
+        # Only the search tool needs an operation to stream progress into; writing
+        # one for a read is a DynamoDB write nobody reads.
+        op_id = ""
+        if name == "search_jobs":
+            op, _created = svc.wf.start_operation(p.user_id, "mcp", {"tool": name, "arguments": arguments}, cid, cid)
+            op_id = op.get("op_id", "")
+        ctx = ToolContext(user_id=p.user_id, op_id=op_id, user_text="", channel="mcp", correlation_id=cid,
+                          services=svc, is_judge=p.is_judge)
+        CTX.current = ctx
+        try:
+            return TOOL_NAMES[name](**arguments)
+        finally:
+            CTX.current = None
+
+    reply = mcp_proto.dispatch(message, call_tool)
+    log(logger, "mcp.request", method=(message or {}).get("method") if isinstance(message, dict) else None,
+        tool=((message or {}).get("params") or {}).get("name") if isinstance(message, dict) else None,
+        notification=reply is None, correlation_id=cid, user=p.user_id)
+    if reply is None:
+        # A notification gets an acknowledgement and no body.
+        return {"statusCode": 202, "headers": dict(SECURITY_HEADERS), "body": ""}
+    return respond(200, reply, {"MCP-Protocol-Version": mcp_proto.SUPPORTED_VERSIONS[0]})
