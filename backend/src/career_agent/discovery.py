@@ -92,7 +92,12 @@ def _dedupe(jobs: list[dict]) -> list[dict]:
     seen: set = set()
     out = []
     for j in jobs:
-        key = j.get("canonical_key") or (
+        # Deliberately not canonical_key. It comes from the board and boards get
+        # it wrong - Stripe returns one placeholder requisition id for every
+        # posting - and trusting it collapsed 665 openings into 2. What a person
+        # means by "the same job" is the same role, at the same company, in the
+        # same place, which is computed here rather than taken on faith.
+        key = (
             (j.get("company") or "").lower().strip(),
             (j.get("title") or "").lower().strip(),
             (j.get("location") or "").lower().strip(),

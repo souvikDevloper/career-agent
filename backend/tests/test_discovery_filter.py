@@ -104,3 +104,22 @@ class TestExclusions:
     def test_an_excluded_company_never_appears(self):
         prefs = {"roles": [], "excluded_companies": ["Gitlab"]}
         assert all(j["company"] != "Gitlab" for j in keyword_filter(CORPUS, "backend", prefs))
+
+
+class TestDedupeDoesNotTrustTheBoard:
+    """665 Stripe postings arrived sharing one canonical_key and became 2."""
+
+    def test_a_repeated_upstream_key_does_not_collapse_distinct_roles(self):
+        corpus = [
+            {**job("Stripe", "Backend Engineer"), "canonical_key": "greenhouse:stripe:See Opening ID"},
+            {**job("Stripe", "Frontend Engineer"), "canonical_key": "greenhouse:stripe:See Opening ID"},
+            {**job("Stripe", "Data Engineer"), "canonical_key": "greenhouse:stripe:See Opening ID"},
+        ]
+        assert len(keyword_filter(corpus, "engineer", PREFS)) == 3
+
+    def test_the_same_role_still_collapses_despite_different_upstream_keys(self):
+        corpus = [
+            {**job("Stripe", "Backend Engineer"), "canonical_key": "greenhouse:stripe:A"},
+            {**job("Stripe", "Backend Engineer"), "canonical_key": "greenhouse:stripe:B"},
+        ]
+        assert len(keyword_filter(corpus, "backend", PREFS)) == 1

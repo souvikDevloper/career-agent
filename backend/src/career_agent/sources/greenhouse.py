@@ -22,12 +22,24 @@ def html_to_text(raw: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", re.sub(r"[ \t]+", " ", text)).strip()
 
 
+def _requisition(raw: dict) -> str:
+    """Greenhouse's requisition_id is free text and boards abuse it.
+
+    Stripe returns the literal sentence "See Opening ID" for all 665 of its
+    postings, which collapsed the whole board to a single canonical key. Only
+    accept something that looks like an identifier; otherwise fall back to the
+    posting id, which is always unique.
+    """
+    value = str(raw.get("requisition_id") or "").strip()
+    return value if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{1,48}", value) else str(raw["id"])
+
+
 def normalize(board: str, raw: dict) -> dict:
     description = html_to_text(raw.get("content", ""))
     loc = (raw.get("location") or {}).get("name") or ""
     job = {
         "job_key": f"greenhouse:{board}:{raw['id']}",
-        "canonical_key": f"greenhouse:{board}:{raw.get('requisition_id') or raw['id']}",
+        "canonical_key": f"greenhouse:{board}:{_requisition(raw)}",
         "source": SOURCE,
         "board": board,
         "external_id": str(raw["id"]),
