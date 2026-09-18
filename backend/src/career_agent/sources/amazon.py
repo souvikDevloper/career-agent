@@ -53,7 +53,12 @@ def normalize(raw: dict) -> dict:
         "source": SOURCE,
         "board": (raw.get("country_code") or "").upper(),
         "external_id": external_id,
-        "company": raw.get("company_name") or "Amazon",
+        # company_name is the hiring legal entity - "ASSPL - Karnataka",
+        # "Amazon Dev Centre India". Nobody searches for those, and showing them
+        # makes an Amazon role look like an unknown company. The entity is kept
+        # as the employer of record; the name people recognise is the company.
+        "company": "Amazon",
+        "legal_entity": raw.get("company_name") or None,
         "title": _clean(raw.get("title")),
         "location": location,
         "country": (raw.get("country_code") or "").upper() or None,

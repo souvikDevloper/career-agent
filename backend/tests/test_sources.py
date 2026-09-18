@@ -256,3 +256,10 @@ class AmazonNormalize(unittest.TestCase):
         for bad in ("", "INDIA_LONG_NAME", "IND:" + "x" * 80):
             with self.assertRaises(ValueError, msg=bad):
                 amazon.parse_spec(bad)
+
+    def test_the_hiring_entity_does_not_replace_the_company(self):
+        """company_name is the legal entity - "ASSPL - Karnataka". Nobody searches
+        for that, and it makes an Amazon role look like an unknown company."""
+        job = amazon.normalize(self.raw(company_name="ASSPL - Karnataka"))
+        self.assertEqual(job["company"], "Amazon")
+        self.assertEqual(job["legal_entity"], "ASSPL - Karnataka")
