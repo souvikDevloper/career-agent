@@ -200,7 +200,13 @@ export function Pet({ mood = "idle" }: { mood?: Mood }) {
   }
 
   return (
-    <div className="pip" style={{ right: prefs.x, bottom: prefs.y, width: prefs.size }}>
+    // The panel opens inward from the pet's right edge; near the left edge of
+    // the screen there is no room for that, so it opens the other way.
+    <div
+      className="pip"
+      data-flip={typeof window !== "undefined" && window.innerWidth - prefs.x - 214 < 8}
+      style={{ right: prefs.x, bottom: prefs.y, width: prefs.size }}
+    >
       {open && (
         <div className="pip-panel" role="dialog" aria-label="Pip settings">
           <p className="pip-mood">{MOOD_COPY[mood]}</p>

@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { scoreTone, STATE_META } from "../lib/format";
 import { IX } from "./Icons";
 
@@ -74,7 +75,11 @@ export function Drawer({ open, onClose, children, label }: { open: boolean; onCl
     };
   }, [open, onClose]);
   if (!open) return null;
-  return (
+  // Rendered into <body>, not where it is declared. A transform on any ancestor
+  // makes that ancestor the containing block for position:fixed, which is how
+  // this drawer ended up positioned inside the page body and clipped by the
+  // top bar. A portal puts it out of reach of that whole class of bug.
+  return createPortal(
     <>
       <div className="drawer-backdrop" onClick={onClose} />
       <aside className="drawer" role="dialog" aria-modal="true" aria-label={label}>
@@ -83,7 +88,8 @@ export function Drawer({ open, onClose, children, label }: { open: boolean; onCl
         </button>
         {children}
       </aside>
-    </>
+    </>,
+    document.body,
   );
 }
 
