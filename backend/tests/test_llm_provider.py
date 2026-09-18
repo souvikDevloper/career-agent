@@ -44,12 +44,18 @@ class TestDefault:
         monkeypatch.delenv("MODEL_PROVIDER", raising=False)
         assert llm.provider() == "bedrock"
 
-    def test_an_unknown_value_does_not_silently_switch(self, monkeypatch):
-        monkeypatch.setenv("MODEL_PROVIDER", "anthropic")
+    @pytest.mark.parametrize("value", ["gemini", "ollama", "", "BEDROCK-ish", "openaiX"])
+    def test_an_unknown_value_does_not_silently_switch(self, monkeypatch, value):
+        """A typo in a deploy parameter must not quietly route somewhere else."""
+        monkeypatch.setenv("MODEL_PROVIDER", value)
         assert llm.provider() == "bedrock"
 
     def test_openai_is_opt_in(self, as_openai):
         assert llm.provider() == "openai"
+
+    def test_anthropic_is_opt_in(self, monkeypatch):
+        monkeypatch.setenv("MODEL_PROVIDER", "anthropic")
+        assert llm.provider() == "anthropic"
 
 
 class TestRequestTranslation:
@@ -143,3 +149,52 @@ class TestFailuresAreReportedAsUnavailable:
 
     def test_a_provider_failure_counts_as_unavailable(self, as_openai):
         assert llm.is_unavailable(llm.ModelUnavailable("model provider returned 429"))
+
+
+class TestAnthropicRoute:
+    """The Bedrock mantle endpoint routes by model: Anthropic models answer on
+    /v1/messages and refuse /v1/chat/completions, so the wire format follows the
+    model rather than the other way round."""
+
+    def test_converse_blocks_become_anthropic_blocks(self):
+        got = llm._to_anthropic("be truthful", [{"role": "user", "content": [{"text": "hi"}]}])
+        assert got["system"] == "be truthful"
+        assert got["messages"] == [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+
+    def test_a_tool_use_is_renamed_not_rewritten(self):
+        got = llm._to_anthropic("", [{"role": "assistant", "content": [
+            {"toolUse": {"toolUseId": "t1", "name": "search_jobs", "input": {"keywords": "backend"}}}]}])
+        assert got["messages"][0]["content"][0] == {
+            "type": "tool_use", "id": "t1", "name": "search_jobs", "input": {"keywords": "backend"}}
+
+    def test_a_tool_result_carries_its_id(self):
+        got = llm._to_anthropic("", [{"role": "user", "content": [
+            {"toolResult": {"toolUseId": "t1", "content": [{"text": "{}"}]}}]}])
+        assert got["messages"][0]["content"][0] == {"type": "tool_result", "tool_use_id": "t1", "content": "{}"}
+
+    def test_a_reply_comes_back_in_converse_shape(self):
+        res = llm._from_anthropic({"content": [{"type": "text", "text": "Two roles fit you."}],
+                                   "stop_reason": "end_turn",
+                                   "usage": {"input_tokens": 9, "output_tokens": 4}})
+        assert llm.response_text(res) == "Two roles fit you."
+        assert res["usage"] == {"inputTokens": 9, "outputTokens": 4}
+
+    def test_a_tool_call_comes_back_in_converse_shape(self):
+        res = llm._from_anthropic({"content": [
+            {"type": "tool_use", "id": "t9", "name": "create_watch", "input": {"keywords": "cloud"}}],
+            "stop_reason": "tool_use"})
+        assert res["stopReason"] == "tool_use"
+        assert res["output"]["message"]["content"][0]["toolUse"] == {
+            "toolUseId": "t9", "name": "create_watch", "input": {"keywords": "cloud"}}
+
+    def test_truncation_maps_across(self):
+        assert llm._from_anthropic({"content": [{"type": "text", "text": "cut"}],
+                                    "stop_reason": "max_tokens"})["stopReason"] == "max_tokens"
+
+    def test_round_trip_keeps_a_tool_call_intact(self):
+        original = {"toolUse": {"toolUseId": "t7", "name": "update_preferences",
+                                "input": {"roles": ["backend"], "min_salary": 600000}}}
+        out = llm._to_anthropic("", [{"role": "assistant", "content": [original]}])
+        block = out["messages"][0]["content"][0]
+        back = llm._from_anthropic({"content": [block], "stop_reason": "tool_use"})
+        assert back["output"]["message"]["content"][0]["toolUse"] == original["toolUse"]

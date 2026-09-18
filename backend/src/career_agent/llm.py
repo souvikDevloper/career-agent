@@ -317,7 +317,9 @@ def _openai_chat(system: str, messages: list[dict], tools: list[dict] | None,
 
 
 def provider() -> str:
-    return "openai" if settings().model_provider == "openai" else "bedrock"
+    """Bedrock unless explicitly told otherwise; an unknown value never switches."""
+    want = settings().model_provider
+    return want if want in ("openai", "anthropic") else "bedrock"
 
 
 def chat(system: str, messages: list[dict], *, tools: list[dict] | None = None, max_tokens: int = 1500,
@@ -328,6 +330,8 @@ def chat(system: str, messages: list[dict], *, tools: list[dict] | None = None, 
     try:
         if which == "openai":
             res = _openai_chat(system, messages, tools, max_tokens, temperature)
+        elif which == "anthropic":
+            res = _anthropic_chat(system, messages, tools, max_tokens, temperature)
         else:
             kwargs: dict[str, Any] = {
                 "modelId": settings().model_id,
@@ -345,7 +349,7 @@ def chat(system: str, messages: list[dict], *, tools: list[dict] | None = None, 
         raise ModelUnavailable(str(exc)) from exc
     usage = res.get("usage") or {}
     log(logger, "model.call", provider=which,
-        model=settings().fallback_model_id if which == "openai" else settings().model_id,
+        model=settings().model_id if which == "bedrock" else settings().fallback_model_id,
         input_tokens=usage.get("inputTokens"), output_tokens=usage.get("outputTokens"),
         stop_reason=res.get("stopReason"), ms=int((time.time() - started) * 1000),
         correlation_id=correlation_id)
@@ -355,3 +359,97 @@ def chat(system: str, messages: list[dict], *, tools: list[dict] | None = None, 
 def response_text(res: dict) -> str:
     parts = ((res.get("output") or {}).get("message") or {}).get("content") or []
     return "".join(p.get("text", "") for p in parts if isinstance(p, dict) and "text" in p)
+
+
+# ---------------------------------------------------------------------------
+# Anthropic Messages, as served by the Bedrock mantle endpoint.
+#
+# Mantle routes by model: Anthropic models answer on /v1/messages and refuse
+# /v1/chat/completions ("does not support the '/v1/chat/completions' API"), and
+# OpenAI-shaped models do the reverse. So the wire format has to follow the
+# model, not the other way round.
+#
+# This is still Amazon Bedrock - same account, same key, same endpoint. It is
+# only a different route on it.
+# ---------------------------------------------------------------------------
+
+
+def _to_anthropic(system: str, messages: list[dict]) -> dict:
+    """Bedrock Converse blocks -> Anthropic content blocks.
+
+    The two are close relatives, which is why this is a rename rather than a
+    rewrite: toolUse/toolResult become tool_use/tool_result and text stays text.
+    """
+    out: list[dict] = []
+    for msg in messages:
+        blocks: list[dict] = []
+        for block in msg.get("content") or []:
+            if not isinstance(block, dict):
+                continue
+            if "text" in block:
+                if block["text"]:
+                    blocks.append({"type": "text", "text": block["text"]})
+            elif "document" in block:
+                blocks.append({"type": "text", "text": _blocks_to_text([block])})
+            elif "toolUse" in block:
+                use = block["toolUse"]
+                blocks.append({"type": "tool_use", "id": use.get("toolUseId", ""),
+                               "name": use.get("name", ""), "input": use.get("input") or {}})
+            elif "toolResult" in block:
+                result = block["toolResult"]
+                blocks.append({"type": "tool_result", "tool_use_id": result.get("toolUseId", ""),
+                               "content": _blocks_to_text(result.get("content") or [])})
+        if blocks:
+            out.append({"role": "assistant" if msg.get("role") == "assistant" else "user", "content": blocks})
+    payload: dict[str, Any] = {"messages": out}
+    if system:
+        payload["system"] = system
+    return payload
+
+
+def _from_anthropic(data: dict) -> dict:
+    """Anthropic response -> the Converse response shape every caller expects."""
+    blocks: list[dict] = []
+    for block in data.get("content") or []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text" and block.get("text"):
+            blocks.append({"text": block["text"]})
+        elif block.get("type") == "tool_use":
+            blocks.append({"toolUse": {"toolUseId": block.get("id", ""), "name": block.get("name", ""),
+                                       "input": block.get("input") or {}}})
+    stop = data.get("stop_reason") or ""
+    usage = data.get("usage") or {}
+    return {
+        "output": {"message": {"role": "assistant", "content": blocks or [{"text": ""}]}},
+        "stopReason": {"tool_use": "tool_use", "max_tokens": "max_tokens"}.get(stop, "end_turn"),
+        "usage": {"inputTokens": usage.get("input_tokens"), "outputTokens": usage.get("output_tokens")},
+    }
+
+
+def _anthropic_chat(system: str, messages: list[dict], tools: list[dict] | None,
+                    max_tokens: int, temperature: float) -> dict:
+    import urllib.error
+    import urllib.request
+
+    s = settings()
+    payload = _to_anthropic(system, messages)
+    payload.update({"model": s.fallback_model_id, "max_tokens": max_tokens, "temperature": temperature})
+    if tools:
+        payload["tools"] = [{"name": t["toolSpec"]["name"], "description": t["toolSpec"]["description"],
+                             "input_schema": t["toolSpec"]["inputSchema"]["json"]} for t in tools]
+    request = urllib.request.Request(
+        s.model_api_base.rstrip("/") + "/v1/messages",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json", "x-api-key": openai_key(),
+                 "anthropic-version": "2023-06-01"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response:  # noqa: S310 - fixed https base from config
+            return _from_anthropic(json.loads(response.read().decode()))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf8", "ignore")[:300]
+        raise ModelUnavailable(f"model provider returned {exc.code}: {detail}") from exc
+    except Exception as exc:
+        raise ModelUnavailable(f"model provider unreachable: {type(exc).__name__}") from exc
