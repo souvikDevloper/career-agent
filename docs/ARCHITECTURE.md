@@ -155,6 +155,49 @@ into, and a DynamoDB write nobody reads still costs money.
 
 ---
 
+### Connecting a client: OAuth 2.1
+
+A client obtains its own token rather than being handed a pasted one. It registers itself
+(RFC 7591), sends the person to `/oauth/authorize` with a PKCE challenge, they sign in and
+consent, and it exchanges a single-use code for tokens.
+
+Cognito remains the only place a password is checked, and **the token issued to the client
+is the Cognito ID token**, the same one the browser carries. That is the decision the rest
+follows from: API Gateway's JWT authorizer keeps validating identity before any application
+code runs, so adding OAuth changed who may obtain a token and nothing about how one is
+trusted. This layer never decides who somebody is.
+
+Two controls carry the security, and both are exact rather than clever:
+
+- **The redirect URI** decides where a code is delivered: https anywhere, plain http only
+  on the loopback interface *by address*, no fragments, no wildcards. `localhost.evil.test`
+  is not loopback.
+- **The PKCE verifier** decides who may redeem it: S256 only, compared in constant time,
+  and mandatory. A request without one never reaches a consent screen.
+
+Errors split by who is allowed to hear them. An unknown client or an unregistered redirect
+URI returns 400 and is never redirected anywhere, because reporting those *to* the supplied
+URI is how an open redirect becomes a token thief. A client's own mistake (wrong
+`response_type`, missing challenge) goes back to its registered URI with `state` intact.
+
+Codes are single-use through a conditional delete, so two simultaneous redemptions cannot
+both succeed, and are bound to client, redirect URI and challenge. The authorization
+request is parked server-side under an opaque id, so the browser carries a handle rather
+than the parameters, and nothing edited in the address bar changes the destination. The
+identity attached to a code comes from the verified JWT, never the request body.
+
+**Stated limitations.** The refresh token handed to a client is the person's own Cognito
+refresh token, because minting a separate one would need their password again, so a
+connected client has the reach of their signed-in session until it expires or they sign out
+everywhere. The consent screen says exactly that. And API Gateway HTTP APIs return a bare
+`www-authenticate: Bearer` on 401 with no way to customise it, so the `resource_metadata`
+pointer the MCP spec asks for is absent; clients fall back to probing
+`/.well-known/oauth-protected-resource`, which is served. Hand-rolling JWT verification to
+gain that header would trade a real security property for a cosmetic one.
+
+---
+
+
 ## Application state machine
 
 Defined in `backend/src/career_agent/workflow.py` as `STATES` and `TRANSITIONS`, and
