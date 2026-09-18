@@ -32,9 +32,11 @@ CONNECTORS: dict[str, dict] = {
         "label": "Amazon Jobs",
         "environment": "live", "status": "verified_live",
         "capabilities": ["discover", "read_details"],
-        "note": ("amazon.jobs serves its own search as public JSON. The only board here that publishes "
-                 "basic and preferred qualifications separately, which is the shape the matcher wants. "
-                 "Submitting needs an Amazon candidate account, so applying is a prepared manual handoff."),
+        "note": (
+        "Amazon Jobs provides public job search data in JSON format. "
+        "Job postings include basic and preferred qualifications separately, "
+        enabling structured candidate matching. "
+        "Applications require an Amazon candidate account."),
     },
     "oraclehcm-public": {
         "label": "Oracle HCM careers sites (JPMorgan Chase)",
