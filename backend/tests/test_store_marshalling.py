@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from decimal import Decimal
 
-from career_agent.store import Check, Delete, Put, Update, build_transact_items, C
+from career_agent.store import C, Check, Delete, Put, Update, build_transact_items
 
 TABLE = "career-agent-test"
 

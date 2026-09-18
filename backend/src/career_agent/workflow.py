@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import connectors, policy
-from .store import And, C, Check, ConditionFailed, Or, Put, Store, Update
+from .store import And, C, ConditionFailed, Or, Put, Store, Update
 from .util import Clock, canonical_json, local_date, new_id, sha256
 
 # ---------------------------------------------------------------------------
@@ -314,7 +314,7 @@ class Workflow:
             app2 = self.get_app(p.user_id, app_id)
             if app2.get("approved_hash") == packet_hash:
                 return app2
-            raise WorkflowError("conflict", "application changed while approving; refresh and retry")
+            raise WorkflowError("conflict", "application changed while approving; refresh and retry") from None
         self._mark_queued(p.user_id, app_id)
         return self.get_app(p.user_id, app_id)
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import html
-import re
 import urllib.parse
 from html.parser import HTMLParser
 from typing import Any

@@ -2,7 +2,6 @@ import unittest
 
 from helpers import JOB, P, make, new_app, packet
 
-from career_agent.store import ConditionFailed
 from career_agent.workflow import WorkflowError
 
 

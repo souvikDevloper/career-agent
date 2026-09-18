@@ -61,6 +61,8 @@ class Matcher:
                     title=job.get("title"), company=job.get("company"), location=job.get("location"),
                     description=(job.get("description") or "")[:7000], resume=resume_text[:9000],
                     structured=requirements), max_tokens=1800, correlation_id=correlation_id)
+                if not isinstance(data, dict):
+                    raise ValueError("match response was not a JSON object")
                 if not requirements:
                     requirements = data.get("requirements") or {}
                 ev = Evidence(

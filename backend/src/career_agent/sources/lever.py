@@ -40,8 +40,10 @@ def normalize(company: str, raw: dict) -> dict:
         "company": company.replace("-", " ").title(),
         "title": (raw.get("text") or "").strip(),
         "location": location,
-        # Lever states remote in its own field; fall back to the location string.
-        "work_mode": "remote" if workplace == "remote" or "remote" in location.lower() else None,
+        # Lever publishes all three modes and the employer set it deliberately, so
+        # pass it through rather than guessing. Scoring falls back to reading the
+        # location text when a board does not say.
+        "work_mode": workplace if workplace in {"remote", "hybrid", "onsite"} else None,
         "employment_type": commitment or None,
         "description": description[:12000],
         "url": raw.get("hostedUrl"),
