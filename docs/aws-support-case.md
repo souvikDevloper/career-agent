@@ -175,6 +175,61 @@ address that bounces or complains.
 
 ---
 
+## Email aws-verification@amazon.com as well as the case
+
+us-east-2 returns a different, more specific error than the other regions, and it names a
+dedicated address. Support cases queue; this address is the verification team directly.
+
+```
+An error occurred (AccessDeniedException) when calling the InvokeModel operation:
+Your account is currently being verified. Verification normally takes less than 2 hours.
+Until your account is verified, you may not have access to this operation. If you are
+still receiving this message after more than 2 hours, please let us know by writing to
+aws-verification@amazon.com. We appreciate your patience.
+```
+
+Send this, as the message itself instructs:
+
+```
+To: aws-verification@amazon.com
+Subject: Account 686090305719 - still unverified after several days, Bedrock blocked
+
+Hello,
+
+Account 686090305719 has been showing "Your account is currently being verified" for
+several days, not the "less than 2 hours" the message describes. Your own error text
+asks me to write to this address if that happens, so I am.
+
+Bedrock runtime is unusable as a result. In us-east-2:
+
+  AccessDeniedException: Your account is currently being verified. Verification normally
+  takes less than 2 hours. Until your account is verified, you may not have access to
+  this operation.
+
+In us-east-1, us-west-2, eu-central-1, ap-northeast-1 and ca-central-1 the same calls
+return ValidationException "Operation not allowed" instead. The Bedrock control plane
+works from the same credentials (ListFoundationModels returns 115 models) and my IAM user
+has AdministratorAccess, so this is the account hold rather than permissions.
+
+CloudFront CreateDistribution is refused by the same hold:
+
+  AccessDenied: Your account must be verified before you can add new CloudFront
+  resources. To verify your account, please contact AWS Support and include this
+  error message.
+
+My payment verification already succeeded - the UPI AutoPay authorisation was charged and
+refunded. I also received an email saying my services were active, but the errors above
+are from today.
+
+I am a student with a hackathon deadline. Please tell me what is outstanding and what you
+need from me.
+
+Thank you,
+Souvik
+```
+
+---
+
 ## What I tested, so you can say it in the case if asked
 
 Every Bedrock runtime path is blocked identically on this account:
@@ -183,6 +238,8 @@ Every Bedrock runtime path is blocked identically on this account:
 |---|---|
 | `Converse`, us-east-1, `us.amazon.nova-2-lite-v1:0` | ValidationException: Operation not allowed |
 | `Converse`, us-west-2, same model | ValidationException: Operation not allowed |
+| `InvokeModel`, us-east-2 | AccessDeniedException: account is currently being verified |
+| `InvokeModel`, eu-central-1 / ap-northeast-1 / ca-central-1 | ValidationException: Operation not allowed |
 | `InvokeModel`, `amazon.nova-lite-v1:0` | ValidationException: Operation not allowed |
 | `InvokeModel`, `anthropic.claude-3-haiku` | ValidationException: Operation not allowed |
 | `InvokeModel`, `meta.llama3-8b-instruct` | ValidationException: Operation not allowed |
