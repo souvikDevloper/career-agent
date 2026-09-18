@@ -141,12 +141,19 @@ def save_job_snapshot(wf, job: dict) -> tuple[bool, bool]:
         wf.store.update(Update(key[0], key[1], set={**{k: v for k, v in job.items() if v is not None},
                                                    "gsi1pk": index, "last_checked_at": now, "changed_at": now}))
         return False, True
-    if current.get("gsi1pk") != index:
+    # A connector's normalisation can change without the employer touching the
+    # posting - Amazon roles were stored under the hiring entity ("ASSPL -
+    # Karnataka") before the company name was normalised. Those fields are not in
+    # the content hash, so nothing would ever rewrite them.
+    drifted = {k: job[k] for k in ("company", "work_mode", "employment_type", "country")
+               if k in job and job[k] is not None and current.get(k) != job[k]}
+    if current.get("gsi1pk") != index or drifted:
         # Repair in place. Snapshots written before the index key was corrected
         # are invisible to search and would stay that way, because an unchanged
         # posting is never rewritten - so the fix has to notice them rather than
         # wait for the employer to edit the description.
-        wf.store.update(Update(key[0], key[1], set={"gsi1pk": index, "feed": job.get("feed") or job["source"],
+        wf.store.update(Update(key[0], key[1], set={**drifted, "gsi1pk": index,
+                                                    "feed": job.get("feed") or job["source"],
                                                     "last_checked_at": now}))
         return False, False
     return False, False  # unchanged: no write (freshness is tracked once per source)

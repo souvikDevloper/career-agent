@@ -183,3 +183,15 @@ class TestSnapshotIndexing:
         del job["feed"]
         save_job_snapshot(wf, job)
         assert wf.store.get("JOB#greenhouse:stripe:1", "SNAPSHOT")["gsi1pk"] == "SOURCE#greenhouse-public"
+
+    def test_a_normalisation_change_reaches_existing_snapshots(self):
+        """Amazon roles were stored under the hiring entity ("ASSPL - Karnataka")
+        before the company name was normalised. Company is not in the content
+        hash, so nothing would ever have rewritten it."""
+        from career_agent.matching import save_job_snapshot
+        wf = self._wf()
+        old = self._job(company="ASSPL - Karnataka")
+        wf.store.put({"pk": "JOB#greenhouse:stripe:1", "sk": "SNAPSHOT", **old,
+                      "gsi1pk": "SOURCE#greenhouse:stripe", "gsi1sk": "2026-01-01"})
+        save_job_snapshot(wf, self._job(company="Amazon"))  # same content hash
+        assert wf.store.get("JOB#greenhouse:stripe:1", "SNAPSHOT")["company"] == "Amazon"
