@@ -7,7 +7,7 @@ depends on cannot quietly stop being populated.
 import unittest
 
 from career_agent.scoring import work_mode_of
-from career_agent.sources import ashby, lever
+from career_agent.sources import ashby, greenhouse, lever
 
 
 class LeverNormalize(unittest.TestCase):
@@ -92,3 +92,32 @@ class AshbyNormalize(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GreenhouseCanonicalKey(unittest.TestCase):
+    """The board supplies requisition_id and boards abuse the field.
+
+    Stripe returns the literal sentence "See Opening ID" for every one of its
+    665 postings. Trusting it gave the whole board one canonical key, and the
+    deduplicator then collapsed 665 openings into 2 - so a search for Stripe
+    backend roles returned nothing.
+    """
+
+    def raw(self, job_id, requisition):
+        return {"id": job_id, "title": "Backend Engineer", "location": {"name": "Bengaluru"},
+                "content": "<p>Build APIs.</p>", "absolute_url": f"https://boards.greenhouse.io/x/{job_id}",
+                "requisition_id": requisition, "updated_at": "2026-09-01T00:00:00Z", "departments": []}
+
+    def test_a_placeholder_requisition_falls_back_to_the_posting_id(self):
+        for junk in ("See Opening ID", "see opening id", "", "N/A - see posting", "  "):
+            a = greenhouse.normalize("stripe", self.raw(1, junk))
+            b = greenhouse.normalize("stripe", self.raw(2, junk))
+            self.assertNotEqual(a["canonical_key"], b["canonical_key"], f"{junk!r} collapsed two postings")
+
+    def test_a_real_requisition_is_used(self):
+        job = greenhouse.normalize("stripe", self.raw(1, "REQ-4821"))
+        self.assertTrue(job["canonical_key"].endswith("REQ-4821"))
+
+    def test_the_same_posting_keeps_a_stable_key(self):
+        self.assertEqual(greenhouse.normalize("stripe", self.raw(7, "REQ-1"))["canonical_key"],
+                         greenhouse.normalize("stripe", self.raw(7, "REQ-1"))["canonical_key"])
