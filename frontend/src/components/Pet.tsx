@@ -16,7 +16,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 export type Mood = "idle" | "thinking" | "alert" | "asleep";
 
 const KEY = "career-agent.pip";
-const COLOURS = ["#00e08a", "#5fd0e0", "#ffc010", "#ff8fa3", "#b79dff"];
+const FACE = "Figtree, Inter, ui-sans-serif, sans-serif";
+
+/** Darken a #rrggbb toward black, for the shaded far side of the body. */
+function shadeOf(hex: string, amount: number) {
+  const n = parseInt(hex.slice(1), 16);
+  const mix = (c: number) => Math.round(c * (1 - amount));
+  return `rgb(${mix((n >> 16) & 255)}, ${mix((n >> 8) & 255)}, ${mix(n & 255)})`;
+}
+const COLOURS = ["#7b5cff", "#f5a9dd", "#4cc9f0", "#4ade80", "#fbbf24"];
 const MOOD_COPY: Record<Mood, string> = {
   idle: "Watching your sources.",
   thinking: "Working on it…",
@@ -30,7 +38,12 @@ const DEFAULTS: Prefs = { x: 24, y: 24, size: 92, colour: COLOURS[0], hidden: fa
 function load(): Prefs {
   try {
     const raw = localStorage.getItem(KEY);
-    return raw ? { ...DEFAULTS, ...JSON.parse(raw) } : DEFAULTS;
+    if (!raw) return DEFAULTS;
+    const saved = { ...DEFAULTS, ...JSON.parse(raw) } as Prefs;
+    // A colour saved under an earlier palette is no longer one of the choices,
+    // and leaving it makes the pet the one thing on screen that did not regrade.
+    if (!COLOURS.includes(saved.colour)) saved.colour = DEFAULTS.colour;
+    return saved;
   } catch {
     return DEFAULTS;
   }
@@ -91,70 +104,156 @@ export function Pet({ mood = "idle" }: { mood?: Mood }) {
       if (!still) t += 0.03;
       const c = size / 2;
       const rate = m === "thinking" ? 2.6 : m === "asleep" ? 0.5 : 1;
-      const breathe = still ? 0 : Math.sin(t * rate) * (m === "asleep" ? 0.012 : 0.03);
-      const body = size * (0.34 + breathe);
+      const breathe = still ? 0 : Math.sin(t * rate) * (m === "asleep" ? 0.01 : 0.026);
+      const bob = still ? 0 : Math.sin(t * rate * 0.5) * size * 0.012;
+      const body = size * (0.33 + breathe);
+      const cy = c + bob;
 
       ctx.clearRect(0, 0, size, size);
 
-      const glow = ctx.createRadialGradient(c, c, body * 0.2, c, c, body * 1.7);
-      glow.addColorStop(0, prefs.colour + "55");
+      // Contact shadow. Without something on the ground the body reads as a
+      // sticker rather than an object sitting in the corner of the screen.
+      const shadowY = c + body * 1.16;
+      const shade = ctx.createRadialGradient(c, shadowY, 0, c, shadowY, body * 0.95);
+      shade.addColorStop(0, "rgba(0, 0, 0, 0.42)");
+      shade.addColorStop(1, "rgba(0, 0, 0, 0)");
+      ctx.fillStyle = shade;
+      ctx.beginPath();
+      ctx.ellipse(c, shadowY, body * 0.95, body * 0.22 * (1 - breathe * 3), 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Ambient glow in its own colour.
+      const glow = ctx.createRadialGradient(c, cy, body * 0.3, c, cy, body * 2);
+      glow.addColorStop(0, prefs.colour + "4d");
       glow.addColorStop(1, prefs.colour + "00");
       ctx.fillStyle = glow;
       ctx.beginPath();
-      ctx.arc(c, c, body * 1.7, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.fillStyle = prefs.colour;
-      ctx.beginPath();
-      ctx.arc(c, c, body, 0, Math.PI * 2);
+      ctx.arc(c, cy, body * 2, 0, Math.PI * 2);
       ctx.fill();
 
       if (m === "thinking" && !still) {
-        ctx.strokeStyle = prefs.colour;
-        ctx.lineWidth = Math.max(1.5, size * 0.022);
-        ctx.beginPath();
-        ctx.arc(c, c, body * 1.32, t * 2.2, t * 2.2 + Math.PI * 0.55);
-        ctx.stroke();
+        // Three satellites on one orbit, rather than an arc that just spins.
+        for (let i = 0; i < 3; i++) {
+          const a = t * 2 + (i * Math.PI * 2) / 3;
+          const ox = c + Math.cos(a) * body * 1.5;
+          const oy = cy + Math.sin(a) * body * 0.52;
+          const depth = (Math.sin(a) + 1) / 2;       // behind the body at the back
+          ctx.globalAlpha = 0.35 + depth * 0.6;
+          ctx.beginPath();
+          ctx.arc(ox, oy, size * 0.022 * (0.6 + depth * 0.7), 0, Math.PI * 2);
+          ctx.fillStyle = prefs.colour;
+          ctx.fill();
+        }
+        ctx.globalAlpha = 1;
       }
+
+      // Body: lit from the upper left, with a rim light picking out the far edge.
+      const sphere = ctx.createRadialGradient(c - body * 0.34, cy - body * 0.4, body * 0.08, c, cy, body * 1.12);
+      sphere.addColorStop(0, "#ffffff");
+      sphere.addColorStop(0.18, prefs.colour);
+      sphere.addColorStop(0.82, prefs.colour);
+      sphere.addColorStop(1, shadeOf(prefs.colour, 0.42));
+      ctx.fillStyle = sphere;
+      ctx.beginPath();
+      ctx.arc(c, cy, body, 0, Math.PI * 2);
+      ctx.fill();
+
+      const rim = ctx.createLinearGradient(c, cy - body, c, cy + body);
+      rim.addColorStop(0, "rgba(255, 255, 255, 0)");
+      rim.addColorStop(0.72, "rgba(255, 255, 255, 0)");
+      rim.addColorStop(1, "rgba(255, 255, 255, 0.5)");
+      ctx.strokeStyle = rim;
+      ctx.lineWidth = Math.max(1, size * 0.018);
+      ctx.beginPath();
+      ctx.arc(c, cy, body - ctx.lineWidth / 2, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Specular highlight.
+      ctx.fillStyle = "rgba(255, 255, 255, 0.5)";
+      ctx.beginPath();
+      ctx.ellipse(c - body * 0.36, cy - body * 0.44, body * 0.2, body * 0.13, -0.6, 0, Math.PI * 2);
+      ctx.fill();
 
       eye.x += (pointer.x - eye.x) * 0.12;
       eye.y += (pointer.y - eye.y) * 0.12;
-      const off = body * 0.24;
-      const ex = c + (eye.x - 0.5) * off * 1.6;
-      const ey = c + (eye.y - 0.5) * off * 1.2;
-      const er = body * 0.2;
-      const gap = body * 0.34;
+      const off = body * 0.2;
+      const ex = c + (eye.x - 0.5) * off * 1.5;
+      const ey = cy + (eye.y - 0.5) * off * 1.1;
+      const er = body * 0.19;
+      const gap = body * 0.35;
+      const ink = "#0b0a1b";
 
-      ctx.fillStyle = "#00231a";
       if (m === "asleep") {
-        ctx.strokeStyle = "#00231a";
-        ctx.lineWidth = Math.max(1.4, body * 0.1);
+        ctx.strokeStyle = ink;
+        ctx.lineWidth = Math.max(1.5, body * 0.1);
         ctx.lineCap = "round";
         for (const s of [-1, 1]) {
           ctx.beginPath();
-          ctx.arc(c + s * gap, c - body * 0.04, er * 0.9, Math.PI * 0.15, Math.PI * 0.85);
+          ctx.arc(c + s * gap, cy - body * 0.02, er * 0.85, Math.PI * 0.18, Math.PI * 0.82);
           ctx.stroke();
         }
+        if (!still) {
+          // Zzz drifting up and fading.
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          for (let i = 0; i < 3; i++) {
+            const p = ((t * 0.32 + i * 0.33) % 1);
+            ctx.globalAlpha = Math.max(0, 1 - p) * 0.75;
+            ctx.font = `700 ${Math.round(body * (0.26 + p * 0.2))}px ${FACE}`;
+            ctx.fillStyle = "#ffffff";
+            ctx.fillText("z", c + body * (0.72 + p * 0.5), cy - body * (0.8 + p * 1.1));
+          }
+          ctx.globalAlpha = 1;
+        }
       } else {
-        const blink = !still && Math.sin(t * 0.55) > 0.985;
+        const blink = !still && Math.sin(t * 0.55) > 0.982;
         for (const s of [-1, 1]) {
+          const x = ex + s * gap;
+          if (blink) {
+            ctx.fillStyle = ink;
+            ctx.beginPath();
+            ctx.ellipse(x, ey, er, er * 0.1, 0, 0, Math.PI * 2);
+            ctx.fill();
+            continue;
+          }
+          ctx.fillStyle = "#ffffff";
           ctx.beginPath();
-          if (blink) ctx.ellipse(ex + s * gap, ey, er, er * 0.12, 0, 0, Math.PI * 2);
-          else ctx.arc(ex + s * gap, ey, er, 0, Math.PI * 2);
+          ctx.arc(x, ey, er, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = ink;
+          ctx.beginPath();
+          ctx.arc(x + (eye.x - 0.5) * er * 0.5, ey + (eye.y - 0.5) * er * 0.5, er * 0.58, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+          ctx.beginPath();
+          ctx.arc(x - er * 0.24, ey - er * 0.3, er * 0.19, 0, Math.PI * 2);
           ctx.fill();
         }
+        // A mouth, so the moods are legible at a glance and not only by colour.
+        ctx.strokeStyle = ink;
+        ctx.lineWidth = Math.max(1.2, body * 0.07);
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        if (m === "alert") ctx.arc(c, cy + body * 0.46, body * 0.15, 0, Math.PI * 2);
+        else if (m === "thinking") ctx.arc(c, cy + body * 0.34, body * 0.2, Math.PI * 0.12, Math.PI * 0.88);
+        else ctx.arc(c, cy + body * 0.22, body * 0.26, Math.PI * 0.18, Math.PI * 0.82);
+        ctx.stroke();
       }
 
       if (m === "alert") {
-        ctx.fillStyle = "#001e2b";
+        const pulse = still ? 1 : 1 + Math.sin(t * 5) * 0.08;
+        const bx = c + body * 0.8;
+        const by = cy - body * 0.8;
+        const r = body * 0.32 * pulse;
+        ctx.fillStyle = "#f5a9dd";
         ctx.beginPath();
-        ctx.arc(c + body * 0.82, c - body * 0.82, body * 0.3, 0, Math.PI * 2);
+        ctx.arc(bx, by, r, 0, Math.PI * 2);
         ctx.fill();
-        ctx.fillStyle = "#ffc010";
-        ctx.font = "700 " + Math.round(body * 0.42) + "px Figtree, Inter, sans-serif";
+        ctx.fillStyle = "#1a0f2e";
+        ctx.font = `800 ${Math.round(r * 1.25)}px ${FACE}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.fillText("!", c + body * 0.82, c - body * 0.79);
+        ctx.fillText("!", bx, by + r * 0.06);
       }
 
       if (alive && !still) frame = requestAnimationFrame(paint);

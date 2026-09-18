@@ -5,7 +5,7 @@ import { BrandMark } from "../components/Shell";
 import { Badge, ScoreRing, Spinner, useToast } from "../components/ui";
 import { IArrow, IBolt, IBrain, ICheck, IEye, IFile, IMic, IRadar, ISend, IShield, ITarget } from "../components/Icons";
 import { Spotlight, useScrolled } from "../components/motion";
-import { ConnectorField } from "../components/ConnectorField";
+import { AuroraField } from "../components/AuroraField";
 
 const STEPS = [
   { label: "Published", icon: IFile },
@@ -79,7 +79,7 @@ export function Landing() {
       </header>
 
       <section className="hero">
-        <ConnectorField className="connector-field" />
+        <AuroraField className="connector-field" />
         <div>
           <div className="rise"><Badge tone="violet" live>Built on AWS · WeMakeDevs “Ship It”</Badge></div>
           <h1 className="rise rise-1" style={{ marginTop: 18 }}>
