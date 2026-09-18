@@ -141,6 +141,28 @@ def hydrate(wf, jobs: list[dict]) -> None:
             log(logger, "source.hydrate_failed", job=job.get("job_key"), error=type(exc).__name__, detail=str(exc)[:120])
 
 
+_SUFFIXES = ("ings", "ing", "ers", "er", "ies", "es", "s")
+
+
+def _stem(word: str) -> str:
+    """Crude, deliberately.
+
+    A person types "engineering" and the posting says "Engineer"; requiring the
+    exact word found nothing for a company with four hundred live openings.
+    Trimming a common suffix and matching on the stem as a substring covers
+    engineer/engineering/engineers and developer/developers without a
+    dependency or a language model.
+    """
+    for suffix in _SUFFIXES:
+        if word.endswith(suffix) and len(word) - len(suffix) >= 4:
+            return word[: -len(suffix)]
+    return word
+
+
+def _matches(word: str, hay: str) -> bool:
+    return word in hay or _stem(word) in hay
+
+
 def keyword_filter(jobs: list[dict], keywords: str, prefs: dict) -> list[dict]:
     """Every meaningful word in the query has to appear somewhere in the job.
 
@@ -163,9 +185,9 @@ def keyword_filter(jobs: list[dict], keywords: str, prefs: dict) -> list[dict]:
             continue
         title = (j.get("title") or "").lower()
         hay = f"{title} {j.get('location', '')} {j.get('company', '')} {(j.get('description') or '')[:1500]}".lower()
-        if words and not all(w in hay for w in words):
+        if words and not all(_matches(w, hay) for w in words):
             continue
-        score = sum(3 if w in title else 1 for w in words)
+        score = sum(3 if _matches(w, title) else 1 for w in words)
         score += sum(4 for r in roles if r and r in title)
         if not words and not roles:
             score = 1
