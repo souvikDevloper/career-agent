@@ -175,6 +175,38 @@ address that bounces or complains.
 
 ---
 
+## What I tested, so you can say it in the case if asked
+
+Every Bedrock runtime path is blocked identically on this account:
+
+| Probe | Result |
+|---|---|
+| `Converse`, us-east-1, `us.amazon.nova-2-lite-v1:0` | ValidationException: Operation not allowed |
+| `Converse`, us-west-2, same model | ValidationException: Operation not allowed |
+| `InvokeModel`, `amazon.nova-lite-v1:0` | ValidationException: Operation not allowed |
+| `InvokeModel`, `anthropic.claude-3-haiku` | ValidationException: Operation not allowed |
+| `InvokeModel`, `meta.llama3-8b-instruct` | ValidationException: Operation not allowed |
+| `InvokeModel`, `mistral.mistral-7b-instruct` | ValidationException: Operation not allowed |
+| `InvokeModel`, `amazon.titan-text-express-v1` | ResourceNotFoundException: model has reached end of life |
+| `ListFoundationModels` (control plane) | 200, 115 models |
+
+The Titan row is the useful one: a *different* error proves the request reaches Bedrock
+and is validated before the block is applied. So this is not IAM, not model access, and
+not a bad model id - the service accepts the call and then refuses the operation.
+
+**SageMaker is not a workaround.** Endpoint quota on this account is 0 for every instance
+type except `ml.t2.medium` (2 vCPU, 4 GB, no GPU), which cannot host a useful model:
+
+    ml.g5.xlarge for endpoint usage   = 0
+    ml.g4dn.xlarge for endpoint usage = 0
+    ml.m5.large for endpoint usage    = 0
+    ml.t2.medium for endpoint usage   = 2
+
+If you want to mention it in the case, the ask is the same hold: the account restriction
+zeroes SageMaker hosting quota as well as Bedrock runtime.
+
+---
+
 ## What is not worth asking for
 
 **The Cognito signup code going missing is not an AWS fault and not worth a case.**
