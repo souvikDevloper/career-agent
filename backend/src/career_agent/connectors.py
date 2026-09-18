@@ -28,6 +28,13 @@ CONNECTORS: dict[str, dict] = {
     "lever-public": {"label": "Lever public job boards", "environment": "live", "status": "verified_live",
                      "capabilities": ["discover", "read_details"],
                      "note": "Public postings endpoint. Submitting needs the employer's key, so applying is a prepared manual handoff."},
+    "workday-public": {
+        "label": "Workday careers sites (PayPal, NVIDIA, Salesforce, Adobe, Autodesk, HP)",
+        "environment": "live", "status": "verified_live",
+        "capabilities": ["discover", "read_details"],
+        "note": ("The same public JSON search each employer's own careers page calls - no key and no session. "
+                 "Submitting needs an account with that employer, so applying is a prepared manual handoff."),
+    },
     "ashby-public": {"label": "Ashby public job boards", "environment": "live", "status": "verified_live",
                      "capabilities": ["discover", "read_details"],
                      "note": "Public job board endpoint. Submitting needs the employer's key, so applying is a prepared manual handoff."},

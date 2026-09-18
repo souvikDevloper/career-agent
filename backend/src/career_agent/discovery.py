@@ -8,10 +8,10 @@ from typing import Any
 
 from .config import settings as cfg
 from .matching import save_job_snapshot
-from .sources import ashby, greenhouse, lever, portal
+from .sources import ashby, greenhouse, lever, portal, workday
 from .sources.http import FetchError
 from .store import C, Update
-from .util import get_logger, log
+from .util import get_logger, log, sha256
 
 logger = get_logger("discovery")
 
@@ -29,6 +29,8 @@ def fetch_source(source: str) -> list[dict]:
         return lever.fetch_board(source.split(":", 1)[1])
     if source.startswith("ashby:"):
         return ashby.fetch_board(source.split(":", 1)[1])
+    if source.startswith("workday:"):
+        return workday.fetch_board(source.split(":", 1)[1])
     raise ValueError(f"unknown source {source}")
 
 
@@ -37,6 +39,7 @@ def all_sources(extra: list[str] | None = None) -> list[str]:
     boards = [f"greenhouse:{b}" for b in s.greenhouse_boards]
     boards += [f"lever:{b}" for b in s.lever_boards]
     boards += [f"ashby:{b}" for b in s.ashby_boards]
+    boards += [f"workday:{b}" for b in s.workday_boards]
     return list(dict.fromkeys([portal.SOURCE, *boards, *(extra or [])]))
 
 
@@ -107,6 +110,29 @@ def _dedupe(jobs: list[dict]) -> list[dict]:
         seen.add(key)
         out.append(j)
     return out
+
+
+def hydrate(wf, jobs: list[dict]) -> None:
+    """Fill in descriptions that the listing did not carry.
+
+    Workday returns a title and a location in its listing and keeps the
+    description one call further in. Fetching that for every posting on every
+    poll would be hundreds of requests for text nobody reads, so it happens here
+    instead - for the handful that survived filtering and are about to be scored.
+    Saved back, so the next search for the same posting costs nothing.
+    """
+    for job in jobs:
+        if job.get("description") or job.get("source") != workday.SOURCE:
+            continue
+        text = workday.fetch_description(job)
+        if not text:
+            continue
+        job["description"] = text
+        job["content_hash"] = sha256({k: job[k] for k in ("title", "location", "description")})
+        try:
+            save_job_snapshot(wf, job)
+        except Exception as exc:  # a cache miss is not worth failing a search over
+            log(logger, "source.hydrate_failed", job=job.get("job_key"), error=type(exc).__name__, detail=str(exc)[:120])
 
 
 def keyword_filter(jobs: list[dict], keywords: str, prefs: dict) -> list[dict]:

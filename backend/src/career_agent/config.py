@@ -42,6 +42,10 @@ class Settings:
     ashby_boards: tuple[str, ...] = field(
         default_factory=lambda: tuple(b.strip() for b in _env("ASHBY_BOARDS", "").split(",") if b.strip())
     )
+    # Workday tenants, each "tenant:pod:site" - e.g. paypal:wd1:jobs
+    workday_boards: tuple[str, ...] = field(
+        default_factory=lambda: tuple(b.strip() for b in _env("WORKDAY_BOARDS", "").split(",") if b.strip())
+    )
     global_daily_model_calls: int = field(default_factory=lambda: int(_env("GLOBAL_DAILY_MODEL_CALLS", "4000")))
     user_daily_model_calls: int = field(default_factory=lambda: int(_env("USER_DAILY_MODEL_CALLS", "300")))
     judge_daily_model_calls: int = field(default_factory=lambda: int(_env("JUDGE_DAILY_MODEL_CALLS", "80")))

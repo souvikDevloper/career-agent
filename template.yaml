@@ -39,6 +39,12 @@ Parameters:
     Type: String
     Default: ""
     Description: Comma-separated public Ashby job board tokens to monitor (live, read-only).
+  WorkdayBoards:
+    Type: String
+    Default: ""
+    Description: >
+      Comma-separated Workday careers sites as tenant:pod:site, e.g. paypal:wd1:jobs.
+      Public JSON search, the same request the employer's own careers page makes.
   SesSender:
     Type: String
     Default: ""
@@ -105,6 +111,7 @@ Globals:
         GREENHOUSE_BOARDS: !Ref GreenhouseBoards
         LEVER_BOARDS: !Ref LeverBoards
         ASHBY_BOARDS: !Ref AshbyBoards
+        WORKDAY_BOARDS: !Ref WorkdayBoards
         SES_SENDER: !Ref SesSender
         DEMO_INBOX: !Ref DemoInbox
         TELEGRAM_SECRET_PARAM: !Sub "/${AWS::StackName}/telegram-bot-token"

@@ -83,6 +83,7 @@ class Services:
             jobs.extend(discovery.cached_jobs(self.wf, src))
         matched = discovery.keyword_filter(jobs, keywords, prefs)
         candidates = matched[:limit]
+        discovery.hydrate(self.wf, candidates)
         if stats is not None:
             # What was actually looked at. An empty result is only credible if the
             # agent can say what it searched, so this travels back to the model.
