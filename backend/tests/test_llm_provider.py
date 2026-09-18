@@ -131,7 +131,7 @@ class TestFailuresAreReportedAsUnavailable:
         monkeypatch.setenv("MODEL_API_KEY_PARAM", "")
         monkeypatch.setattr(llm, "_api_key", None, raising=False)
         with pytest.raises(llm.ModelUnavailable):
-            llm._openai_key()
+            llm.openai_key()
 
     def test_a_provider_error(self, as_openai, monkeypatch):
         def boom(*a, **k):

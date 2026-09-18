@@ -105,3 +105,49 @@ class TestContextIsAlwaysReleased:
         with pytest.raises(ModelUnavailable):
             agent.run(ctx(), [])
         assert agent.CTX.current is None
+
+
+class TestStrandsFollowsTheProvider:
+    """Strands is an AWS open-source project and the agent framework here.
+
+    Hardcoding BedrockModel meant a blocked account took Strands out of the loop
+    entirely and fell through to our own tool loop - losing the framework for a
+    reason that has nothing to do with it.
+    """
+
+    def _fake_strands(self, monkeypatch):
+        import sys
+        import types
+
+        built = {}
+        openai_mod = types.ModuleType("strands.models.openai")
+        openai_mod.OpenAIModel = lambda **kw: built.setdefault("openai", kw)
+        models_mod = types.ModuleType("strands.models")
+        models_mod.BedrockModel = lambda **kw: built.setdefault("bedrock", kw)
+        for name, mod in (("strands.models", models_mod), ("strands.models.openai", openai_mod)):
+            monkeypatch.setitem(sys.modules, name, mod)
+        return built
+
+    def test_bedrock_by_default(self, monkeypatch):
+        built = self._fake_strands(monkeypatch)
+        monkeypatch.delenv("MODEL_PROVIDER", raising=False)
+        agent._strands_model()
+        assert "bedrock" in built and "openai" not in built
+
+    def test_the_configured_provider_when_bedrock_is_unreachable(self, monkeypatch):
+        built = self._fake_strands(monkeypatch)
+        monkeypatch.setenv("MODEL_PROVIDER", "openai")
+        monkeypatch.setenv("MODEL_API_BASE", "https://models.example.test/v1/")
+        monkeypatch.setenv("FALLBACK_MODEL_ID", "some-fast-model")
+        monkeypatch.setenv("MODEL_API_KEY", "test-key")
+        monkeypatch.setenv("MODEL_API_KEY_PARAM", "")
+        from career_agent import llm
+
+        monkeypatch.setattr(llm, "_api_key", None, raising=False)
+        agent._strands_model()
+        assert "bedrock" not in built, "Strands was dropped instead of pointed at the working model"
+        made = built["openai"]
+        assert made["model_id"] == "some-fast-model"
+        # trailing slash trimmed, or the client builds a double-slashed URL
+        assert made["client_args"]["base_url"] == "https://models.example.test/v1"
+        assert made["client_args"]["api_key"] == "test-key"

@@ -198,7 +198,7 @@ def json_call(system: str, prompt: str, *, documents: list[dict] | None = None, 
 _api_key: str | None = None
 
 
-def _openai_key() -> str:
+def openai_key() -> str:
     """Read the key from SSM once per execution environment, never from the repo."""
     global _api_key
     if _api_key is None:
@@ -303,7 +303,7 @@ def _openai_chat(system: str, messages: list[dict], tools: list[dict] | None,
     request = urllib.request.Request(
         s.model_api_base.rstrip("/") + "/chat/completions",
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json", "Authorization": "Bearer " + _openai_key()},
+        headers={"Content-Type": "application/json", "Authorization": "Bearer " + openai_key()},
         method="POST",
     )
     try:
