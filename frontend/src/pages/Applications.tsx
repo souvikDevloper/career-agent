@@ -6,6 +6,7 @@ import { STAGE_LABEL, STATE_META, timeAgo } from "../lib/format";
 import { Shell } from "../components/Shell";
 import { Badge, EnvBadge, Empty, Skeleton, StateBadge } from "../components/ui";
 import { ISend } from "../components/Icons";
+import SpotlightCard from "../components/motion/SpotlightCard";
 
 const LANES: { key: "action" | "progress" | "done" | "closed"; title: string; tone: string }[] = [
   { key: "action", title: "Needs you", tone: "amber" },
@@ -48,21 +49,23 @@ export function ApplicationsPage() {
       ) : view === "board" ? (
         <div className="board">
           {LANES.map((lane) => (
-            <div key={lane.key} className="card lane">
+            <div key={lane.key} className="card lane glass-stripe">
               <div className="lane-head"><span>{lane.title}</span><Badge tone={lane.tone}>{grouped[lane.key].length}</Badge></div>
               {grouped[lane.key].map((a) => (
-                <Link key={a.app_id} to={`/app/applications/${a.app_id}`} className="app-card fade-in">
-                  <div className="row between" style={{ alignItems: "flex-start" }}>
-                    <h5>{a.title}</h5>
-                    <span className="mono small" style={{ color: a.score > 80 ? "var(--mint)" : "var(--ink-2)" }}>{a.score}</span>
-                  </div>
-                  <div className="small muted" style={{ margin: "4px 0 10px" }}>{a.company}</div>
-                  <div className="row wrap" style={{ gap: 6 }}>
-                    <StateBadge state={a.action_state} />
-                    {a.recruitment_stage && <Badge tone="violet">{STAGE_LABEL[a.recruitment_stage]}</Badge>}
-                    <EnvBadge env={a.target_environment} />
-                  </div>
-                  <div className="tiny muted" style={{ marginTop: 8 }}>Updated {timeAgo(a.updated_at)}</div>
+                <Link key={a.app_id} to={`/app/applications/${a.app_id}`} style={{ display: "block", textDecoration: "none", color: "inherit" }}>
+                  <SpotlightCard className={`app-card fade-in ${a.score >= 85 ? "glow-high" : a.score >= 65 ? "glow-mid" : "glow-low"}`}>
+                    <div className="row between" style={{ alignItems: "flex-start" }}>
+                      <h5>{a.title}</h5>
+                      <span className="mono small" style={{ color: a.score > 80 ? "var(--mint)" : "var(--ink-2)" }}>{a.score}</span>
+                    </div>
+                    <div className="small muted" style={{ margin: "4px 0 10px" }}>{a.company}</div>
+                    <div className="row wrap" style={{ gap: 6 }}>
+                      <StateBadge state={a.action_state} />
+                      {a.recruitment_stage && <Badge tone="violet">{STAGE_LABEL[a.recruitment_stage]}</Badge>}
+                      <EnvBadge env={a.target_environment} />
+                    </div>
+                    <div className="tiny muted" style={{ marginTop: 8 }}>Updated {timeAgo(a.updated_at)}</div>
+                  </SpotlightCard>
                 </Link>
               ))}
               {grouped[lane.key].length === 0 && <p className="tiny muted" style={{ padding: "8px 4px" }}>Empty</p>}

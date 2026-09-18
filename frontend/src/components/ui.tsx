@@ -82,7 +82,7 @@ export function Drawer({ open, onClose, children, label }: { open: boolean; onCl
   return createPortal(
     <>
       <div className="drawer-backdrop" onClick={onClose} />
-      <aside className="drawer" role="dialog" aria-modal="true" aria-label={label}>
+      <aside className="drawer glass-stripe" role="dialog" aria-modal="true" aria-label={label}>
         <button className="btn icon ghost" style={{ position: "absolute", right: 14, top: 14 }} onClick={onClose} aria-label="Close">
           <IX />
         </button>
@@ -94,7 +94,7 @@ export function Drawer({ open, onClose, children, label }: { open: boolean; onCl
 }
 
 export function Skeleton({ h = 18, w = "100%" }: { h?: number; w?: number | string }) {
-  return <div className="skeleton" style={{ height: h, width: w }} />;
+  return <div className="skeleton glass-stripe" style={{ height: h, width: w }} />;
 }
 
 type Toast = { id: number; kind: "info" | "success" | "error"; text: string };

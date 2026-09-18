@@ -95,7 +95,7 @@ export function ProfilePage() {
             <div className="banner info"><IShield size={18} /> Example workspace: Aarav Mehta is a fictional applicant. Uploading your own resume requires your own account.</div>
           ) : (
             <div
-              className={`dropzone ${over ? "over" : ""}`}
+              className={`dropzone glass-stripe ${over ? "over" : ""}`}
               onDragOver={(e) => { e.preventDefault(); setOver(true); }}
               onDragLeave={() => setOver(false)}
               onDrop={(e) => { e.preventDefault(); setOver(false); const file = e.dataTransfer.files[0]; if (file) upload(file); }}
@@ -113,9 +113,9 @@ export function ProfilePage() {
           )}
 
           {!profile ? (
-            <div className="card"><Empty icon={<IFile />} title="No profile yet">Upload a resume to extract facts with evidence.</Empty></div>
+            <div className="card glass-stripe"><Empty icon={<IFile />} title="No profile yet">Upload a resume to extract facts with evidence.</Empty></div>
           ) : (
-            <div className="card pad">
+            <div className="card pad glass-stripe">
               <div className="card-title">
                 <h3>Basics</h3>
                 {!me?.example_workspace && (editing ? <div className="row"><button className="btn ghost sm" onClick={() => { setEditing(false); setDraft({}); }}>Cancel</button><button className="btn primary sm" onClick={save}>Save version</button></div>
@@ -125,12 +125,12 @@ export function ProfilePage() {
                 {fields.map(([k, label]) => (
                   <div key={k}>
                     <div className="label">{label} {(f.uncertain || []).includes(k) && <Badge tone="amber">check</Badge>}</div>
-                    {editing ? <input className="input" defaultValue={f[k] || ""} onChange={(e) => setDraft((d) => ({ ...d, [k]: e.target.value }))} /> : <div>{f[k] || <span className="muted">—</span>}</div>}
+                    {editing ? <input className="input input-glow" defaultValue={f[k] || ""} onChange={(e) => setDraft((d) => ({ ...d, [k]: e.target.value }))} /> : <div>{f[k] || <span className="muted">—</span>}</div>}
                   </div>
                 ))}
                 <div>
                   <div className="label">Work authorization <Badge tone={f.work_authorization?.verified ? "mint" : "amber"}>{f.work_authorization?.verified ? "confirmed by you" : "never inferred"}</Badge></div>
-                  {editing ? <input className="input" placeholder="e.g. Yes, authorized to work in India" onChange={(e) => setDraft((d) => ({ ...d, work_authorization: e.target.value }))} /> : <div>{f.work_authorization?.value || <span className="muted">Ask me when an employer requires it</span>}</div>}
+                  {editing ? <input className="input input-glow" placeholder="e.g. Yes, authorized to work in India" onChange={(e) => setDraft((d) => ({ ...d, work_authorization: e.target.value }))} /> : <div>{f.work_authorization?.value || <span className="muted">Ask me when an employer requires it</span>}</div>}
                 </div>
               </div>
               <div className="divider" />
@@ -144,7 +144,7 @@ export function ProfilePage() {
         </div>
 
         <div className="stack">
-          <div className="card pad">
+          <div className="card pad glass-stripe">
             <div className="card-title"><h3><IBrain size={16} /> Resume improvement</h3><button className="btn sm primary" onClick={runImprove} disabled={improving || !profile}>{improving && <Spinner />} Suggest edits</button></div>
             <p className="small muted">Readability and evidence gaps. Suggestions never add qualifications — missing details become questions for you.</p>
             {(f.suggestions || []).slice(0, 3).map((s: any, i: number) => (
@@ -153,7 +153,7 @@ export function ProfilePage() {
             {improve && (
               <div className="fade-in" style={{ marginTop: 14 }}>
                 {(improve.edits || []).map((e: any, i: number) => (
-                  <div key={i} className="card pad" style={{ marginTop: 10, padding: 14 }}>
+                  <div key={i} className="card pad glass-stripe" style={{ marginTop: 10, padding: 14 }}>
                     <div className="eyebrow">{e.section}</div>
                     <div className="small" style={{ color: "#fecdd3", textDecoration: "line-through", marginTop: 6 }}>{e.before}</div>
                     <div className="small" style={{ color: "#a7f3d0", marginTop: 6 }}>{e.after}</div>
@@ -167,7 +167,7 @@ export function ProfilePage() {
               </div>
             )}
           </div>
-          <div className="card pad">
+          <div className="card pad glass-stripe">
             <div className="card-title"><h3>Saved answers</h3><Badge>{Object.keys(profile?.saved_answers || {}).length}</Badge></div>
             <p className="small muted">Answers you gave to employer questions, reused only for identical questions.</p>
             {Object.entries(profile?.saved_answers || {}).map(([q, a]) => (

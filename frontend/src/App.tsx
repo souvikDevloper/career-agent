@@ -3,6 +3,7 @@ import { getSession, onSession } from "./lib/auth";
 import { MeProvider } from "./lib/me";
 import { match, RouterProvider, useRouter } from "./lib/router";
 import { ToastProvider } from "./components/ui";
+import { SmoothScroll } from "./components/motion/SmoothScroll";
 import { Landing } from "./pages/Landing";
 import { AuthPage } from "./pages/Auth";
 import { Home } from "./pages/Home";
@@ -60,10 +61,12 @@ function Routes() {
 
 export function App() {
   return (
-    <RouterProvider>
-      <ToastProvider>
-        <Routes />
-      </ToastProvider>
-    </RouterProvider>
+    <SmoothScroll>
+      <RouterProvider>
+        <ToastProvider>
+          <Routes />
+        </ToastProvider>
+      </RouterProvider>
+    </SmoothScroll>
   );
 }

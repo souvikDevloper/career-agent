@@ -4,6 +4,8 @@ import { Link, useRouter } from "../lib/router";
 import { BrandMark } from "../components/Shell";
 import { Spinner, useToast } from "../components/ui";
 import { IBolt } from "../components/Icons";
+import { AtmosphericCanvas } from "../components/motion/AtmosphericCanvas";
+import { MagneticButton } from "../components/motion/MagneticButton";
 
 export function AuthPage({ mode }: { mode: "login" | "signup" }) {
   const [email, setEmail] = useState("");
@@ -40,8 +42,9 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
   }
 
   return (
-    <div className="auth">
-      <div className="card fade-in">
+    <div className="auth relative overflow-hidden">
+      <AtmosphericCanvas />
+      <div className="card glass-stripe fade-in relative z-10">
         <Link to="/" className="brand"><BrandMark /> Career Agent</Link>
         <h1>{mode === "login" ? "Welcome back" : stage === "verify" ? "Check your email" : "Create your agent"}</h1>
         <p className="muted small">
@@ -52,11 +55,11 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
             <>
               <div className="field">
                 <label className="label" htmlFor="email">Email</label>
-                <input id="email" className="input" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+                <input id="email" className="input input-glow" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
               </div>
               <div className="field">
                 <label className="label" htmlFor="password">Password</label>
-                <input id="password" className="input" type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} required minLength={10} value={password} onChange={(e) => setPassword(e.target.value)} />
+                <input id="password" className="input input-glow" type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} required minLength={10} value={password} onChange={(e) => setPassword(e.target.value)} />
                 {mode === "signup" && <div className="hint">At least 10 characters with upper, lower case and a number.</div>}
               </div>
             </>
@@ -70,13 +73,15 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
           {stage === "verify" && (
             <div className="field">
               <label className="label" htmlFor="code">Verification code</label>
-              <input id="code" className="input mono" inputMode="numeric" required value={code} onChange={(e) => setCode(e.target.value)} />
+              <input id="code" className="input input-glow mono" inputMode="numeric" required value={code} onChange={(e) => setCode(e.target.value)} />
             </div>
           )}
           {err && <div className="banner" style={{ marginTop: 14, color: "#fecdd3", borderColor: "rgba(251,113,133,.4)", background: "rgba(251,113,133,.08)" }}>{err}</div>}
-          <button className="btn primary lg" style={{ width: "100%", marginTop: 18 }} disabled={busy}>
-            {busy && <Spinner />} {mode === "login" ? "Sign in" : stage === "verify" ? "Verify and continue" : "Create account"}
-          </button>
+          <div style={{ marginTop: 18 }}>
+            <MagneticButton type="submit" className="btn primary lg" style={{ width: "100%" } as any} disabled={busy}>
+              {busy && <Spinner />} {mode === "login" ? "Sign in" : stage === "verify" ? "Verify and continue" : "Create account"}
+            </MagneticButton>
+          </div>
         </form>
         <div className="divider" />
         <button

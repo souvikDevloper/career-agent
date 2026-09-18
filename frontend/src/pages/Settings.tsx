@@ -68,13 +68,13 @@ export function SettingsPage() {
       </div>
 
       <div className="stack">
-        <div className="card pad">
+        <div className="card pad glass-stripe">
           <div className="card-title"><h3><IShield size={16} /> Approval mode</h3><Badge tone="violet">Cedar policy authz/1.0</Badge></div>
           <div className="grid g3">
             {MODES.map((m) => (
               <button
                 key={m.key}
-                className={`mode-card ${s.mode === m.key ? "selected" : ""}`}
+                className={`mode-card glass-stripe-hover ${s.mode === m.key ? "selected" : ""}`}
                 onClick={() => run("mode", () => m.key === "review" ? api("/api/mandate", { body: { enabled: false } }) : api("/api/mandate", { body: { enabled: true, mode: m.key, hours } }),
                   m.key === "review" ? "Every application now needs your approval." : `Mandate granted for ${hours} hours.`)}
               >
@@ -99,7 +99,7 @@ export function SettingsPage() {
         </div>
 
         <div className="grid g2">
-          <div className="card pad">
+          <div className="card pad glass-stripe">
             <div className="card-title"><h3>Limits</h3></div>
             <div className="field">
               <label className="label">Daily submission cap: <b>{cap}</b></label>
@@ -113,10 +113,10 @@ export function SettingsPage() {
             <button className="btn primary" style={{ marginTop: 14 }} disabled={busy === "limits"} onClick={() => run("limits", () => api("/api/settings", { method: "PUT", body: { daily_cap: cap, cooldown_seconds: cooldown } }), "Limits saved.")}>Save limits</button>
           </div>
 
-          <div className="card pad">
+          <div className="card pad glass-stripe">
             <div className="card-title"><h3>Job preferences</h3></div>
-            <div className="field"><label className="label">Roles (comma separated)</label><input className="input" value={prefs.roles} onChange={(e) => setPrefs({ ...prefs, roles: e.target.value })} placeholder="intern, backend" /></div>
-            <div className="field"><label className="label">Locations</label><input className="input" value={prefs.locations} onChange={(e) => setPrefs({ ...prefs, locations: e.target.value })} placeholder="Bengaluru, Remote" /></div>
+            <div className="field"><label className="label">Roles (comma separated)</label><input className="input input-glow" value={prefs.roles} onChange={(e) => setPrefs({ ...prefs, roles: e.target.value })} placeholder="intern, backend" /></div>
+            <div className="field"><label className="label">Locations</label><input className="input input-glow" value={prefs.locations} onChange={(e) => setPrefs({ ...prefs, locations: e.target.value })} placeholder="Bengaluru, Remote" /></div>
             <div className="field">
               <label className="label">Work modes</label>
               <div className="row">
@@ -126,19 +126,19 @@ export function SettingsPage() {
                 ))}
               </div>
             </div>
-            <div className="field"><label className="label">Never apply to</label><input className="input" value={prefs.excluded_companies} onChange={(e) => setPrefs({ ...prefs, excluded_companies: e.target.value })} /></div>
+            <div className="field"><label className="label">Never apply to</label><input className="input input-glow" value={prefs.excluded_companies} onChange={(e) => setPrefs({ ...prefs, excluded_companies: e.target.value })} /></div>
             <button className="btn primary" style={{ marginTop: 14 }} disabled={busy === "prefs"} onClick={() => run("prefs", () => api("/api/settings", { method: "PUT", body: { preferences: { ...s.preferences, roles: split(prefs.roles), locations: split(prefs.locations), work_modes: prefs.work_modes, excluded_companies: split(prefs.excluded_companies) } } }), "Preferences saved. New scores will use them.")}>Save preferences</button>
           </div>
         </div>
 
         <div className="grid g2">
-          <div className="card pad">
+          <div className="card pad glass-stripe">
             <div className="card-title"><h3><IBell size={16} /> Notifications</h3></div>
             <p className="small muted">Dashboard, email and Telegram all refer to the same application record and approval endpoint. Opening an email link never approves anything.</p>
             <div className="field" style={{ marginTop: 14 }}>
               <label className="label">Email (Amazon SES) {s.notify_email_verified ? <Badge tone="mint">verified</Badge> : s.notify_email ? <Badge tone="amber">unverified</Badge> : null}</label>
               <div className="row">
-                <input className="input" type="email" value={email} disabled={me.example_workspace} onChange={(e) => setEmail(e.target.value)} placeholder={me.example_workspace ? "Not available in example workspace" : "you@example.com"} />
+                <input className="input input-glow" type="email" value={email} disabled={me.example_workspace} onChange={(e) => setEmail(e.target.value)} placeholder={me.example_workspace ? "Not available in example workspace" : "you@example.com"} />
                 <button className="btn" disabled={me.example_workspace || !email} onClick={() => run("email", async () => { await api("/api/settings", { method: "PUT", body: { notify_email: email } }); const r = await api("/api/email/verify", { body: {} }); toast(r.verified ? "Email verified." : r.message, "info"); })}>{busy === "email" ? <Spinner /> : "Verify"}</button>
               </div>
             </div>
@@ -152,7 +152,7 @@ export function SettingsPage() {
             </div>
           </div>
 
-          <div className="card pad">
+          <div className="card pad glass-stripe">
             <div className="card-title"><h3><IGlobe size={16} /> Connectors</h3></div>
             <div className="col" style={{ gap: 10 }}>
               {Object.entries(me.connectors).map(([k, c]) => {
