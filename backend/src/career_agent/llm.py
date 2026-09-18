@@ -23,6 +23,18 @@ class ModelUnavailable(Exception):
     pass
 
 
+# Strands calls Bedrock on its own client, so a blocked model arrives as a raw
+# botocore error rather than ModelUnavailable. Both doors have to recognise it.
+MODEL_DOWN_SIGNS = ("Operation not allowed", "account is currently being verified",
+                    "AccessDeniedException", "ThrottlingException", "ServiceUnavailable",
+                    "ModelNotReady", "don't have access to the model")
+
+
+def is_unavailable(exc: BaseException) -> bool:
+    """True when the failure is the model being unreachable, not a bug in our request."""
+    return isinstance(exc, ModelUnavailable) or any(sign in str(exc) for sign in MODEL_DOWN_SIGNS)
+
+
 def client():
     global _client
     if _client is None:
