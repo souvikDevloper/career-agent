@@ -6,6 +6,7 @@ import { timeAgo } from "../lib/format";
 import { api } from "../lib/api";
 import { Badge } from "./ui";
 import { Pet, type Mood } from "./Pet";
+import { AuroraField } from "./AuroraField";
 import { IBell, IBriefcase, IChart, IChat, IHome, ILink, IList, ILogout, ISend, ISettings, IUser } from "./Icons";
 
 const NAV = [
@@ -52,6 +53,8 @@ export function Shell({ title, actions, children }: { title: string; actions?: R
   const isActive = (to: string, exact?: boolean) => (exact ? path === to : path === to || path.startsWith(to + "/"));
 
   return (
+    <>
+      <AuroraField className="app-aurora" />
     <div className="shell">
       <nav className="side" aria-label="Main">
         <Link to="/app" className="brand"><BrandMark /> Career Agent</Link>
@@ -128,5 +131,6 @@ export function Shell({ title, actions, children }: { title: string; actions?: R
       </nav>
       <Pet mood={mood} />
     </div>
+    </>
   );
 }
