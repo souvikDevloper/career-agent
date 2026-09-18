@@ -5,6 +5,7 @@ import { Link, useRouter } from "../lib/router";
 import { timeAgo } from "../lib/format";
 import { api } from "../lib/api";
 import { Badge } from "./ui";
+import { Pet, type Mood } from "./Pet";
 import { IBell, IBriefcase, IChart, IChat, IHome, IList, ILogout, ISend, ISettings, IUser } from "./Icons";
 
 const NAV = [
@@ -39,6 +40,13 @@ export function Shell({ title, actions, children }: { title: string; actions?: R
   useEffect(() => {
     document.title = `${title} · Career Agent`;
   }, [title]);
+
+  // Pip reports real state rather than idling decoratively: it sleeps when the
+  // model is unreachable and raises a flag when something is waiting on you.
+  const waiting = me?.inbox.filter((i) => !i.read).length ?? 0;
+  const used = me?.usage?.model_calls ?? 0;
+  const cap = me?.limits?.model_calls ?? 0;
+  const mood: Mood = cap > 0 && used >= cap ? "asleep" : waiting > 0 ? "alert" : "idle";
 
   const isActive = (to: string, exact?: boolean) => (exact ? path === to : path === to || path.startsWith(to + "/"));
 
@@ -117,6 +125,7 @@ export function Shell({ title, actions, children }: { title: string; actions?: R
           </Link>
         ))}
       </nav>
+      <Pet mood={mood} />
     </div>
   );
 }

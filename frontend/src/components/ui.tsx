@@ -39,7 +39,7 @@ export function ScoreRing({ score, size = "md" }: { score: number; size?: "md" |
   return (
     <div className={`ring-score ${size === "lg" ? "lg" : ""}`} aria-label={`Fit score ${score} out of 100`}>
       <svg width={dim} height={dim}>
-        <circle cx={dim / 2} cy={dim / 2} r={r} stroke="rgba(15,23,42,0.1)" strokeWidth={stroke} fill="none" />
+        <circle cx={dim / 2} cy={dim / 2} r={r} stroke="rgba(232,237,235,0.12)" strokeWidth={stroke} fill="none" />
         <circle
           cx={dim / 2} cy={dim / 2} r={r} stroke={color} strokeWidth={stroke} fill="none" strokeLinecap="round"
           strokeDasharray={c} strokeDashoffset={c - (c * shown) / 100}

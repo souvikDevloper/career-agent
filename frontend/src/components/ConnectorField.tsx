@@ -1,22 +1,28 @@
 /**
- * An interactive field of connected nodes behind the hero.
+ * A rotating point cloud behind the hero.
  *
- * Hand-written on a 2D canvas rather than pulled in through three.js: a WebGL
- * scene with physics would add roughly a megabyte of JavaScript and hold a GPU
- * context open for the whole session, which is a poor trade for decoration on a
- * page whose job is to explain a product. Depth comes from parallax and scale
- * on a per-node z, which reads as dimensional without a 3D renderer.
+ * Real perspective rather than a flat scatter: points live at (x, y, z) inside a
+ * box, rotate about two axes, and are projected with `f / (f + z)`. That single
+ * factor drives position, radius, line weight and opacity together, which is what
+ * makes near points pass convincingly in front of far ones. The pointer tilts the
+ * cloud rather than dragging individual points, so the whole field turns as one
+ * object.
  *
- * It is decoration and behaves like it: pointer-events are off, it never
- * animates under prefers-reduced-motion, and it stops entirely when the tab is
- * hidden or it scrolls out of view so it cannot burn battery in the background.
+ * Canvas 2D, ~4KB, no dependency. A WebGL scene with physics would be close to a
+ * megabyte and hold a GPU context open for the session, which is a poor trade for
+ * something behind the headline.
+ *
+ * It behaves like decoration: pointer-events off, a single static frame under
+ * prefers-reduced-motion, and the loop stops when the tab is hidden or the hero
+ * scrolls away so it cannot drain a battery in the background.
  */
 import { useEffect, useRef } from "react";
 
-type Node = { x: number; y: number; z: number; vx: number; vy: number };
+type P3 = { x: number; y: number; z: number };
 
-const LINK_DISTANCE = 130;
-const POINTER_PULL = 90;
+const FOCAL = 520;
+const LINK = 190;      // link distance in world units
+const SPREAD = 460;
 
 export function ConnectorField({ className }: { className?: string }) {
   const ref = useRef<HTMLCanvasElement>(null);
@@ -29,109 +35,99 @@ export function ConnectorField({ className }: { className?: string }) {
 
     const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const pointer = { x: -9999, y: -9999 };
-    let nodes: Node[] = [];
-    let w = 0;
-    let h = 0;
-    let frame = 0;
-    let running = false;
+    let pts: P3[] = [];
+    let w = 0, h = 0, frame = 0, running = false, t = 0;
+    // where the pointer is steering the cloud, and where it currently is
+    const aim = { x: 0, y: 0 };
+    const rot = { x: 0, y: 0 };
 
     const resize = () => {
       const r = canvas.getBoundingClientRect();
-      w = r.width;
-      h = r.height;
+      w = r.width; h = r.height;
       canvas.width = Math.round(w * dpr);
       canvas.height = Math.round(h * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      // Scale the count to the area so a wide screen is not sparse and a phone
-      // is not asked to composite hundreds of nodes.
-      const count = Math.max(18, Math.min(60, Math.round((w * h) / 14000)));
-      nodes = Array.from({ length: count }, () => ({
-        x: Math.random() * w,
-        y: Math.random() * h,
-        z: 0.35 + Math.random() * 0.65,
-        vx: (Math.random() - 0.5) * 0.18,
-        vy: (Math.random() - 0.5) * 0.18,
+      const count = Math.max(26, Math.min(74, Math.round((w * h) / 12000)));
+      pts = Array.from({ length: count }, () => ({
+        x: (Math.random() - 0.5) * SPREAD * 2,
+        y: (Math.random() - 0.5) * SPREAD * 1.1,
+        z: (Math.random() - 0.5) * SPREAD,
       }));
     };
 
     const draw = () => {
+      t += 0.0016;
+      rot.y += (aim.x - rot.y) * 0.05;
+      rot.x += (aim.y - rot.x) * 0.05;
+      const ay = still ? 0.4 : t + rot.y;
+      const ax = still ? 0.12 : Math.sin(t * 0.6) * 0.18 + rot.x;
+      const cosY = Math.cos(ay), sinY = Math.sin(ay);
+      const cosX = Math.cos(ax), sinX = Math.sin(ax);
+      const cx = w / 2, cy = h / 2;
+
+      // project once, then draw from the projected set
+      const proj = pts.map((p) => {
+        const x1 = p.x * cosY - p.z * sinY;
+        const z1 = p.x * sinY + p.z * cosY;
+        const y1 = p.y * cosX - z1 * sinX;
+        const z2 = p.y * sinX + z1 * cosX;
+        const k = FOCAL / (FOCAL + z2 + SPREAD * 0.9);
+        return { sx: cx + x1 * k, sy: cy + y1 * k, k, x: x1, y: y1, z: z2 };
+      });
+
       ctx.clearRect(0, 0, w, h);
-      for (const n of nodes) {
-        if (!still) {
-          n.x += n.vx * n.z;
-          n.y += n.vy * n.z;
-          if (n.x < 0 || n.x > w) n.vx *= -1;
-          if (n.y < 0 || n.y > h) n.vy *= -1;
-          // Nearby nodes drift toward the cursor, the far ones barely notice:
-          // the difference in response is what sells the depth.
-          const dx = pointer.x - n.x;
-          const dy = pointer.y - n.y;
-          const d = Math.hypot(dx, dy);
-          if (d < POINTER_PULL && d > 0.5) {
-            const pull = (1 - d / POINTER_PULL) * 0.35 * n.z;
-            n.x += (dx / d) * pull;
-            n.y += (dy / d) * pull;
-          }
-        }
-      }
-      for (let i = 0; i < nodes.length; i++) {
-        const a = nodes[i];
-        for (let j = i + 1; j < nodes.length; j++) {
-          const b = nodes[j];
-          const d = Math.hypot(a.x - b.x, a.y - b.y);
-          if (d > LINK_DISTANCE) continue;
-          const depth = (a.z + b.z) / 2;
-          ctx.strokeStyle = `rgba(37, 99, 235, ${(1 - d / LINK_DISTANCE) * 0.28 * depth})`;
-          ctx.lineWidth = 0.6 * depth;
+
+      for (let i = 0; i < proj.length; i++) {
+        const a = proj[i];
+        for (let j = i + 1; j < proj.length; j++) {
+          const b = proj[j];
+          const d = Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+          if (d > LINK) continue;
+          // depth drives the line's weight and how much it fades into the ground
+          const depth = (a.k + b.k) / 2;
+          const near = 1 - d / LINK;
+          ctx.strokeStyle = `rgba(0, 224, 138, ${near * 0.3 * depth * depth})`;
+          ctx.lineWidth = Math.max(0.35, 1.1 * depth * near);
           ctx.beginPath();
-          ctx.moveTo(a.x, a.y);
-          ctx.lineTo(b.x, b.y);
+          ctx.moveTo(a.sx, a.sy);
+          ctx.lineTo(b.sx, b.sy);
           ctx.stroke();
         }
       }
-      for (const n of nodes) {
-        ctx.fillStyle = `rgba(37, 99, 235, ${0.18 + n.z * 0.32})`;
+
+      // far points first so near ones land on top
+      for (const p of [...proj].sort((m, n) => m.k - n.k)) {
+        const r = Math.max(0.6, 2.6 * p.k * p.k);
+        ctx.fillStyle = `rgba(77, 255, 176, ${0.1 + p.k * p.k * 0.55})`;
         ctx.beginPath();
-        ctx.arc(n.x, n.y, 1.5 * n.z, 0, Math.PI * 2);
+        ctx.arc(p.sx, p.sy, r, 0, Math.PI * 2);
         ctx.fill();
       }
+
       if (running && !still) frame = requestAnimationFrame(draw);
     };
 
-    const start = () => {
-      if (running) return;
-      running = true;
-      frame = requestAnimationFrame(draw);
-    };
-    const stop = () => {
-      running = false;
-      cancelAnimationFrame(frame);
-    };
+    const start = () => { if (!running) { running = true; frame = requestAnimationFrame(draw); } };
+    const stop = () => { running = false; cancelAnimationFrame(frame); };
 
     const onPointer = (e: PointerEvent) => {
       const r = canvas.getBoundingClientRect();
-      pointer.x = e.clientX - r.left;
-      pointer.y = e.clientY - r.top;
+      aim.x = ((e.clientX - r.left) / r.width - 0.5) * 0.9;
+      aim.y = ((e.clientY - r.top) / r.height - 0.5) * 0.5;
     };
-    const onLeave = () => { pointer.x = -9999; pointer.y = -9999; };
     const onVisibility = () => (document.hidden ? stop() : start());
 
     resize();
-    // Paint once synchronously. requestAnimationFrame does not fire in a
-    // background or throttled tab, and without this the field would be a blank
-    // rectangle until the browser decides to schedule a frame.
+    // Paint once synchronously: requestAnimationFrame does not fire in a throttled
+    // tab, and without this the field is a blank rectangle until one is scheduled.
     draw();
     if (still) return () => {};
 
     const ro = new ResizeObserver(resize);
     ro.observe(canvas);
-    // Stop once the hero is off screen; there is no reason to paint a background
-    // nobody is looking at.
-    const io = new IntersectionObserver(([entry]) => (entry.isIntersecting ? start() : stop()), { threshold: 0 });
+    const io = new IntersectionObserver(([e]) => (e.isIntersecting ? start() : stop()), { threshold: 0 });
     io.observe(canvas);
     window.addEventListener("pointermove", onPointer, { passive: true });
-    window.addEventListener("pointerleave", onLeave);
     document.addEventListener("visibilitychange", onVisibility);
     start();
 
@@ -140,7 +136,6 @@ export function ConnectorField({ className }: { className?: string }) {
       ro.disconnect();
       io.disconnect();
       window.removeEventListener("pointermove", onPointer);
-      window.removeEventListener("pointerleave", onLeave);
       document.removeEventListener("visibilitychange", onVisibility);
     };
   }, []);
