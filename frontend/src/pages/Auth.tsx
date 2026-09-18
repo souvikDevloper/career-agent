@@ -26,7 +26,7 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
       } else if (stage === "form") {
         await signUp(email, password);
         setStage("verify");
-        toast("We emailed you a 6-digit code.", "success");
+        toast("We emailed you a 6-digit code — check Spam if it is not in your inbox.", "success");
       } else {
         await confirmSignUp(email, code);
         await signIn(email, password);
@@ -60,6 +60,12 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
                 {mode === "signup" && <div className="hint">At least 10 characters with upper, lower case and a number.</div>}
               </div>
             </>
+          )}
+          {stage === "verify" && (
+            <p className="hint">
+              The code comes from <strong>no-reply@verificationemail.com</strong>. Gmail often files it under Spam or
+              Promotions, so look there before asking for another one.
+            </p>
           )}
           {stage === "verify" && (
             <div className="field">

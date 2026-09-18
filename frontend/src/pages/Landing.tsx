@@ -66,6 +66,8 @@ export function Landing() {
   const stuck = useScrolled(20);
 
   return (
+    <>
+      <AuroraField className="app-aurora" />
     <div className="landing">
       <header className={`nav ${stuck ? "stuck" : ""}`}>
         <div className="brand"><BrandMark /> Career Agent</div>
@@ -79,7 +81,6 @@ export function Landing() {
       </header>
 
       <section className="hero">
-        <AuroraField className="connector-field" />
         <div>
           <div className="rise"><Badge tone="violet" live>Built on AWS · WeMakeDevs “Ship It”</Badge></div>
           <h1 className="rise rise-1" style={{ marginTop: 18 }}>
@@ -144,7 +145,7 @@ export function Landing() {
         </div>
       </section>
 
-      <section className="section" id="how">
+      <section className="section reveal-soft" id="how">
         <div className="eyebrow">What makes it different</div>
         <h2 style={{ marginTop: 8 }}>Autonomy you can audit.</h2>
         <p className="sub">Most “auto-apply” bots spray applications and hallucinate answers. Career Agent treats every submission like a payment: explicit rules, exact packets, receipts.</p>
@@ -159,7 +160,7 @@ export function Landing() {
           ].map(([Icon, title, body]) => {
             const I = Icon as typeof ITarget;
             return (
-              <Spotlight key={title as string} className="card feature hover">
+              <Spotlight key={title as string} className="card feature hover reveal">
                 <div className="ic"><I size={20} /></div>
                 <h3>{title as string}</h3>
                 <p>{body as string}</p>
@@ -169,7 +170,7 @@ export function Landing() {
         </div>
       </section>
 
-      <section className="section" id="architecture">
+      <section className="section reveal-soft" id="architecture">
         <div className="eyebrow">Architecture</div>
         <h2 style={{ marginTop: 8 }}>Serverless on AWS, end to end.</h2>
         <p className="sub">Each service earns its place in the demo — no always-on servers, no NAT gateway, and a usage ledger that pauses nonessential work before credits run out.</p>
@@ -191,7 +192,7 @@ export function Landing() {
         </div>
       </section>
 
-      <section className="section">
+      <section className="section reveal-soft">
         <div className="card pad" style={{ display: "flex", gap: 20, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", padding: 28, background: "var(--grad-soft)" }}>
           <div>
             <h2 style={{ fontSize: 28 }}>See a real submission in under two minutes.</h2>
@@ -206,5 +207,6 @@ export function Landing() {
         <span>LinkedIn and employer integrations are shown with their real status. We never automate platforms that prohibit it.</span>
       </footer>
     </div>
+    </>
   );
 }

@@ -692,3 +692,52 @@ html { scroll-behavior: smooth; }
    through and opaque enough to keep text readable over a moving image. */
 .app-aurora { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
 .shell { position: relative; z-index: 1; }
+
+/* ---------- scroll-linked entrance ----------
+   Driven by the scroll position itself rather than an IntersectionObserver.
+   The observer version of this was removed once already because a hash jump or
+   a fast scroll could strand a whole section at opacity 0. This cannot: the
+   @supports gate means a browser without scroll timelines simply shows the
+   content, and prefers-reduced-motion opts out the same way. It fails open. */
+.landing { position: relative; z-index: 1; }
+
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    .reveal {
+      animation: revealIn linear both;
+      animation-timeline: view();
+      animation-range: entry 0% cover 22%;
+    }
+    .reveal-soft {
+      animation: revealSoft linear both;
+      animation-timeline: view();
+      animation-range: entry 0% cover 26%;
+    }
+    /* Cards in a row arrive together rather than in a chain, so the eye reads
+       the row as one object. The lift is small on purpose. */
+    .grid > .reveal { animation-range: entry 4% cover 24%; }
+  }
+}
+
+@keyframes revealIn {
+  from { opacity: 0; transform: translateY(26px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes revealSoft {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
+}
+
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    /* App pages get the same arrival as the landing page. Cards that already
+       carry .rise keep it - that is a mount animation and the two would fight.
+       The chat thread and its aside are excluded: both are fixed-height panes
+       and animating them reads as a glitch rather than an entrance. */
+    .content .card:not(.rise):not(.chat-card):not(.agent-aside):not(.pip-panel) {
+      animation: revealSoft linear both;
+      animation-timeline: view();
+      animation-range: entry 0% cover 24%;
+    }
+  }
+}
