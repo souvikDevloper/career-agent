@@ -142,3 +142,44 @@ class TestWordForms:
 
     def test_it_does_not_rescue_a_company_we_do_not_cover(self):
         assert keyword_filter(self.AMAZON, "microsoft engineering", PREFS) == []
+
+
+class TestSnapshotIndexing:
+    """Search asks for a feed ("greenhouse:stripe"); the connector names itself
+    something else ("greenhouse-public"). Indexing by the connector made every
+    live board invisible to search - only the test portal matched, because its
+    two names happen to be the same string."""
+
+    def _wf(self):
+        from helpers import make
+        wf, _store, _clock = make()
+        return wf
+
+    def _job(self, **over):
+        base = {"job_key": "greenhouse:stripe:1", "source": "greenhouse-public", "feed": "greenhouse:stripe",
+                "company": "Stripe", "title": "Backend Engineer", "location": "Bengaluru",
+                "description": "Build APIs.", "content_hash": "h1"}
+        base.update(over)
+        return base
+
+    def test_a_new_snapshot_is_indexed_by_its_feed(self):
+        from career_agent.matching import save_job_snapshot
+        wf = self._wf()
+        save_job_snapshot(wf, self._job())
+        assert wf.store.get("JOB#greenhouse:stripe:1", "SNAPSHOT")["gsi1pk"] == "SOURCE#greenhouse:stripe"
+
+    def test_an_old_snapshot_is_repaired_without_waiting_for_an_edit(self):
+        from career_agent.matching import save_job_snapshot
+        wf = self._wf()
+        wf.store.put({"pk": "JOB#greenhouse:stripe:1", "sk": "SNAPSHOT", **self._job(),
+                      "gsi1pk": "SOURCE#greenhouse-public", "gsi1sk": "2026-01-01"})
+        save_job_snapshot(wf, self._job())  # identical content: nothing has changed
+        assert wf.store.get("JOB#greenhouse:stripe:1", "SNAPSHOT")["gsi1pk"] == "SOURCE#greenhouse:stripe"
+
+    def test_a_feedless_job_falls_back_to_its_source(self):
+        from career_agent.matching import save_job_snapshot
+        wf = self._wf()
+        job = self._job()
+        del job["feed"]
+        save_job_snapshot(wf, job)
+        assert wf.store.get("JOB#greenhouse:stripe:1", "SNAPSHOT")["gsi1pk"] == "SOURCE#greenhouse-public"

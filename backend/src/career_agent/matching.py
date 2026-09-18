@@ -124,16 +124,31 @@ def save_job_snapshot(wf, job: dict) -> tuple[bool, bool]:
     key = ("JOB#" + job["job_key"], "SNAPSHOT")
     try:
         wf.store.put({"pk": key[0], "sk": key[1], "entity": "job", **job, "first_seen_at": now, "last_checked_at": now,
-                      "gsi1pk": f"SOURCE#{job['source']}", "gsi1sk": now}, C("pk", "not_exists"))
+                      # Indexed by the configured feed ("greenhouse:stripe"), not the
+                      # connector's own name ("greenhouse-public"). Search asks for the
+                      # feed, so indexing by the connector made every live board
+                      # invisible to it - only the test portal matched, because its
+                      # connector name and its feed name happen to be the same string.
+                      "gsi1pk": f"SOURCE#{job.get('feed') or job['source']}", "gsi1sk": now},
+                     C("pk", "not_exists"))
         return True, True
     except Exception as exc:  # ConditionFailed
         if type(exc).__name__ != "ConditionFailed":
             raise
     current = wf.store.get(*key) or {}
+    index = f"SOURCE#{job.get('feed') or job['source']}"
     if current.get("content_hash") != job.get("content_hash"):
-        wf.store.update(Update(key[0], key[1], set={**{k: v for k, v in job.items() if v is not None}, "last_checked_at": now,
-                                                   "changed_at": now}))
+        wf.store.update(Update(key[0], key[1], set={**{k: v for k, v in job.items() if v is not None},
+                                                   "gsi1pk": index, "last_checked_at": now, "changed_at": now}))
         return False, True
+    if current.get("gsi1pk") != index:
+        # Repair in place. Snapshots written before the index key was corrected
+        # are invisible to search and would stay that way, because an unchanged
+        # posting is never rewritten - so the fix has to notice them rather than
+        # wait for the employer to edit the description.
+        wf.store.update(Update(key[0], key[1], set={"gsi1pk": index, "feed": job.get("feed") or job["source"],
+                                                    "last_checked_at": now}))
+        return False, False
     return False, False  # unchanged: no write (freshness is tracked once per source)
 
 
