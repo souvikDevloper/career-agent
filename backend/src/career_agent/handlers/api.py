@@ -3,6 +3,7 @@ long work is dispatched through the transactional outbox."""
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import secrets
@@ -17,7 +18,7 @@ from .. import connectors, discovery, voice
 from ..config import settings as cfg
 from ..demo import DEMO_FACTS, DEMO_PREFERENCES, DEMO_RESUME_TEXT, DEMO_SAVED_ANSWERS, PUBLISHABLE_TEMPLATES, minimal_pdf
 from ..resume import ResumeError, resume_doc_id
-from ..store import C, Put, Update
+from ..store import C, Delete, Put, Update
 from ..util import get_logger, log, new_id
 from ..workflow import Principal, WorkflowError
 from .common import SECURITY_HEADERS, body_json, correlation, error, portal_signature, principal, respond, services, verify_signature
@@ -772,3 +773,218 @@ def mcp_endpoint(event, p, cid):
         # A notification gets an acknowledgement and no body.
         return {"statusCode": 202, "headers": dict(SECURITY_HEADERS), "body": ""}
     return respond(200, reply, {"MCP-Protocol-Version": mcp_proto.SUPPORTED_VERSIONS[0]})
+
+
+# ---------------------------------------------------------------------------
+# OAuth 2.1 for the MCP connector
+#
+# Cognito stays the only place a password is checked; these endpoints decide who
+# may be handed a Cognito token, never who someone is. See career_agent.oauth.
+# ---------------------------------------------------------------------------
+
+
+def _base_url(event) -> str:
+    configured = (cfg().public_base_url or "").rstrip("/")
+    if configured:
+        return configured
+    headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
+    host = headers.get("host") or ""
+    return f"https://{host}" if host else ""
+
+
+def _oauth_error(exc) -> dict:
+    from .. import oauth as oa
+
+    if isinstance(exc, oa.RedirectableError):
+        return {"statusCode": 302, "headers": {**SECURITY_HEADERS, "Location": exc.location()}, "body": ""}
+    return respond(exc.status, {"error": exc.code, "error_description": exc.description})
+
+
+@route("GET", r"/\.well-known/oauth-protected-resource(/.*)?", auth=False)
+def oauth_protected_resource(event, p, cid):
+    from .. import oauth as oa
+
+    return respond(200, oa.protected_resource_metadata(_base_url(event)), {"Cache-Control": "public, max-age=3600"})
+
+
+@route("GET", r"/\.well-known/oauth-authorization-server(/.*)?", auth=False)
+def oauth_as_metadata(event, p, cid):
+    from .. import oauth as oa
+
+    return respond(200, oa.authorization_server_metadata(_base_url(event)), {"Cache-Control": "public, max-age=3600"})
+
+
+@route("POST", r"/oauth/register", auth=False)
+def oauth_register(event, p, cid):
+    from .. import oauth as oa
+
+    try:
+        client = oa.register_client(body_json(event), time.time())
+    except oa.OAuthError as exc:
+        return _oauth_error(exc)
+    svc = _svc()
+    svc.store.put({"pk": f"OAUTHCLIENT#{client['client_id']}", "sk": "META", "entity": "oauth_client",
+                   **client, "ttl": int(time.time()) + oa.CLIENT_TTL_SECONDS})
+    log(logger, "oauth.registered", client=client["client_id"], name=client["client_name"], correlation_id=cid)
+    return respond(201, client)
+
+
+@route("GET", r"/oauth/authorize", auth=False)
+def oauth_authorize(event, p, cid):
+    """Validate, park the request server-side, and hand the person to the app.
+
+    Parking it means the browser carries an opaque id rather than the parameters
+    themselves, so nothing a person could edit in the address bar changes where
+    the code is ultimately delivered.
+    """
+    from .. import oauth as oa
+
+    params = event.get("queryStringParameters") or {}
+    svc = _svc()
+    client = svc.store.get(f"OAUTHCLIENT#{params.get('client_id') or ''}", "META")
+    try:
+        request = oa.validate_authorize(params, client)
+    except oa.OAuthError as exc:
+        return _oauth_error(exc)
+
+    rid = oa.new_request_id()
+    svc.store.put({"pk": f"OAUTHREQ#{rid}", "sk": "META", "entity": "oauth_request", **request,
+                   "created_at": svc.wf.clock.iso(), "ttl": int(time.time()) + oa.REQUEST_TTL_SECONDS})
+    log(logger, "oauth.authorize_started", client=request["client_id"], correlation_id=cid)
+    return {"statusCode": 302,
+            "headers": {**SECURITY_HEADERS, "Location": f"{_base_url(event)}/authorize?request={rid}"},
+            "body": ""}
+
+
+@route("GET", r"/api/public/oauth/request/(?P<rid>oar_[A-Za-z0-9_-]{16,64})", auth=False)
+def oauth_request_detail(event, p, cid, rid):
+    """What the consent screen shows. Never returns the challenge or anything secret."""
+    from .. import oauth as oa
+
+    req = _svc().store.get(f"OAUTHREQ#{rid}", "META")
+    if not req:
+        raise WorkflowError("not_found", "That authorization request has expired. Start again from your client.", 404)
+    return respond(200, oa.describe_consent(req.get("client_name", "An MCP client"), req["redirect_uri"]))
+
+
+@route("POST", r"/api/oauth/grant")
+def oauth_grant(event, p, cid):
+    """The person consented. Mint a single-use code bound to their session.
+
+    Reached only with a valid Cognito JWT, so the identity attached to the code
+    is the one API Gateway verified - it is never taken from the request body.
+    """
+    from .. import oauth as oa
+
+    data = body_json(event)
+    rid = str(data.get("request") or "")
+    svc = _svc()
+    req = svc.store.get(f"OAUTHREQ#{rid}", "META")
+    if not req:
+        raise WorkflowError("not_found", "That authorization request has expired. Start again from your client.", 404)
+
+    if not data.get("approve"):
+        svc.store.delete(f"OAUTHREQ#{rid}", "META")
+        denied = oa.RedirectableError("access_denied", "The person declined.", req["redirect_uri"], req.get("state", ""))
+        return respond(200, {"redirect_to": denied.location()})
+
+    id_token = str(data.get("id_token") or "")
+    refresh_token = str(data.get("refresh_token") or "")
+    if not id_token:
+        raise WorkflowError("invalid_request", "Sign in again and retry the connection.", 400)
+
+    code = oa.new_code()
+    svc.store.transact([
+        Put({"pk": f"OAUTHCODE#{code}", "sk": "META", "entity": "oauth_code", "user_id": p.user_id,
+             "client_id": req["client_id"], "redirect_uri": req["redirect_uri"],
+             "code_challenge": req["code_challenge"], "id_token": id_token, "refresh_token": refresh_token,
+             "scope": req.get("scope", oa.SCOPE), "ttl": int(time.time()) + oa.CODE_TTL_SECONDS},
+            C("pk", "not_exists")),
+        Delete(f"OAUTHREQ#{rid}", "META"),
+    ])
+    params = {"code": code}
+    if req.get("state"):
+        params["state"] = req["state"]
+    log(logger, "oauth.granted", client=req["client_id"], user=p.user_id, correlation_id=cid)
+    return respond(200, {"redirect_to": oa.redirect_with(req["redirect_uri"], params)})
+
+
+@route("POST", r"/oauth/token", auth=False)
+def oauth_token(event, p, cid):
+    form = _form_body(event)
+    grant = form.get("grant_type")
+    if grant == "authorization_code":
+        return _oauth_code_exchange(form, cid)
+    if grant == "refresh_token":
+        return _oauth_refresh(form, cid)
+    return respond(400, {"error": "unsupported_grant_type",
+                         "error_description": "Supported grants: authorization_code, refresh_token."})
+
+
+def _form_body(event) -> dict:
+    """The token endpoint takes form encoding; accept JSON too, since clients differ."""
+    import urllib.parse
+
+    raw = event.get("body") or ""
+    if event.get("isBase64Encoded"):
+        raw = base64.b64decode(raw).decode("utf8", "ignore")
+    if raw.lstrip().startswith("{"):
+        try:
+            data = json.loads(raw)
+            return data if isinstance(data, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {k: v[0] for k, v in urllib.parse.parse_qs(raw, keep_blank_values=True).items()}
+
+
+def _oauth_code_exchange(form: dict, cid: str) -> dict:
+    from .. import oauth as oa
+
+    svc = _svc()
+    code = str(form.get("code") or "")
+    record = svc.store.get(f"OAUTHCODE#{code}", "META") if code else None
+    if not record:
+        return respond(400, {"error": "invalid_grant", "error_description": "That code is not valid."})
+    # Single use. Deleting under a condition means two simultaneous redemptions
+    # cannot both succeed; the loser is treated as a replay.
+    try:
+        svc.store.delete(f"OAUTHCODE#{code}", "META", C("pk", "exists"))
+    except Exception as exc:
+        if type(exc).__name__ != "ConditionFailed":
+            raise
+        return respond(400, {"error": "invalid_grant", "error_description": "That code has already been used."})
+
+    if form.get("client_id") != record["client_id"]:
+        return respond(400, {"error": "invalid_grant", "error_description": "That code was issued to another client."})
+    if form.get("redirect_uri") and form["redirect_uri"] != record["redirect_uri"]:
+        return respond(400, {"error": "invalid_grant", "error_description": "The redirect URI does not match."})
+    if not oa.pkce_matches(str(form.get("code_verifier") or ""), record["code_challenge"]):
+        return respond(400, {"error": "invalid_grant", "error_description": "The PKCE verifier does not match."})
+
+    log(logger, "oauth.token_issued", client=record["client_id"], user=record["user_id"], correlation_id=cid)
+    body = {"access_token": record["id_token"], "token_type": "Bearer", "expires_in": 3600,
+            "scope": record.get("scope", oa.SCOPE)}
+    if record.get("refresh_token"):
+        body["refresh_token"] = record["refresh_token"]
+    return respond(200, body)
+
+
+def _oauth_refresh(form: dict, cid: str) -> dict:
+    """Refreshing is Cognito's job; we only pass it through."""
+    import boto3
+
+    from .. import oauth as oa
+
+    token = str(form.get("refresh_token") or "")
+    if not token:
+        return respond(400, {"error": "invalid_request", "error_description": "refresh_token is required."})
+    try:
+        auth = boto3.client("cognito-idp").initiate_auth(
+            ClientId=cfg().user_pool_client_id, AuthFlow="REFRESH_TOKEN_AUTH",
+            AuthParameters={"REFRESH_TOKEN": token})["AuthenticationResult"]
+    except Exception as exc:
+        log(logger, "oauth.refresh_failed", error=type(exc).__name__, correlation_id=cid)
+        return respond(400, {"error": "invalid_grant",
+                             "error_description": "That refresh token is no longer valid. Reconnect."})
+    return respond(200, {"access_token": auth["IdToken"], "token_type": "Bearer",
+                         "expires_in": auth.get("ExpiresIn", 3600), "scope": oa.SCOPE})

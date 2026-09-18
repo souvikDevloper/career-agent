@@ -13,6 +13,7 @@ import { ApplicationDetailPage } from "./pages/ApplicationDetail";
 import { TasksPage } from "./pages/Tasks";
 import { InsightsPage } from "./pages/Insights";
 import { ConnectorsPage } from "./pages/Connectors";
+import { AuthorizePage } from "./pages/Authorize";
 import { ProfilePage } from "./pages/Profile";
 import { SettingsPage } from "./pages/Settings";
 
@@ -24,10 +25,17 @@ function Routes() {
 
   useEffect(() => {
     if (inApp && !session) navigate("/login", true);
-    if ((path === "/login" || path === "/signup") && session) navigate("/app", true);
+    if ((path === "/login" || path === "/signup") && session) {
+      // Signing in from an OAuth consent screen has to come back to it. Only a
+      // same-site path is honoured - "//evil.test" is a URL, not a path.
+      const next = new URLSearchParams(window.location.search).get("next") || "";
+      const safe = next.startsWith("/") && !next.startsWith("//") ? next : "/app";
+      navigate(safe, true);
+    }
   }, [inApp, session, path, navigate]);
 
   if (!inApp) {
+    if (path === "/authorize") return <AuthorizePage />;
     if (path === "/login") return <AuthPage mode="login" />;
     if (path === "/signup") return <AuthPage mode="signup" />;
     return <Landing />;
