@@ -25,6 +25,12 @@ CONNECTORS: dict[str, dict] = {
         "capabilities": ["discover", "read_details"],
         "note": "Public GET endpoints need no key. Submission requires the employer's Job Board API key, so applying is a prepared manual handoff.",
     },
+    "lever-public": {"label": "Lever public job boards", "environment": "live", "status": "verified_live",
+                     "capabilities": ["discover", "read_details"],
+                     "note": "Public postings endpoint. Submitting needs the employer's key, so applying is a prepared manual handoff."},
+    "ashby-public": {"label": "Ashby public job boards", "environment": "live", "status": "verified_live",
+                     "capabilities": ["discover", "read_details"],
+                     "note": "Public job board endpoint. Submitting needs the employer's key, so applying is a prepared manual handoff."},
     "email-ses": {
         "label": "Email (Amazon SES)",
         "environment": "live",

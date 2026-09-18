@@ -15,6 +15,14 @@ Parameters:
     Type: String
     Default: ""
     Description: Comma-separated public Greenhouse board tokens to monitor (live, read-only).
+  LeverBoards:
+    Type: String
+    Default: ""
+    Description: Comma-separated public Lever company tokens to monitor (live, read-only).
+  AshbyBoards:
+    Type: String
+    Default: ""
+    Description: Comma-separated public Ashby job board tokens to monitor (live, read-only).
   SesSender:
     Type: String
     Default: ""
@@ -72,6 +80,8 @@ Globals:
         API_BASE_URL: !If [WithCloudFront, !Sub "https://${Distribution.DomainName}", !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"]
         INTERNAL_SECRET_ARN: !Ref InternalSecret
         GREENHOUSE_BOARDS: !Ref GreenhouseBoards
+        LEVER_BOARDS: !Ref LeverBoards
+        ASHBY_BOARDS: !Ref AshbyBoards
         SES_SENDER: !Ref SesSender
         DEMO_INBOX: !Ref DemoInbox
         TELEGRAM_SECRET_PARAM: !Sub "/${AWS::StackName}/telegram-bot-token"

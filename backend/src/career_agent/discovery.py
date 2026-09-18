@@ -8,7 +8,7 @@ from typing import Any
 
 from .config import settings as cfg
 from .matching import save_job_snapshot
-from .sources import greenhouse, portal
+from .sources import ashby, greenhouse, lever, portal
 from .sources.http import FetchError
 from .store import C, Update
 from .util import get_logger, log
@@ -25,11 +25,18 @@ def fetch_source(source: str) -> list[dict]:
         return portal.fetch_jobs(portal_base())
     if source.startswith("greenhouse:"):
         return greenhouse.fetch_board(source.split(":", 1)[1])
+    if source.startswith("lever:"):
+        return lever.fetch_board(source.split(":", 1)[1])
+    if source.startswith("ashby:"):
+        return ashby.fetch_board(source.split(":", 1)[1])
     raise ValueError(f"unknown source {source}")
 
 
 def all_sources(extra: list[str] | None = None) -> list[str]:
-    boards = [f"greenhouse:{b}" for b in cfg().greenhouse_boards]
+    s = cfg()
+    boards = [f"greenhouse:{b}" for b in s.greenhouse_boards]
+    boards += [f"lever:{b}" for b in s.lever_boards]
+    boards += [f"ashby:{b}" for b in s.ashby_boards]
     return list(dict.fromkeys([portal.SOURCE, *boards, *(extra or [])]))
 
 
