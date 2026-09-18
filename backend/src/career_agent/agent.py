@@ -263,24 +263,55 @@ def _result_text(result: Any) -> str:
     return re.sub(r"<thinking>.*?</thinking>", "", text, flags=re.S).strip()
 
 
-def _tool_specs() -> list[dict]:
+def _json_type(annotation: str) -> dict:
+    """Map an annotation to JSON Schema.
+
+    Container first: "list[int]" is an array, not an integer, which the previous
+    substring test got backwards.
+    """
+    ann = annotation.replace("'", "")
+    if re.search(r"\blist\b|\bList\b", ann):
+        return {"type": "array", "items": {"type": "integer" if re.search(r"list\[\s*int", ann) else "string"}}
+    for name, kind in (("bool", "boolean"), ("float", "number"), ("int", "integer")):
+        if re.search(rf"\b{name}\b", ann):
+            return {"type": kind}
+    return {"type": "string"}
+
+
+def describe_tool(fn: Callable[..., dict]) -> dict:
+    """Describe one tool, for both the Bedrock tool loop and the MCP server.
+
+    Both front doors read this one registry and these one set of docstrings, so a
+    tool cannot be described one way to the voice agent and another way over MCP.
+    The Args: block becomes per-parameter documentation, which is most of what
+    makes a connector usable from a client that has never seen this codebase.
+    """
     import inspect
 
-    specs = []
-    for name, fn in TOOL_NAMES.items():
-        props, required = {}, []
-        for pname, param in inspect.signature(fn).parameters.items():
-            ann = str(param.annotation)
-            ptype = "integer" if "int" in ann else ("array" if "list" in ann else "string")
-            prop: dict[str, Any] = {"type": ptype}
-            if ptype == "array":
-                prop["items"] = {"type": "string"}
-            props[pname] = prop
-            if param.default is inspect.Parameter.empty:
-                required.append(pname)
-        specs.append({"toolSpec": {"name": name, "description": (fn.__doc__ or "").strip().split("\n")[0],
-                                   "inputSchema": {"json": {"type": "object", "properties": props, "required": required}}}})
-    return specs
+    doc = inspect.getdoc(fn) or ""
+    summary, _, arg_block = doc.partition("Args:")
+    arg_docs = {}
+    for line in arg_block.splitlines():
+        match = re.match(r"\s*(\w+):\s*(.+)", line)
+        if match:
+            arg_docs[match.group(1)] = match.group(2).strip()
+    props: dict[str, Any] = {}
+    required: list[str] = []
+    for pname, param in inspect.signature(fn).parameters.items():
+        prop = _json_type(str(param.annotation))
+        if pname in arg_docs:
+            prop["description"] = arg_docs[pname]
+        props[pname] = prop
+        if param.default is inspect.Parameter.empty:
+            required.append(pname)
+    return {"name": fn.__name__[2:], "description": " ".join(summary.split()),
+            "input_schema": {"type": "object", "properties": props, "required": required}}
+
+
+def _tool_specs() -> list[dict]:
+    return [{"toolSpec": {"name": d["name"], "description": d["description"],
+                          "inputSchema": {"json": d["input_schema"]}}}
+            for d in (describe_tool(fn) for fn in TOOLS)]
 
 
 def _converse_loop(ctx: ToolContext, history: list[dict]) -> str:
