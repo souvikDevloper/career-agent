@@ -123,3 +123,22 @@ class TestDedupeDoesNotTrustTheBoard:
             {**job("Stripe", "Backend Engineer"), "canonical_key": "greenhouse:stripe:B"},
         ]
         assert len(keyword_filter(corpus, "backend", PREFS)) == 1
+
+
+class TestWordForms:
+    """A person types "engineering"; the posting says "Engineer". Requiring the
+    exact word found nothing for a company with 400 live openings."""
+
+    AMAZON = [job("Amazon", "Software Dev Engineer", location="Bengaluru, Karnataka, IND",
+                  description="Build services.", source="amazon-jobs")]
+
+    def test_the_form_the_person_typed_does_not_have_to_match(self):
+        for query in ("amazon engineering bengaluru", "amazon engineer", "amazon engineers"):
+            assert len(keyword_filter(self.AMAZON, query, PREFS)) == 1, query
+
+    def test_an_unrelated_word_still_disqualifies(self):
+        for query in ("amazon marketing", "amazon nursing", "amazon accountant"):
+            assert keyword_filter(self.AMAZON, query, PREFS) == [], query
+
+    def test_it_does_not_rescue_a_company_we_do_not_cover(self):
+        assert keyword_filter(self.AMAZON, "microsoft engineering", PREFS) == []
