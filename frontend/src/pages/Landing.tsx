@@ -9,7 +9,6 @@ import { AtmosphericCanvas } from "../components/motion/AtmosphericCanvas";
 import { SpotlightCard } from "../components/motion/SpotlightCard";
 import { MagneticButton } from "../components/motion/MagneticButton";
 import { motion } from "motion/react";
-import { AuroraField } from "../components/AuroraField";
 
 const STEPS = [
   { label: "Published", icon: IFile },
@@ -71,7 +70,6 @@ export function Landing() {
 
   return (
     <>
-      <AuroraField className="app-aurora" />
     <div className="landing">
       <header className={`nav ${stuck ? "stuck" : ""}`}>
         <div className="brand"><BrandMark /> Career Agent</div>
