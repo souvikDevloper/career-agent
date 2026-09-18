@@ -13,6 +13,12 @@ src = ["src"]
 select = ["E", "F", "I", "B", "S"]
 ignore = ["S101", "S311", "E501", "B008", "S603", "S607", "S310"]
 
+[tool.ruff.lint.per-file-ignores]
+# S105 flags any literal near a token-shaped name. In the OAuth tests those
+# literals are protocol constants being asserted on ("Bearer", "none"), not
+# credentials. Scoped to tests so a real hardcoded secret in src still fails.
+"tests/**" = ["S105", "S106"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "tests"]

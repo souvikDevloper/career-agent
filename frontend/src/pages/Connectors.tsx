@@ -8,7 +8,6 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
-import { getSession } from "../lib/auth";
 import { useMe } from "../lib/me";
 import { Shell } from "../components/Shell";
 import { Badge, Empty, Spinner, useToast } from "../components/ui";
@@ -67,15 +66,7 @@ export function ConnectorsPage() {
   const configSnippet = useMemo(
     () =>
       JSON.stringify(
-        {
-          mcpServers: {
-            "career-agent": {
-              command: "npx",
-              args: ["-y", "mcp-remote", endpoint, "--header", "Authorization:Bearer ${CAREER_AGENT_TOKEN}"],
-              env: { CAREER_AGENT_TOKEN: "paste-your-token-here" },
-            },
-          },
-        },
+        { mcpServers: { "career-agent": { command: "npx", args: ["-y", "mcp-remote", endpoint] } } },
         null,
         2,
       ),
@@ -169,37 +160,34 @@ export function ConnectorsPage() {
         </section>
 
       <section className="card rise rise-1">
-          <p className="eyebrow">Set it up</p>
-          <h3 className="card-title">Add the connector</h3>
-          <div className="field">
-            <label className="label" htmlFor="mcp-endpoint">Endpoint</label>
-            <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-              <input id="mcp-endpoint" className="input" style={{ flex: "1 1 220px", minWidth: 0 }} readOnly value={endpoint} onFocus={(e) => e.currentTarget.select()} />
-              <button className="btn ghost" onClick={() => copy(endpoint, "Endpoint")}>Copy</button>
-            </div>
+        <p className="eyebrow">Set it up</p>
+        <h3 className="card-title">Add the connector</h3>
+        <p className="muted">
+          Paste the endpoint into your client. It discovers the rest on its own, opens a browser so you can sign in,
+          and keeps working after that — there is no token to copy and no token to re-copy in an hour.
+        </p>
+        <div className="field">
+          <label className="label" htmlFor="mcp-endpoint">Endpoint</label>
+          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+            <input id="mcp-endpoint" className="input" style={{ flex: "1 1 220px", minWidth: 0 }} readOnly value={endpoint}
+              onFocus={(e) => e.currentTarget.select()} />
+            <button className="btn ghost" onClick={() => copy(endpoint, "Endpoint")}>Copy</button>
           </div>
-          <div className="field">
-            <label className="label" htmlFor="mcp-config">Client configuration</label>
-            <textarea id="mcp-config" className="textarea" rows={12} readOnly value={configSnippet} spellCheck={false} />
-            <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-              <button className="btn ghost" onClick={() => copy(configSnippet, "Configuration")}>Copy configuration</button>
-              <button
-                className="btn ghost"
-                onClick={() => {
-                  const token = getSession()?.idToken;
-                  if (!token) return toast("Sign in again to get a token", "error");
-                  void copy(token, "Access token");
-                }}
-              >
-                Copy my access token
-              </button>
-            </div>
-            <p className="hint">
-              The token authenticates the connector as you and expires in about an hour — copy a fresh one when your
-              client starts getting 401s. Paste it into the env value above; never put it in a URL.
-            </p>
+        </div>
+        <div className="field">
+          <label className="label" htmlFor="mcp-config">For a client that runs MCP servers locally</label>
+          <textarea id="mcp-config" className="textarea" rows={8} readOnly value={configSnippet} spellCheck={false} />
+          <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+            <button className="btn ghost" onClick={() => copy(configSnippet, "Configuration")}>Copy configuration</button>
           </div>
-        </section>
+        </div>
+        <ol className="stack plain-list auth-steps">
+          <li className="list-row"><strong>1.</strong> Your client registers itself and sends you here.</li>
+          <li className="list-row"><strong>2.</strong> You sign in and see exactly what it is asking for.</li>
+          <li className="list-row"><strong>3.</strong> It receives a code, exchanges it with a PKCE verifier, and connects.</li>
+        </ol>
+        <p className="hint"><IShield /> Signing out everywhere ends every connection you have granted.</p>
+      </section>
 
       <section className="card rise rise-2">
           <p className="eyebrow"><IGlobe /> Job sources</p>

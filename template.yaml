@@ -528,6 +528,22 @@ Resources:
       ApiId: !Ref HttpApi
       RouteKey: POST /api/inbound/portal
       Target: !Sub "integrations/${ApiIntegration}"
+  # OAuth 2.1 for the MCP connector. Unauthenticated by definition: these are the
+  # endpoints a client uses to discover the authorization server and obtain a
+  # token. The token they end up with is a Cognito JWT, so every protected route
+  # keeps the authorizer it already had.
+  RouteOauthDiscovery:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: GET /.well-known/{proxy+}
+      Target: !Sub "integrations/${ApiIntegration}"
+  RouteOauth:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: ANY /oauth/{proxy+}
+      Target: !Sub "integrations/${ApiIntegration}"
   RouteTelegram:
     Type: AWS::ApiGatewayV2::Route
     Properties:

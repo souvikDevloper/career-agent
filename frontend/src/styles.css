@@ -668,3 +668,7 @@ html { scroll-behavior: smooth; }
   .turn.user .bubble { max-width: 92%; }
   .composer-wrap { padding: 12px; }
 }
+
+.consent-card { max-width: 520px; width: 100%; padding: 26px; }
+.consent-card h1 { font-family: var(--display); font-size: 22px; line-height: 1.3; margin: 10px 0 8px; }
+.auth-steps .list-row strong { color: var(--accent); margin-right: 8px; }
