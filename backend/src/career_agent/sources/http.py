@@ -10,7 +10,12 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-MAX_BYTES = 4 * 1024 * 1024
+# A large board with full descriptions is genuinely this big: Databricks is
+# 9.1 MB for 877 postings. The old 4 MB cap silently dropped that whole board
+# with "response too large", so the biggest real employer we cover contributed
+# nothing. The worker has 1 GB, so this is a bound against a runaway response,
+# not a budget.
+MAX_BYTES = 24 * 1024 * 1024
 
 
 class FetchError(Exception):

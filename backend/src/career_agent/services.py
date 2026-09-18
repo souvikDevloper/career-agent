@@ -70,7 +70,7 @@ class Services:
     # ---- search & matching ------------------------------------------------------
 
     def search(self, uid: str, op_id: str, keywords: str, *, limit: int = 6, correlation_id: str | None = None,
-               refresh: bool = True) -> list[dict]:
+               refresh: bool = True, stats: dict | None = None) -> list[dict]:
         if not self.profiles.current(uid):
             raise WorkflowError("no_profile", "Upload your resume first so I can explain fit.", 400)
         judge = self.is_judge(uid)
@@ -81,7 +81,18 @@ class Services:
                 self.wf.op_progress(uid, op_id, status="running", message=f"Checking {src}")
                 discovery.poll(self.wf, src, force=src == "northwind-test-portal")
             jobs.extend(discovery.cached_jobs(self.wf, src))
-        candidates = discovery.keyword_filter(jobs, keywords, prefs)[: limit]
+        matched = discovery.keyword_filter(jobs, keywords, prefs)
+        candidates = matched[:limit]
+        if stats is not None:
+            # What was actually looked at. An empty result is only credible if the
+            # agent can say what it searched, so this travels back to the model.
+            live = [j for j in jobs if j.get("source") != "northwind-test-portal"]
+            stats.update({
+                "live_boards": sorted({j.get("board") or j.get("source") for j in live if j.get("company")}),
+                "live_postings": len(live),
+                "test_postings": len(jobs) - len(live),
+                "matched": len(matched),
+            })
         self.wf.op_progress(uid, op_id, message=f"{len(candidates)} candidates after filters; explaining fit")
         results = []
         for job in candidates:
