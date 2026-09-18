@@ -76,10 +76,18 @@ class Services:
         judge = self.is_judge(uid)
         prefs = self.wf.settings(uid)["preferences"]
         jobs: list[dict] = []
-        for src in discovery.all_sources():
-            if refresh:
-                self.wf.op_progress(uid, op_id, status="running", message=f"Checking {src}")
-                discovery.poll(self.wf, src, force=src == "northwind-test-portal")
+        # Only the test portal is polled inline, and only because the demo depends
+        # on publishing an opening and seeing it appear seconds later. The live
+        # boards are refreshed by the five-minute scheduler instead: with 22 feeds,
+        # some needing several sequential pages, polling them here made a person
+        # asking a question wait minutes for data that was already at most half an
+        # hour old. The smoke test caught this as a timeout.
+        sources = discovery.all_sources()
+        if refresh:
+            self.wf.op_progress(uid, op_id, status="running", message="Checking the test employer")
+            discovery.poll(self.wf, portal.SOURCE, force=True)
+        self.wf.op_progress(uid, op_id, status="running", message=f"Reading {len(sources)} feeds")
+        for src in sources:
             jobs.extend(discovery.cached_jobs(self.wf, src))
         matched = discovery.keyword_filter(jobs, keywords, prefs)
         candidates = matched[:limit]
