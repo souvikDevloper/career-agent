@@ -46,6 +46,10 @@ class Settings:
     workday_boards: tuple[str, ...] = field(
         default_factory=lambda: tuple(b.strip() for b in _env("WORKDAY_BOARDS", "").split(",") if b.strip())
     )
+    # Oracle HCM sites, each "tenant:site" or "tenant:site:COUNTRY" - e.g. jpmc:CX_1001:IN
+    oracle_boards: tuple[str, ...] = field(
+        default_factory=lambda: tuple(b.strip() for b in _env("ORACLE_BOARDS", "").split(",") if b.strip())
+    )
     global_daily_model_calls: int = field(default_factory=lambda: int(_env("GLOBAL_DAILY_MODEL_CALLS", "4000")))
     user_daily_model_calls: int = field(default_factory=lambda: int(_env("USER_DAILY_MODEL_CALLS", "300")))
     judge_daily_model_calls: int = field(default_factory=lambda: int(_env("JUDGE_DAILY_MODEL_CALLS", "80")))

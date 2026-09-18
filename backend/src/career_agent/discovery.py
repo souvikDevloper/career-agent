@@ -8,7 +8,7 @@ from typing import Any
 
 from .config import settings as cfg
 from .matching import save_job_snapshot
-from .sources import ashby, greenhouse, lever, portal, workday
+from .sources import ashby, greenhouse, lever, oraclehcm, portal, workday
 from .sources.http import FetchError
 from .store import C, Update
 from .util import get_logger, log, sha256
@@ -31,6 +31,8 @@ def fetch_source(source: str) -> list[dict]:
         return ashby.fetch_board(source.split(":", 1)[1])
     if source.startswith("workday:"):
         return workday.fetch_board(source.split(":", 1)[1])
+    if source.startswith("oracle:"):
+        return oraclehcm.fetch_board(source.split(":", 1)[1])
     raise ValueError(f"unknown source {source}")
 
 
@@ -40,6 +42,7 @@ def all_sources(extra: list[str] | None = None) -> list[str]:
     boards += [f"lever:{b}" for b in s.lever_boards]
     boards += [f"ashby:{b}" for b in s.ashby_boards]
     boards += [f"workday:{b}" for b in s.workday_boards]
+    boards += [f"oracle:{b}" for b in s.oracle_boards]
     return list(dict.fromkeys([portal.SOURCE, *boards, *(extra or [])]))
 
 

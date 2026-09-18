@@ -7,7 +7,7 @@ depends on cannot quietly stop being populated.
 import unittest
 
 from career_agent.scoring import work_mode_of
-from career_agent.sources import ashby, greenhouse, lever, workday
+from career_agent.sources import ashby, greenhouse, lever, oraclehcm, workday
 
 
 class LeverNormalize(unittest.TestCase):
@@ -171,3 +171,45 @@ class WorkdayNormalize(unittest.TestCase):
         self.assertEqual(workday.parse_spec("paypal:wd1:jobs"), ("paypal", "wd1", "jobs"))
         self.assertEqual(workday.parse_spec("nvidia:wd5:NVIDIAExternalCareerSite"),
                          ("nvidia", "wd5", "NVIDIAExternalCareerSite"))
+
+
+class OracleHcmNormalize(unittest.TestCase):
+    """The other half of the large-employer world runs on Oracle rather than
+    Workday; JPMorgan Chase alone publishes over seven thousand openings."""
+
+    def raw(self, **over):
+        base = {"Id": "210577366", "Title": "Lead Software Engineer",
+                "PrimaryLocation": "Bengaluru, Karnataka, India", "PrimaryLocationCountry": "IN",
+                "PostedDate": "2026-09-16", "ShortDescriptionStr": "Build payment systems.",
+                "ExternalQualificationsStr": "Java, Python.", "WorkplaceType": "Hybrid",
+                "JobFamily": "Software Engineering", "JobFunction": "Technology"}
+        base.update(over)
+        return base
+
+    def test_required_fields(self):
+        job = oraclehcm.normalize("jpmc", "CX_1001", self.raw())
+        for key in ("job_key", "canonical_key", "company", "title", "url", "content_hash", "connector"):
+            self.assertTrue(job[key], f"{key} is empty")
+        self.assertEqual(job["environment"], "live")
+
+    def test_the_employer_work_mode_is_kept(self):
+        for given, expected in (("Hybrid", "hybrid"), ("Remote", "remote"), ("Onsite", "onsite")):
+            self.assertEqual(oraclehcm.normalize("jpmc", "CX_1001", self.raw(WorkplaceType=given))["work_mode"], expected)
+
+    def test_description_joins_the_parts_the_employer_published(self):
+        got = oraclehcm.normalize("jpmc", "CX_1001", self.raw())["description"]
+        self.assertIn("Build payment systems", got)
+        self.assertIn("Java, Python", got)
+
+    def test_country_is_carried_for_filtering(self):
+        self.assertEqual(oraclehcm.normalize("jpmc", "CX_1001", self.raw())["country"], "IN")
+
+    def test_a_country_may_be_pinned_in_the_spec(self):
+        self.assertEqual(oraclehcm.parse_spec("jpmc:CX_1001:IN"), ("jpmc", "CX_1001", "IN"))
+        self.assertEqual(oraclehcm.parse_spec("jpmc:CX_1001"), ("jpmc", "CX_1001", None))
+        self.assertEqual(oraclehcm.parse_spec("jpmc:CX_1001:in"), ("jpmc", "CX_1001", "IN"))
+
+    def test_a_malformed_spec_is_refused_before_it_reaches_a_url(self):
+        for bad in ("jpmc", "", "../x:CX_1001", "jpmc:CX_1001:INDIA", "jpmc:CX 1001"):
+            with self.assertRaises(ValueError, msg=bad):
+                oraclehcm.parse_spec(bad)

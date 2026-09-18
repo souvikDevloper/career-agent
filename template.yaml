@@ -39,6 +39,13 @@ Parameters:
     Type: String
     Default: ""
     Description: Comma-separated public Ashby job board tokens to monitor (live, read-only).
+  OracleBoards:
+    Type: String
+    Default: ""
+    Description: >
+      Comma-separated Oracle HCM careers sites as tenant:site or tenant:site:COUNTRY,
+      e.g. jpmc:CX_1001:IN. The country is applied at ingestion so we do not store
+      thousands of postings to keep the few hundred in one place.
   WorkdayBoards:
     Type: String
     Default: ""
@@ -112,6 +119,7 @@ Globals:
         LEVER_BOARDS: !Ref LeverBoards
         ASHBY_BOARDS: !Ref AshbyBoards
         WORKDAY_BOARDS: !Ref WorkdayBoards
+        ORACLE_BOARDS: !Ref OracleBoards
         SES_SENDER: !Ref SesSender
         DEMO_INBOX: !Ref DemoInbox
         TELEGRAM_SECRET_PARAM: !Sub "/${AWS::StackName}/telegram-bot-token"
