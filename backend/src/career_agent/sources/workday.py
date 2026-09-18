@@ -89,6 +89,7 @@ def fetch_board(spec: str, *, pages: int = 5, per_page: int = 20) -> list[dict]:
     tenant, pod, site = parse_spec(spec)
     url = f"https://{tenant}.{pod}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs"
     jobs: list[dict] = []
+    total = 0
     for page in range(pages):
         body = json.dumps({"appliedFacets": {}, "limit": per_page,
                            "offset": page * per_page, "searchText": ""}).encode()
@@ -98,8 +99,12 @@ def fetch_board(spec: str, *, pages: int = 5, per_page: int = 20) -> list[dict]:
         postings = data.get("jobPostings") if isinstance(data, dict) else None
         if not postings:
             break
+        # Workday reports the total on the first page and sends 0 on every page
+        # after it. Re-reading it each time made "have we got them all?" true
+        # immediately, which stopped every tenant at two pages.
+        total = total or int(data.get("total") or 0)
         jobs.extend(normalize(tenant, pod, site, p) for p in postings if isinstance(p, dict) and p.get("title"))
-        if len(jobs) >= int(data.get("total") or 0):
+        if len(postings) < per_page or (total and len(jobs) >= total):
             break
     return jobs
 
