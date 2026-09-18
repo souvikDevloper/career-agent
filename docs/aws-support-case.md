@@ -175,6 +175,74 @@ address that bounces or complains.
 
 ---
 
+## Reply to send when support says the account is already active
+
+Checked 2026-09-18 07:02 UTC, after support reported the account active. Two separate
+things are wrong, and only one of them is theirs.
+
+**1. The hold is still on.** CloudFront is the unambiguous proof, because its error names
+the cause rather than hiding behind a generic one:
+
+```
+AccessDenied: Your account must be verified before you can add new CloudFront resources.
+```
+
+**2. Model access was never granted** - a second, separate gap:
+
+```
+$ aws bedrock get-foundation-model-availability --model-id amazon.nova-lite-v1:0
+  authorizationStatus:     NOT_AUTHORIZED
+  agreementAvailability:   AVAILABLE
+  entitlementAvailability: AVAILABLE
+  regionAvailability:      AVAILABLE
+
+$ aws bedrock get-use-case-for-model-access
+  ResourceNotFoundException: You have not filled out the request form.
+```
+
+0 of 7 models authorised. Amazon's own models cannot be granted through
+CreateFoundationModelAgreement ("Agreement not supported for this model"), so it has to be
+the console.
+
+Send this:
+
+```
+Thank you for the update, but the account is not active yet. Checked just now
+(2026-09-18, 07:02 UTC, account 686090305719):
+
+  $ aws cloudfront create-distribution ...
+  AccessDenied: Your account must be verified before you can add new CloudFront
+  resources. To verify your account, please contact AWS Support and include this
+  error message.
+
+That error names account verification directly, so the hold is still applied.
+
+Bedrock runtime is also still refusing every call, in every region, for every model
+family, with ValidationException "Operation not allowed" - while the Bedrock control
+plane answers normally from the same credentials.
+
+Separately, I can see that model access has never been granted on this account:
+
+  get-foundation-model-availability for amazon.nova-lite-v1:0 returns
+  authorizationStatus NOT_AUTHORIZED, with agreementAvailability AVAILABLE,
+  entitlementAvailability AVAILABLE and regionAvailability AVAILABLE.
+  get-use-case-for-model-access returns "You have not filled out the request form."
+
+Could you confirm two things:
+
+1. Is the account verification hold still applied? The CloudFront error says it is.
+2. Can model access be granted while that hold is in place, or does the hold have to be
+   lifted first? I would like to enable Amazon Nova now so there is nothing else in the
+   way once verification completes.
+
+I am a student with a hackathon deadline in two days.
+
+Thank you,
+Souvik
+```
+
+---
+
 ## Email aws-verification@amazon.com as well as the case
 
 us-east-2 returns a different, more specific error than the other regions, and it names a
