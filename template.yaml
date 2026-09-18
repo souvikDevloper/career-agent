@@ -14,7 +14,7 @@ Parameters:
   ModelProvider:
     Type: String
     Default: bedrock
-    AllowedValues: [bedrock, openai]
+    AllowedValues: [bedrock, openai, anthropic]
     Description: >
       Which model serves the agent. Bedrock is the default and the model this project is built on.
       "openai" selects an OpenAI-compatible endpoint and exists only because this account cannot

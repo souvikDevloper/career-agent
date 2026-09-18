@@ -243,15 +243,18 @@ def _strands_model():
     """
     from . import llm
 
-    if llm.provider() == "openai":
+    which = llm.provider()
+    if which in ("openai", "anthropic"):
+        s = cfg()
+        args = {"api_key": llm.openai_key(), "base_url": s.model_api_base.rstrip("/")}
+        params = {"temperature": 0.3, "max_tokens": 900}
+        if which == "anthropic":
+            from strands.models.anthropic import AnthropicModel
+
+            return AnthropicModel(client_args=args, model_id=s.fallback_model_id, params=params)
         from strands.models.openai import OpenAIModel
 
-        s = cfg()
-        return OpenAIModel(
-            client_args={"api_key": llm.openai_key(), "base_url": s.model_api_base.rstrip("/")},
-            model_id=s.fallback_model_id,
-            params={"temperature": 0.3, "max_tokens": 900},
-        )
+        return OpenAIModel(client_args=args, model_id=s.fallback_model_id, params=params)
     from strands.models import BedrockModel
 
     return BedrockModel(model_id=cfg().model_id, region_name=cfg().region, temperature=0.3, max_tokens=900)
