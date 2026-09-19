@@ -388,8 +388,14 @@ class TestWordBoundaries:
         assert set(got) == {"Twilio", "Rubrik"}
 
     def test_a_word_still_matches_its_own_endings(self):
-        assert len(filter_jobs(self.CORPUS, PREFS, role="engineering")) == 3
-        assert len(filter_jobs(self.CORPUS, PREFS, role="internship")) == 2
+        assert {j["company"] for j in filter_jobs(self.CORPUS, PREFS, role="engineering")} == {
+            "Stripe", "Twilio", "Rubrik"}
+
+    def test_intern_and_internship_are_the_same_request(self):
+        """Boards title it both ways; a person types one of them."""
+        both = {"Twilio", "Rubrik"}
+        assert {j["company"] for j in filter_jobs(self.CORPUS, PREFS, role="internship")} == both
+        assert {j["company"] for j in filter_jobs(self.CORPUS, PREFS, role="intern")} == both
 
     def test_a_narrow_role_stays_narrow(self):
         got = [j["company"] for j in filter_jobs(self.CORPUS, PREFS, role="backend intern")]
