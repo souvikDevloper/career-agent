@@ -14,7 +14,7 @@ from typing import Any, Callable
 
 from pydantic import BaseModel, Field, ValidationError
 
-from .. import applying, connectors, discovery, voice
+from .. import applying, connectors, discovery, llm, voice
 from ..config import settings as cfg
 from ..demo import DEMO_FACTS, DEMO_PREFERENCES, DEMO_RESUME_TEXT, DEMO_SAVED_ANSWERS, PUBLISHABLE_TEMPLATES, minimal_pdf
 from ..resume import ResumeError, resume_doc_id
@@ -948,46 +948,42 @@ class ResumeBuilderCompileIn(BaseModel):
 
 @route("POST", r"/api/resume/builder/chat")
 def resume_builder_chat(event, p, cid):
-    """AI chat endpoint: accepts a user message + LaTeX context, returns AI reply and optional LaTeX patch."""
-    import boto3
+    """AI chat endpoint: a message plus LaTeX context in, a reply and optional patch out.
 
+    Goes through llm.json_call like every other model call here. Calling
+    bedrock-runtime.converse directly worked against the mock server and fails
+    on the real account with "ValidationException: Operation not allowed":
+    Bedrock runtime is held, which is the reason llm.py exists and routes to
+    whichever provider is configured. json_call also already strips code
+    fences and repairs a truncated object, so the unwrapping it replaced is
+    not needed.
+    """
     data = ResumeBuilderChatIn(**body_json(event))
     svc = _svc()
     s = cfg()
 
-    # Enforce the same per-user model quota as the main agent
+    # Enforce the same per-user model quota as the main agent.
     cap = s.judge_daily_model_calls if p.is_judge else s.user_daily_model_calls
-    if not svc.wf.reserve_usage(p.user_id, "model_calls", 1, cap, 40000):
+    if not svc.wf.reserve_usage(p.user_id, "model_calls", 1, cap, s.global_daily_model_calls):
         raise WorkflowError("quota", "Model call quota reached for today.", 429)
 
-    system_prompt = [{"text": _RESUME_BUILDER_SYSTEM}]
-    user_text = f"CURRENT LATEX:\n```latex\n{data.latex_context}\n```\n\nUSER REQUEST:\n{data.message}"
-
-    bedrock = boto3.client("bedrock-runtime", region_name=s.region)
-    response = bedrock.converse(
-        modelId=s.model_id,
-        system=system_prompt,
-        messages=[{"role": "user", "content": [{"text": user_text}]}],
-        inferenceConfig={"maxTokens": 4096, "temperature": 0.3},
-    )
-    raw = response["output"]["message"]["content"][0]["text"]
-
-    # Try to parse as JSON; fall back to plain text with no patch
+    prompt = (f"CURRENT LATEX:\n```latex\n{data.latex_context}\n```\n\n"
+              f"USER REQUEST:\n{data.message}")
     try:
-        import json as _json
-        # Extract JSON block if wrapped in markdown code fences
-        clean = raw.strip()
-        if clean.startswith("```"):
-            lines = clean.split("\n")
-            clean = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-        parsed = _json.loads(clean)
-        reply = str(parsed.get("reply", raw))
-        latex_patch = parsed.get("latex_patch") or None
-    except Exception:
-        reply = raw
-        latex_patch = None
+        parsed = llm.json_call(_RESUME_BUILDER_SYSTEM, prompt, max_tokens=4096, correlation_id=cid)
+    except llm.ModelUnavailable as exc:
+        # The editor is useless without the model, and a 500 tells the user
+        # nothing they can act on.
+        raise WorkflowError("model_unavailable",
+                            f"The resume assistant is unavailable right now: {exc}", 503) from exc
 
-    return respond(200, {"reply": reply, "latex_patch": latex_patch})
+    if isinstance(parsed, dict):
+        reply = str(parsed.get("reply") or "").strip()
+        patch = parsed.get("latex_patch")
+    else:
+        reply, patch = str(parsed), None
+    return respond(200, {"reply": reply or "I could not produce a reply for that.",
+                         "latex_patch": patch if isinstance(patch, str) and patch.strip() else None})
 
 
 @route("POST", r"/api/resume/builder/compile")
