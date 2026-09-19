@@ -154,19 +154,21 @@ class TestStrandsFollowsTheProvider:
 
 
 class TestPrepareSaysWhetherWeCanSubmit:
-    """Only the test portal accepts a submission from us; every real employer
-    ends in ManualHandoff. That is the finished state, not a stall - but the
-    agent described a completed packet as pending, and the user read a finished
-    application sitting on step 1 of 6 as the system hanging.
-    """
+    """The agent reports the execution route, not a connector-wide guess."""
 
     class FakeServices:
         def __init__(self, connector):
             self.connector = connector
-            self.wf = object()
 
         def request_prepare(self, uid, job_key):
-            return {"app_id": "app_1", "connector": self.connector}
+            return {"app_id": "app_1", "connector": self.connector, "job_key": job_key}
+
+        def submission_plan_for_application(self, app):
+            if self.connector == "northwind-test-portal":
+                return {"mode": "cloud_browser", "can_submit": True, "requires_user_presence": False}
+            if self.connector == "amazon-jobs":
+                return {"mode": "local_browser", "can_submit": True, "requires_user_presence": True}
+            return {"mode": "manual", "can_submit": False, "requires_user_presence": True}
 
     def run(self, connector):
         agent.CTX.current = ctx(services=self.FakeServices(connector))
@@ -176,13 +178,6 @@ class TestPrepareSaysWhetherWeCanSubmit:
             agent.CTX.current = None
 
     def test_an_authenticated_employer_requires_user_presence(self):
-        from career_agent import agent as agent_mod
-
-        fake_job = {"job_key": "amazon:1", "connector": "amazon-jobs",
-                    "apply": {"kind": "external", "url": "https://www.amazon.jobs/en/jobs/1/x"}}
-        self.FakeServices.request_prepare = lambda svc, uid, job_key: {
-            "app_id": "app_1", "connector": "amazon-jobs", "job_key": "amazon:1"}
-        agent_mod.get_job = lambda wf, key: fake_job
         got = self.run("amazon-jobs")
         assert got["we_can_submit"] is True
         assert got["execution_mode"] == "local_browser"
@@ -192,11 +187,15 @@ class TestPrepareSaysWhetherWeCanSubmit:
     def test_the_one_connector_that_can_submit_says_so(self):
         got = self.run("northwind-test-portal")
         assert got["we_can_submit"] is True
+        assert got["execution_mode"] == "cloud_browser"
         assert got["ends_in"] == "NeedsApproval"
 
     def test_an_unknown_connector_is_treated_as_not_submittable(self):
         """Defaulting the other way would promise a submission we cannot make."""
-        assert self.run("something-new")["we_can_submit"] is False
+        got = self.run("something-new")
+        assert got["we_can_submit"] is False
+        assert got["execution_mode"] == "manual"
+        assert got["ends_in"] == "ManualHandoff"
 
 
 
