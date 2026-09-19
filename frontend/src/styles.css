@@ -724,7 +724,19 @@ html { scroll-behavior: smooth; }
 /* The canvas from the landing page, fixed behind the whole view. Decorative and
    inert: pointer-events off, and the chat is fully legible with nothing painted
    behind it, so a slow chunk or a failed WebGL context costs only the sky. */
-.agent-sky { position: fixed; inset: 0; z-index: 0; pointer-events: none; opacity: 0.5; }
+/* Behind everything, and deaf to the mouse - both enforced rather than assumed.
+   z-index 0 was not far enough back: the sky is position:fixed inside .content,
+   which Framer Motion keeps transformed only while its entrance animation runs.
+   Once that settles the transform goes and the element is no longer contained by
+   .content, so it covers the whole viewport - including the sidebar, which is
+   static and therefore painted below it. The result was a page where only the
+   topbar (z-index 20) and the chat card (z-index 1) still answered clicks, which
+   is exactly the reported "everything locked until I send a message".
+   The !important is not decoration: react-three-fiber sets pointer-events: auto
+   on its own wrapper and canvas, and auto on a descendant overrides none on an
+   ancestor, so the canvas was re-enabling itself across the whole window. */
+.agent-sky { position: fixed; inset: 0; z-index: -1; opacity: 0.5; }
+.agent-sky, .agent-sky * { pointer-events: none !important; }
 .agent-sky > div { position: absolute; inset: 0; }
 @media (prefers-reduced-motion: reduce) { .agent-sky { display: none; } }
 
