@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import date as _date
 from typing import Any
 
-RUBRIC_VERSION = "fit-rubric/1.0"
+RUBRIC_VERSION = "fit-rubric/2.0"
 WEIGHTS = {"required_skills": 40, "experience": 30, "responsibilities": 20, "preferences": 10}
 
 PASS, FAIL, UNKNOWN = "pass", "fail", "unknown"
@@ -65,7 +65,11 @@ def hard_filters(job: dict, prefs: dict, facts: dict) -> list[FilterResult]:
     if roles:
         title = _norm(job.get("title"))
         hit = any(all(tok in title for tok in r.split()) for r in roles)
-        out.append(FilterResult("role", PASS if hit else FAIL, f"title '{job.get('title')}' vs {prefs.get('roles')}"))
+        # A saved role is a preference, not an eligibility rule. A user who
+        # explicitly searches for a different role must still be allowed to
+        # inspect and prepare it.
+        out.append(FilterResult("role", PASS if hit else FAIL,
+                                f"title '{job.get('title')}' vs {prefs.get('roles')}", mandatory=False))
 
     excluded = {_norm(c) for c in prefs.get("excluded_companies", []) if c}
     if excluded:
@@ -88,7 +92,10 @@ def hard_filters(job: dict, prefs: dict, facts: dict) -> list[FilterResult]:
             status = PASS
         else:
             status = FAIL
-        out.append(FilterResult("location", status, f"'{job.get('location')}' vs {prefs.get('locations')}"))
+        # Saved locations steer ranking; they do not make an otherwise eligible
+        # posting impossible to apply to.
+        out.append(FilterResult("location", status,
+                                f"'{job.get('location')}' vs {prefs.get('locations')}", mandatory=False))
 
     req = job.get("requirements") or {}
     min_years = req.get("min_years")
@@ -129,23 +136,44 @@ def hard_filters(job: dict, prefs: dict, facts: dict) -> list[FilterResult]:
         if not auth.get("verified"):
             out.append(FilterResult("work_authorization", UNKNOWN, "employer requires work authorization; ask the user"))
         else:
-            out.append(FilterResult("work_authorization", PASS, "user-confirmed"))
+            value = _norm(str(auth.get("value") or ""))
+            negative = value in {"no", "false", "not authorized", "not authorised"} or value.startswith("no ")
+            positive = value in {"yes", "true", "authorized", "authorised"} or any(
+                phrase in value for phrase in ("citizen", "permanent resident", "work permit", "authorized to work", "authorised to work")
+            )
+            if negative:
+                out.append(FilterResult("work_authorization", FAIL, f"user-confirmed: {auth.get('value')}"))
+            elif positive:
+                out.append(FilterResult("work_authorization", PASS, f"user-confirmed: {auth.get('value')}"))
+            else:
+                out.append(FilterResult("work_authorization", UNKNOWN,
+                                        f"work authorization answer needs review: {auth.get('value')}"))
     return out
 
 
-def preference_score(job: dict, prefs: dict) -> float:
-    checks = []
-    modes = [m.lower() for m in prefs.get("work_modes", []) if m]
-    if modes:
-        mode = work_mode_of(job)
-        checks.append(1.0 if mode in modes else (0.5 if mode == "unknown" else 0.0))
-    if prefs.get("min_salary"):
-        top = job.get("salary_max")
-        checks.append(0.5 if top is None else (1.0 if top >= prefs["min_salary"] else 0.0))
-    liked = [_norm(c) for c in prefs.get("preferred_companies", [])]
+def preference_score(job: dict, prefs: dict, filters: list[FilterResult] | None = None) -> float:
+    """Preference contribution, with no-preference meaning neutral rather than perfect.
+
+    The previous rubric silently awarded the full 10/10 whenever the user had
+    configured no preference at all. At the same time, saved roles/locations
+    were hard blockers. Both behaviours inverted what a preference should mean.
+    """
+    checks: list[float] = []
+    for f in filters or []:
+        if not f.mandatory and f.check in {"role", "location", "work_mode", "salary"}:
+            checks.append(1.0 if f.status == PASS else 0.5 if f.status == UNKNOWN else 0.0)
+    liked = [_norm(c) for c in prefs.get("preferred_companies", []) if c]
     if liked:
         checks.append(1.0 if _norm(job.get("company")) in liked else 0.3)
-    return sum(checks) / len(checks) if checks else 1.0
+    return sum(checks) / len(checks) if checks else 0.5
+
+
+def _evidence_backed(value: Any, quotes: list[str]) -> float:
+    """Do not grant near-full subjective credit from one vague resume passage."""
+    raw = _clamp(value)
+    unique = len({re.sub(r"\s+", " ", q.strip().lower()) for q in quotes if q and q.strip()})
+    cap = (0.2, 0.75, 0.9, 1.0)[min(unique, 3)]
+    return min(raw, cap)
 
 
 @dataclass
@@ -189,16 +217,23 @@ def _clamp(v: Any) -> float:
 def score_match(job: dict, prefs: dict, facts: dict, evidence: Evidence) -> MatchResult:
     filters = hard_filters(job, prefs, facts)
     required = [s for s in evidence.skills if s.get("required", True)]
+    preferred = [s for s in evidence.skills if not s.get("required", True)]
     if required:
-        supported = sum(1 for s in required if s.get("evidence"))
-        skills_ratio = supported / len(required)
+        required_ratio = sum(1 for s in required if s.get("evidence")) / len(required)
+        if preferred:
+            preferred_ratio = sum(1 for s in preferred if s.get("evidence")) / len(preferred)
+            # Must-haves dominate; nice-to-haves can move at most four points.
+            skills_ratio = 0.9 * required_ratio + 0.1 * preferred_ratio
+        else:
+            skills_ratio = required_ratio
     else:
-        skills_ratio = 0.5  # no explicit requirements: neutral, not a free pass
+        skills_ratio = 0.5  # no explicit must-haves: neutral, not a free pass
     components = {
         "required_skills": round(WEIGHTS["required_skills"] * skills_ratio, 1),
-        "experience": round(WEIGHTS["experience"] * _clamp(evidence.experience), 1),
-        "responsibilities": round(WEIGHTS["responsibilities"] * _clamp(evidence.responsibilities), 1),
-        "preferences": round(WEIGHTS["preferences"] * preference_score(job, prefs), 1),
+        "experience": round(WEIGHTS["experience"] * _evidence_backed(evidence.experience, evidence.experience_evidence), 1),
+        "responsibilities": round(WEIGHTS["responsibilities"] * _evidence_backed(
+            evidence.responsibilities, evidence.responsibilities_evidence), 1),
+        "preferences": round(WEIGHTS["preferences"] * preference_score(job, prefs, filters), 1),
     }
     score = int(round(sum(components.values())))
     blocked = any(f.status == FAIL and f.mandatory for f in filters)

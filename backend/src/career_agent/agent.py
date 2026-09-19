@@ -49,6 +49,8 @@ Ground rules:
   employer or a place into role - that searches the text of every posting instead of
   restricting to the one that was asked for.
 - A fit score is our own explained 0-100 rubric, not an employer's ATS score or a probability of an interview.
+- search_jobs marks a score provisional when the model evidence extractor was unavailable and the keyword fallback was used.
+  Do not call a provisional score the "best" over a fully evidenced score; say it needs a re-score.
 - Do not *volunteer* a low-scoring role as a good idea. Under 50 the evidence is not there;
   say what is missing. Over 70 is worth applying to; in between is a stretch, and say why.
 - But a score is advice, not a veto. If the person asks you to prepare something, prepare it
@@ -168,7 +170,10 @@ def t_search_jobs(role: str = "", company: str = "", location: str = "", work_mo
     ctx.actions.append({"type": "search", "count": len(cards)})
     return {"results": [{"job_key": c["job_key"], "title": c["job"].get("title"), "company": c["job"].get("company"),
                          "location": c["job"].get("location"), "score": c["score"],
-                         "blocked": c["blocked"], "unknowns": c["unknowns"][:2], "why": (c.get("explanation") or "")[:240]}
+                         "blocked": c["blocked"], "unknowns": c["unknowns"][:2],
+                         "provisional": str(c.get("extractor") or "").startswith("heuristic"),
+                         "confidence": c.get("confidence"),
+                         "why": (c.get("explanation") or "")[:240]}
                         for c in cards],
             "searched": stats}
 
