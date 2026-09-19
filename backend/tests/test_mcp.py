@@ -78,8 +78,17 @@ class TestToolList:
         assert prefs["inputSchema"]["properties"]["min_salary"]["type"] == "integer"
 
     def test_required_matches_the_signature(self):
+        """search_jobs takes structured filters, all optional - an empty search is
+        a valid request meaning "show me anything"."""
         search = next(t for t in mcp.tool_list() if t["name"] == "search_jobs")
-        assert search["inputSchema"]["required"] == ["keywords"]  # limit has a default
+        assert search["inputSchema"]["required"] == []
+        props = search["inputSchema"]["properties"]
+        assert {"role", "company", "location", "min_score"} <= set(props)
+        assert props["min_score"]["type"] == "integer"
+
+    def test_a_tool_that_does_take_a_required_argument_says_so(self):
+        watch = next(t for t in mcp.tool_list() if t["name"] == "create_watch")
+        assert watch["inputSchema"]["required"] == ["keywords"]
 
 
 class TestApprovalIsNotReachable:

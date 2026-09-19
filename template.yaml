@@ -39,6 +39,14 @@ Parameters:
     Type: String
     Default: ""
     Description: Comma-separated public Ashby job board tokens to monitor (live, read-only).
+  EnableTestEmployer:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >
+      The fictional Northwind Labs employer, used only by the end-to-end submission demo.
+      Off by default - a fictional company competing with real openings makes search
+      results look invented.
   AmazonBoards:
     Type: String
     Default: ""
@@ -127,6 +135,7 @@ Globals:
         WORKDAY_BOARDS: !Ref WorkdayBoards
         ORACLE_BOARDS: !Ref OracleBoards
         AMAZON_BOARDS: !Ref AmazonBoards
+        ENABLE_TEST_EMPLOYER: !Ref EnableTestEmployer
         SES_SENDER: !Ref SesSender
         DEMO_INBOX: !Ref DemoInbox
         TELEGRAM_SECRET_PARAM: !Sub "/${AWS::StackName}/telegram-bot-token"
