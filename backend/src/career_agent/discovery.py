@@ -202,6 +202,9 @@ ALIASES = {
     "backend": ("backend", "back end", "back-end"),
     "newgrad": ("new grad", "graduate", "entry level"),
     "fresher": ("graduate", "entry level", "intern"),
+    # Boards title the same thing both ways; a person types one of them.
+    "internship": ("intern",),
+    "interns": ("intern",),
 }
 
 
@@ -215,7 +218,9 @@ def _matches(word: str, hay: str) -> bool:
     for form in (word, _stem(word)):
         if re.search(r"\b" + re.escape(form) + _ENDINGS, hay):
             return True
-    return any(re.search(r"\b" + re.escape(alias), hay) for alias in ALIASES.get(word, ()))
+    # The closing boundary matters here too: without it the alias "intern"
+    # matched "Internal", which is the bug this function was fixing.
+    return any(re.search(r"\b" + re.escape(alias) + _ENDINGS, hay) for alias in ALIASES.get(word, ()))
 
 
 def _words(text: str) -> list[str]:
