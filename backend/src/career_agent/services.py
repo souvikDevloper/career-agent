@@ -23,6 +23,20 @@ logger = get_logger("services")
 AUTO_PREPARE_MIN_SCORE = 60
 
 
+def _candidate_pool_size(total: int, requested: int) -> int:
+    requested = max(1, min(12, requested))
+    return min(total, max(requested, min(24, requested * 3)))
+
+
+def _rank_match_cards(cards: list[dict]) -> list[dict]:
+    """Eligible first, then strongest explained fit."""
+    return sorted(cards, key=lambda c: (
+        bool(c.get("blocked")),
+        -int(c.get("score") or 0),
+        str((c.get("job") or {}).get("published_at") or ""),
+    ))
+
+
 def _same_employer(wanted: str, company: str | None) -> bool:
     name = (company or "").lower()
     return bool(name) and (wanted in name or name in wanted)
@@ -137,8 +151,13 @@ class Services:
                         jobs.extend(discovery.cached_jobs(self.wf, feed))
         matched = (discovery.filter_jobs(jobs, prefs, **active) if active
                    else discovery.keyword_filter(jobs, keywords, prefs))
-        # Scoring costs a model call each, so never score more than asked for.
-        candidates = matched[: max(1, min(12, limit))]
+        # Retrieval relevance and resume fit are different rankings. Scoring only
+        # the first N retrieval hits meant a merely keyword-heavy posting could
+        # crowd out a much better resume match sitting at N+1. Score a bounded
+        # pool, then return the best requested results.
+        requested = max(1, min(12, limit))
+        pool_size = _candidate_pool_size(len(matched), requested)
+        candidates = matched[:pool_size]
         discovery.hydrate(self.wf, candidates)
         if stats is not None:
             # What was actually looked at. An empty result is only credible if the
@@ -186,8 +205,13 @@ class Services:
                         log(logger, "search.score_failed", job=candidates[i].get("job_key"),
                             error=type(exc).__name__, detail=str(exc)[:160], correlation_id=correlation_id)
         ordered = [c for c in results if c]
+        # A search result list is a ranking. Previously it preserved retrieval
+        # order even after computing fit scores, so "best match" could literally
+        # be a lower-scoring job above a stronger one. Eligible first, then score.
+        ordered = _rank_match_cards(ordered)
         if min_score:
             ordered = [c for c in ordered if (c.get("score") or 0) >= min_score]
+        ordered = ordered[:requested]
         for card in ordered:
             self.wf.op_progress(uid, op_id, result=card)
         return ordered
