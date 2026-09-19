@@ -28,16 +28,17 @@ def U(uid: str) -> str:
 
 
 STATES = {
-    "Discovered", "Ineligible", "Preparing", "NeedsInformation", "NeedsApproval", "Authorized", "ManualHandoff",
+    "Discovered", "Ineligible", "Preparing", "NeedsInformation", "NeedsApproval", "NeedsUserPresence", "Authorized", "ManualHandoff",
     "Queued", "Paused", "Submitting", "Submitted", "KnownFailure", "OutcomeUnknown", "NeedsReview", "Withdrawn",
 }
 
 TRANSITIONS: dict[str, set[str]] = {
     "Discovered": {"Ineligible", "Preparing", "Withdrawn"},
     "Ineligible": {"Preparing", "Withdrawn"},
-    "Preparing": {"NeedsInformation", "NeedsApproval", "Authorized", "ManualHandoff", "Withdrawn"},
+    "Preparing": {"NeedsInformation", "NeedsApproval", "NeedsUserPresence", "Authorized", "ManualHandoff", "Withdrawn"},
     "NeedsInformation": {"Preparing", "Withdrawn"},
     "NeedsApproval": {"Authorized", "Preparing", "Withdrawn"},
+    "NeedsUserPresence": {"Submitted", "Preparing", "Withdrawn"},
     "ManualHandoff": {"Submitted", "Preparing", "Withdrawn"},
     "Authorized": {"Queued", "Preparing", "Paused", "Withdrawn"},
     "Queued": {"Submitting", "Paused", "Preparing", "NeedsApproval", "Withdrawn"},
@@ -234,7 +235,7 @@ class Workflow:
         app = self.get_app(uid, app_id)
         settings = settings or self.settings(uid)
         if app["action_state"] not in ("Discovered", "Ineligible", "Preparing", "NeedsInformation", "NeedsApproval",
-                                        "KnownFailure", "NeedsReview", "Authorized", "Queued", "Paused", "ManualHandoff"):
+                                        "KnownFailure", "NeedsReview", "Authorized", "Queued", "Paused", "NeedsUserPresence", "ManualHandoff"):
             raise WorkflowError("invalid_state", f"cannot prepare in state {app['action_state']}")
         # move into Preparing first (single hop from any preparable state)
         if app["action_state"] != "Preparing":
@@ -252,10 +253,13 @@ class Workflow:
             "schema_version": "packet/1", "created_at": self._now_iso(), "field_evidence": packet.get("field_evidence", {}),
             "fields": packet.get("fields", []),
         }
-        can_submit = (connectors.can(app["connector"], "submit")
-                      and bool(packet.get("target", {}).get("submittable", True)))
+        plan = (packet.get("target") or {}).get("submission") or {}
+        mode = plan.get("mode")
+        can_submit = mode == "cloud_browser" and bool(plan.get("can_submit"))
         if missing:
             target = "NeedsInformation"
+        elif mode == "local_browser":
+            target = "NeedsUserPresence"
         elif not can_submit:
             target = "ManualHandoff"
         elif settings["mode"] == "review":
@@ -378,7 +382,10 @@ class Workflow:
             "required_answers_complete": not unknown,
             "daily_remaining": cap - used,
             "cooldown_ok": True if reserve_check else cooldown_ok,
-            "connector_can_submit": connectors.can(app["connector"], "submit"),
+            "connector_can_submit": bool(
+                (((packet or {}).get("body") or {}).get("target") or {}).get("submission", {}).get("mode") == "cloud_browser"
+                if packet else connectors.can(app["connector"], "submit")
+            ),
             "paused": bool(app.get("paused")),
         }
         return policy.engine().authorize(policy.Request(p.user_id, p.is_judge, policy.SUBMIT, app["user_id"],
