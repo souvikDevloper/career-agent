@@ -31,28 +31,28 @@ no always-on compute.
                                                    │  Cognito JWT
                                                    ▼
   mic ──► Transcribe (presigned,           ┌──────────────┐
-          streaming)                       │ ApiFunction  │───────────────┐
-                                           └──────┬───────┘               │
-                                                  │ writes                │ Invoke
-                                                  ▼                       │ (sync)
-                                    ┌─────────────────────────┐           │
-                                    │ DynamoDB (single table) │           │
-                                    │  + transactional outbox │           │
-                                    └───────────┬─────────────┘           │
-                                                │ Streams (NEW_IMAGE)     │
-                                                ▼                         │
-                                         ┌──────────────┐                 │
-                                         │RelayFunction │                 │
-                                         └──┬────┬──────┘                 │
-                        ┌───────────────────┘    └────────────┐           │
-                        ▼                                     ▼           │
-                  SQS work                            SQS notify          │
-                        │                                     │           │
-                        ▼                                     ▼           │
-               ┌─────────────────┐                   ┌────────────────┐   │
-               │ WorkerFunction  │                   │NotifierFunction│   │
-               │ Strands + Nova  │                   │  SES, Telegram │   │
-               └────────┬────────┘                   └────────────────┘   │
+          streaming)                       │ ApiFunction  │────────────────┐
+                                           └──────┬───────┘                │
+                                                  │ writes                 │  Invoke
+                                                  ▼                        │  (sync)
+                                    ┌─────────────────────────┐            │
+                                    │ DynamoDB (single table) │            │
+                                    │  + transactional outbox │            │
+                                    └───────────┬─────────────┘            │
+                                                │ Streams (NEW_IMAGE)      │
+                                                ▼                          │
+                                         ┌──────────────┐                  │
+                                         │RelayFunction │                  │
+                                         └──┬────┬──────┘                  │
+                        ┌───────────────────┘    └────────────┐            │
+                        ▼                                     ▼            │
+                  SQS work                            SQS notify           │
+                        │                                     │            │
+                        ▼                                     ▼            │
+               ┌─────────────────┐                   ┌────────────────┐    │
+               │ WorkerFunction  │                   │NotifierFunction│    │
+               │ Strands + Nova  │                   │  SES, Telegram │    │
+               └────────┬────────┘                   └────────────────┘    │
                         │ outbox → SQS submit (FIFO, group = user)         │
                         ▼                                                  │
                ┌─────────────────┐        Invoke         ┌──────────────┐  │
