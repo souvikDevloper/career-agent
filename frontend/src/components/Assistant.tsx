@@ -44,6 +44,7 @@ const ACTION_COPY: Record<string, (a: any) => string> = {
   preferences_updated: () => "Updated your preferences",
   prepare_requested: () => "Started preparing a packet",
   approved: () => "Approved a packet for submission",
+  browser_ready: () => "Live browser application is ready",
 };
 
 function runtimeLabel(runtime?: string) {
@@ -369,8 +370,14 @@ export function Assistant({ compact = false }: { compact?: boolean }) {
                   <Markdown text={m.text} />
                   {actions.length > 0 && (
                     <div className="did">
-                      {actions.map((a, j) => (
-                        <span key={j} className="did-item"><ICheck size={13} /> {ACTION_COPY[a.type]?.(a) ?? a.type.replace(/_/g, " ")}</span>
+                      {actions.map((a: any, j) => (
+                        a.type === "browser_ready" && a.app_id ? (
+                          <button key={j} className="did-item" onClick={() => navigate(`/app/applications/${a.app_id}`)}>
+                            <ICheck size={13} /> Open live browser application
+                          </button>
+                        ) : (
+                          <span key={j} className="did-item"><ICheck size={13} /> {ACTION_COPY[a.type]?.(a) ?? a.type.replace(/_/g, " ")}</span>
+                        )
                       ))}
                     </div>
                   )}
