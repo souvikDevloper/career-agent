@@ -61,6 +61,7 @@ export function Assistant({ compact = false }: { compact?: boolean }) {
   const [level, setLevel] = useState(0);
   const [voiceReplies, setVoiceReplies] = useState(true);
   const [atBottom, setAtBottom] = useState(true);
+  const [hasEarlier, setHasEarlier] = useState(false);
   const [copied, setCopied] = useState<number | null>(null);
   const voice = useRef<VoiceSession | null>(null);
   const abort = useRef<AbortController | null>(null);
@@ -120,8 +121,14 @@ export function Assistant({ compact = false }: { compact?: boolean }) {
   }, []);
 
   useEffect(() => {
-    api<{ messages: ChatMsg[] }>("/api/chat")
-      .then((d) => setMessages(d.messages.slice(compact ? -4 : -40)))
+    // The dashboard preview shows the tail of the conversation; the full view is
+    // the conversation. Cutting it to forty here is what made scrolling up look
+    // broken - there was nothing above to reach.
+    api<{ messages: ChatMsg[]; complete?: boolean }>(`/api/chat?limit=${compact ? 8 : 300}`)
+      .then((d) => {
+        setMessages(compact ? d.messages.slice(-4) : d.messages);
+        setHasEarlier(!compact && d.complete === false);
+      })
       .catch(() => {});
     return () => {
       voice.current?.stop();
@@ -267,6 +274,26 @@ export function Assistant({ compact = false }: { compact?: boolean }) {
   const thread = (
     <div className="thread-wrap">
       <div ref={scroller} className={`thread ${compact ? "compact" : ""}`} onScroll={onScroll}>
+        {hasEarlier && (
+          <button
+            className="btn ghost sm"
+            style={{ alignSelf: "center" }}
+            onClick={async () => {
+              const el = scroller.current;
+              const before = el ? el.scrollHeight : 0;
+              const d = await api<{ messages: ChatMsg[]; complete?: boolean }>("/api/chat?limit=400");
+              setMessages(d.messages);
+              setHasEarlier(d.complete === false);
+              // Keep the reader where they were rather than jumping them to the
+              // top of a thread that just got longer above them.
+              requestAnimationFrame(() => {
+                if (el) el.scrollTop += el.scrollHeight - before;
+              });
+            }}
+          >
+            Load earlier messages
+          </button>
+        )}
         {messages.length === 0 && (
           <div className="thread-empty">
             <h3>What should we do today?</h3>
