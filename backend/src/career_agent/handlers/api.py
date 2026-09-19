@@ -14,7 +14,7 @@ from typing import Any, Callable
 
 from pydantic import BaseModel, Field, ValidationError
 
-from .. import connectors, discovery, voice
+from .. import applying, connectors, discovery, voice
 from ..config import settings as cfg
 from ..demo import DEMO_FACTS, DEMO_PREFERENCES, DEMO_RESUME_TEXT, DEMO_SAVED_ANSWERS, PUBLISHABLE_TEMPLATES, minimal_pdf
 from ..resume import ResumeError, resume_doc_id
@@ -71,6 +71,16 @@ class BrowserCompleteIn(BaseModel):
     provider: str | None = Field(default=None, max_length=120)
     url: str | None = Field(default=None, max_length=2000)
     reason: str | None = Field(default=None, max_length=500)
+
+
+class BrowserQuestionIn(BaseModel):
+    label: str = Field(min_length=1, max_length=600)
+    options: list[str] = Field(default_factory=list, max_length=50)
+    required: bool = True
+
+
+class BrowserQuestionsIn(BaseModel):
+    questions: list[BrowserQuestionIn] = Field(min_length=1, max_length=30)
 
 
 class WatchIn(BaseModel):
@@ -727,6 +737,30 @@ def browser_session_answers(event, p, cid, token):
     if cleaned:
         svc.profiles.save_answers(row["user_id"], cleaned)
     return respond(200, {"saved": len(cleaned)})
+
+
+@route("POST", r"/api/public/browser-session/(?P<token>[A-Za-z0-9_-]{20,})/resolve-questions", auth=False)
+def browser_session_resolve_questions(event, p, cid, token):
+    """Resolve live screening questions from verified profile facts.
+
+    Authenticated portals often hide screening fields until the candidate is
+    signed in. The companion discovers those labels/options in the browser and
+    asks the backend to reuse the same truthful mapper as server-readable forms.
+    Unknowns stay unresolved rather than being guessed.
+    """
+    data = BrowserQuestionsIn(**body_json(event))
+    svc, row = _browser_capability(token)
+    profile = svc.profiles.current(row["user_id"])
+    if not profile:
+        raise WorkflowError("profile_required", "upload a resume before resolving application questions", 409)
+    packet = svc.wf.latest_packet(row["user_id"], row["app_id"]) or {}
+    body = packet.get("body") or {}
+    resolved = applying.resolve_live_questions(
+        profile,
+        [q.model_dump() for q in data.questions],
+        body.get("cover_note"),
+    )
+    return respond(200, {"answers": resolved})
 
 
 @route("POST", r"/api/public/browser-session/(?P<token>[A-Za-z0-9_-]{20,})/start", auth=False)

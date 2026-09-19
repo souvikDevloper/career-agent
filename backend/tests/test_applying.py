@@ -2,7 +2,7 @@ import unittest
 
 import helpers  # noqa: F401
 
-from career_agent.applying import fit_option, is_consent, map_field, norm_label, strip_unsupported_numbers
+from career_agent.applying import fit_option, is_consent, map_field, norm_label, resolve_live_questions, strip_unsupported_numbers
 from career_agent.demo import DEMO_FACTS, DEMO_SAVED_ANSWERS, PORTAL_SEED_JOBS
 from career_agent.handlers import portal as portal_handler
 from career_agent.sources.portal import parse_form
@@ -172,3 +172,84 @@ class TestTheResumeAnswersWhatEmployersKeepAsking:
 
     def test_an_empty_resume_does_not_invent_an_employer(self):
         assert map_field(self.field("What is your current employer?"), {"name": "Asha"}, {}, None) is None
+
+
+class TestLiveScreeningQuestionResolution(unittest.TestCase):
+    def test_bachelors_in_cs_is_resolved_from_verified_resume_education(self):
+        profile = {
+            "facts": {
+                "education": [{
+                    "degree": "Bachelor of Technology",
+                    "field": "Computer Science and Engineering",
+                    "graduation_year": 2027,
+                    "verified": True,
+                }],
+                "skills": [],
+                "projects": [],
+            },
+            "saved_answers": {},
+        }
+        q = [{
+            "label": "Do you have a Bachelor's degree or above in computer science, computer engineering, or related field, or a MS degree?",
+            "options": ["Yes", "No"],
+            "required": True,
+        }]
+        got = resolve_live_questions(profile, q)
+        self.assertEqual(got[0]["value"], "Yes")
+        self.assertEqual(got[0]["source"], "resume:education")
+
+    def test_programming_language_is_not_misclassified_as_age_demographic(self):
+        field = {
+            "name": "programming",
+            "label": "Do you have experience programming with at least one software programming language?",
+            "type": "select",
+            "required": True,
+            "options": [{"value": "Yes", "label": "Yes"}, {"value": "No", "label": "No"}],
+        }
+        facts = {"skills": [{"name": "Python"}], "projects": [], "education": []}
+        self.assertEqual(map_field(field, facts, {}, None), ("Yes", "resume:skills"))
+
+    def test_programming_language_question_is_grounded_in_resume_skills(self):
+        profile = {
+            "facts": {
+                "education": [],
+                "skills": [{"name": "Python", "evidence": "Python"}],
+                "projects": [],
+            },
+            "saved_answers": {},
+        }
+        q = [{
+            "label": "Do you have experience programming with at least one software programming language?",
+            "options": ["Yes", "No"],
+            "required": True,
+        }]
+        got = resolve_live_questions(profile, q)
+        self.assertEqual(got[0]["value"], "Yes")
+        self.assertEqual(got[0]["source"], "resume:skills")
+
+    def test_unknown_certification_is_not_invented(self):
+        profile = {
+            "facts": {
+                "education": [{"degree": "B.Tech", "field": "Computer Science"}],
+                "skills": [{"name": "Python"}],
+                "projects": [],
+            },
+            "saved_answers": {},
+        }
+        q = [{
+            "label": "Do you have a UiPath Certified Professional Developer certification?",
+            "options": ["Yes", "No"],
+            "required": True,
+        }]
+        self.assertEqual(resolve_live_questions(profile, q), [])
+
+    def test_exact_saved_answer_is_reused_on_future_live_forms(self):
+        label = "Do you have a UiPath Certified Professional Developer certification?"
+        profile = {
+            "facts": {"education": [], "skills": [], "projects": []},
+            "saved_answers": {label: "No"},
+        }
+        q = [{"label": label, "options": ["Yes", "No"], "required": True}]
+        got = resolve_live_questions(profile, q)
+        self.assertEqual(got[0]["value"], "No")
+        self.assertEqual(got[0]["source"], "saved_answer:user")

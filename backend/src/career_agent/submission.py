@@ -32,6 +32,11 @@ def submission_plan(job: dict, connector: str | None = None) -> dict:
     apply = job.get("apply") or {}
     url = apply.get("url") or job.get("url")
     kind = apply.get("kind")
+    # Existing cached Amazon jobs may still carry the public posting URL from
+    # before the authenticated-browser executor existed. Derive the stable
+    # application route from the job id so re-prepare fixes old records too.
+    if connector == "amazon-jobs" and job.get("external_id"):
+        url = f"https://account.amazon.jobs/en-US/applicant/jobs/{job['external_id']}/apply"
     host = ""
     try:
         host = (urlparse(url).hostname or "").lower()

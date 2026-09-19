@@ -37,10 +37,16 @@ function Routes() {
   }, [inApp, session, path, navigate]);
 
   if (!inApp) {
-    if (path === "/authorize") return <AuthorizePage />;
-    if (path === "/login") return <AuthPage mode="login" />;
-    if (path === "/signup") return <AuthPage mode="signup" />;
-    return <Landing />;
+    const page =
+      path === "/authorize" ? <AuthorizePage /> :
+      path === "/login" ? <AuthPage mode="login" /> :
+      path === "/signup" ? <AuthPage mode="signup" /> :
+      <Landing />;
+    // The dashboard has its own fixed-height panes (especially Agent chat).
+    // A document-level inertial scroller intercepts wheel/touch events before
+    // those panes can consume them, which made the app feel locked until some
+    // other interaction happened. Keep Lenis only on public document pages.
+    return <SmoothScroll>{page}</SmoothScroll>;
   }
   if (!session) return null;
   const detail = match("/app/applications/:id", path);
@@ -63,12 +69,10 @@ function Routes() {
 
 export function App() {
   return (
-    <SmoothScroll>
-      <RouterProvider>
-        <ToastProvider>
-          <Routes />
-        </ToastProvider>
-      </RouterProvider>
-    </SmoothScroll>
+    <RouterProvider>
+      <ToastProvider>
+        <Routes />
+      </ToastProvider>
+    </RouterProvider>
   );
 }
