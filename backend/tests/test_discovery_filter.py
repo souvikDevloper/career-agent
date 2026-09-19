@@ -662,6 +662,15 @@ class TestFreeTextReachesTheSamePlaceAsTheAgent:
         assert parsed["company"] == "gitlab" and parsed["location"] == "india"
 
 
+class TestDirectEmployerCoverage:
+    def test_google_and_microsoft_are_covered_even_before_any_result_is_cached(self):
+        assert discovery.direct_company_supported("Google") is True
+        assert discovery.direct_company_supported("Microsoft") is True
+
+    def test_unknown_company_is_not_mislabeled_as_directly_covered(self):
+        assert discovery.direct_company_supported("Some New Startup") is False
+
+
 class TestDirectOnlyEmployersParseWithoutCachedRows:
     def test_microsoft_is_structured_even_when_the_cache_has_no_microsoft_job(self):
         got = parse_query(CORPUS, "Microsoft software engineer")
