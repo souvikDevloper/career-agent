@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { getSession, onSession } from "./lib/auth";
 import { MeProvider } from "./lib/me";
 import { match, RouterProvider, useRouter } from "./lib/router";
 import { ToastProvider } from "./components/ui";
 import { SmoothScroll } from "./components/motion/SmoothScroll";
+import { Preloader, preloaderAlreadyShown } from "./components/motion/Preloader";
+import { ParallaxStickers } from "./components/motion/ParallaxStickers";
 import { Landing } from "./pages/Landing";
 import { AuthPage } from "./pages/Auth";
 import { Home } from "./pages/Home";
@@ -46,7 +48,12 @@ function Routes() {
     // A document-level inertial scroller intercepts wheel/touch events before
     // those panes can consume them, which made the app feel locked until some
     // other interaction happened. Keep Lenis only on public document pages.
-    return <SmoothScroll>{page}</SmoothScroll>;
+    return (
+      <>
+        <ParallaxStickers />
+        <SmoothScroll>{page}</SmoothScroll>
+      </>
+    );
   }
   if (!session) return null;
   const detail = match("/app/applications/:id", path);
@@ -68,9 +75,13 @@ function Routes() {
 }
 
 export function App() {
+  const [preloaderDone, setPreloaderDone] = useState(preloaderAlreadyShown);
+  const handleDone = useCallback(() => setPreloaderDone(true), []);
+
   return (
     <RouterProvider>
       <ToastProvider>
+        {!preloaderDone && <Preloader onDone={handleDone} />}
         <Routes />
       </ToastProvider>
     </RouterProvider>

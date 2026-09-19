@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { startExampleWorkspace } from "../lib/auth";
 import { useRouter, Link } from "../lib/router";
 import { BrandMark } from "../components/Shell";
@@ -8,7 +8,7 @@ import { Spotlight, useScrolled } from "../components/motion";
 import { AtmosphericCanvas } from "../components/motion/AtmosphericCanvas";
 import { SpotlightCard } from "../components/motion/SpotlightCard";
 import { MagneticButton } from "../components/motion/MagneticButton";
-import { motion } from "motion/react";
+import { motion, useInView } from "motion/react";
 
 const STEPS = [
   { label: "Published", icon: IFile },
@@ -42,6 +42,57 @@ const AWS = [
   ["Amazon S3 + CloudFront", "Private files, global UI"],
   ["Amazon SES", "Email updates & approvals"],
 ];
+
+// ---------------------------------------------------------------------------
+// Scroll-triggered mask-reveal headline
+// Each word slides up from behind a clip mask (Igloo / Lusion style).
+// ---------------------------------------------------------------------------
+const HEADLINE_SEGMENTS = [
+  { words: ["Your", "career", "agent", "that"], grad: false },
+  { words: ["finds,", "applies", "and", "follows", "up"], grad: true },
+  { words: ["—", "truthfully."], grad: false },
+];
+
+function MaskRevealHeadline() {
+  const ref = useRef<HTMLHeadingElement>(null);
+  const inView = useInView(ref, { once: true, margin: "-10%" });
+
+  let wordIndex = 0;
+  return (
+    <h1
+      ref={ref}
+      className="rise rise-1"
+      style={{ marginTop: 18, overflow: "visible" }}
+    >
+      {HEADLINE_SEGMENTS.map((seg, si) => (
+        <span key={si} className={seg.grad ? "grad-text" : undefined}>
+          {seg.words.map((word) => {
+            const i = wordIndex++;
+            return (
+              <span
+                key={word + i}
+                style={{ display: "inline-block", overflow: "hidden", verticalAlign: "bottom", marginRight: "0.25em" }}
+              >
+                <motion.span
+                  style={{ display: "inline-block" }}
+                  initial={{ y: "110%", opacity: 0 }}
+                  animate={inView ? { y: "0%", opacity: 1 } : { y: "110%", opacity: 0 }}
+                  transition={{
+                    delay: i * 0.055,
+                    duration: 0.65,
+                    ease: [0.16, 1, 0.3, 1],
+                  }}
+                >
+                  {word}
+                </motion.span>
+              </span>
+            );
+          })}
+        </span>
+      ))}
+    </h1>
+  );
+}
 
 export function Landing() {
   const [step, setStep] = useState(0);
@@ -91,43 +142,7 @@ export function Landing() {
               ✨ Autonomous Agent Pipeline Online · 1,200+ Opportunities Synced
             </div>
             <div className="rise"><Badge tone="violet" live>Built on AWS · WeMakeDevs “Ship It”</Badge></div>
-            <h1 className="rise rise-1" style={{ marginTop: 18 }}>
-              {["Your", "career", "agent", "that"].map((word, i) => (
-                <motion.span
-                  key={`w1-${i}`}
-                  initial={{ y: 40, opacity: 0 }}
-                  animate={{ y: 0, opacity: 1 }}
-                  transition={{ delay: i * 0.06 }}
-                  style={{ display: "inline-block", marginRight: "0.25em" }}
-                >
-                  {word}
-                </motion.span>
-              ))}
-              <span className="grad-text">
-                {["finds,", "applies", "and", "follows", "up"].map((word, i) => (
-                  <motion.span
-                    key={`w2-${i}`}
-                    initial={{ y: 40, opacity: 0 }}
-                    animate={{ y: 0, opacity: 1 }}
-                    transition={{ delay: (4 + i) * 0.06 }}
-                    style={{ display: "inline-block", marginRight: "0.25em" }}
-                  >
-                    {word}
-                  </motion.span>
-                ))}
-              </span>
-              {["—", "truthfully."].map((word, i) => (
-                <motion.span
-                  key={`w3-${i}`}
-                  initial={{ y: 40, opacity: 0 }}
-                  animate={{ y: 0, opacity: 1 }}
-                  transition={{ delay: (9 + i) * 0.06 }}
-                  style={{ display: "inline-block", marginRight: i === 1 ? 0 : "0.25em" }}
-                >
-                  {word}
-                </motion.span>
-              ))}
-            </h1>
+            <MaskRevealHeadline />
             <p className="lede rise rise-2">
               Talk to it. It watches for new openings while your laptop is off, explains exactly why you fit, fills
               applications only with facts you verified, submits under rules you set, and turns recruiter replies into

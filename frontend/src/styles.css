@@ -93,6 +93,85 @@ body {
   text-rendering: optimizeLegibility;
   overflow-x: hidden;
 }
+
+/* ---------- preloader ---------- */
+.preloader {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  will-change: opacity, transform;
+  transition: none;
+}
+.preloader-exit {
+  animation: preloader-exit 0.65s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+@keyframes preloader-exit {
+  0%   { opacity: 1; transform: scale(1); }
+  60%  { opacity: 0.9; transform: scale(1.04); }
+  100% { opacity: 0; transform: scale(1.06); pointer-events: none; }
+}
+.preloader-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+}
+.preloader-brand {
+  animation: fadeIn 0.5s ease;
+  opacity: 0.9;
+}
+.preloader-arc-wrap {
+  position: relative;
+  width: 200px;
+  height: 200px;
+}
+.preloader-count {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+.preloader-num {
+  font-family: var(--mono);
+  font-size: 42px;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  color: var(--ink);
+  line-height: 1;
+  min-width: 3ch;
+  text-align: right;
+}
+.preloader-pct {
+  font-family: var(--mono);
+  font-size: 20px;
+  font-weight: 500;
+  color: var(--muted);
+  align-self: flex-end;
+  margin-bottom: 6px;
+}
+.preloader-label {
+  font-size: 13px;
+  color: var(--muted);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 500;
+  animation: fadeIn 0.8s ease 0.3s both;
+}
+
+/* ---------- parallax stickers ---------- */
+.parallax-sticker {
+  position: absolute;
+  will-change: transform;
+  transform-origin: center center;
+  transition: none;
+}
+
 body::before {
   content: "";
   position: fixed;
