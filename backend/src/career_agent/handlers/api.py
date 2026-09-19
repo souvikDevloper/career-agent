@@ -653,8 +653,8 @@ def app_resume(event, p, cid, app_id):
 def handoff_complete(event, p, cid, app_id):
     svc = _svc()
     app = svc.wf.get_app(p.user_id, app_id)
-    if app["action_state"] != "ManualHandoff":
-        raise WorkflowError("invalid_state", "Only manual handoffs can be marked as submitted by you.")
+    if app["action_state"] not in ("ManualHandoff", "NeedsUserPresence"):
+        raise WorkflowError("invalid_state", "Only browser/user handoffs can be marked as submitted by you.")
     svc.store.transact([svc.wf._transition(app, "Submitted", {"recruitment_stage": "applied", "receipt": {"reference": "user-reported",
                                                                                                           "user_reported": True}}),
                         svc.wf.event_put(p.user_id, "submission.user_reported", {"note": "User applied on the employer site"}, app_id)])
