@@ -269,14 +269,50 @@ class Services:
         }
         return submission_plan(job, app.get("connector"))
 
-    def request_prepare(self, uid: str, job_key: str | None = None, app_id: str | None = None) -> dict:
+    def request_prepare(self, uid: str, job_key: str | None = None, app_id: str | None = None,
+                        *, apply_after_prepare: bool = False) -> dict:
+        """Queue a fresh preparation attempt and reflect that state immediately.
+
+        The old dedupe key was based only on app/version + packet/version. A
+        dispatched outbox row remains in DynamoDB, so pressing Prepare again
+        with the same versions collided with that old row and looked like a dead
+        button. Explicit user requests get their own request id instead.
+
+        apply_after_prepare is only set by the explicit "Prepare & apply"
+        action. It survives a NeedsInformation round-trip so that saving an
+        employer answer continues the same application instead of forcing the
+        user to start over.
+        """
         app = self.wf.get_app(uid, app_id) if app_id else self.ensure_application(uid, job_key or "")
-        self.store.transact([
-            self.wf.outbox_put("work", {"kind": "prepare", "user_id": uid, "app_id": app["app_id"]},
-                               f"work:prepare:{app['app_id']}:{app['version']}:{app['packet_version']}"),
-            self.wf.event_put(uid, "application.preparation_requested", {}, app["app_id"]),
+        if app["action_state"] in ("Submitted", "Withdrawn"):
+            raise WorkflowError("invalid_state", f"cannot prepare an application in {app['action_state']}")
+        request_id = new_id("prep_")
+        ops: list[Any] = []
+        desired_intent = bool(apply_after_prepare or app.get("apply_after_prepare"))
+        if app["action_state"] != "Preparing":
+            ops.append(self.wf._transition(app, "Preparing", {
+                "apply_after_prepare": desired_intent,
+                "prepare_request_id": request_id,
+                "last_error": None,
+            }))
+        else:
+            ops.append(Update(app["pk"], app["sk"], set={
+                "apply_after_prepare": desired_intent,
+                "prepare_request_id": request_id,
+                "last_error": None,
+                "updated_at": self.wf.clock.iso(),
+            }))
+        ops.extend([
+            self.wf.outbox_put(
+                "work",
+                {"kind": "prepare", "user_id": uid, "app_id": app["app_id"], "prepare_request_id": request_id},
+                f"work:prepare:{app['app_id']}:{request_id}",
+            ),
+            self.wf.event_put(uid, "application.preparation_requested",
+                              {"apply_after_prepare": desired_intent, "request_id": request_id}, app["app_id"]),
         ])
-        return app
+        self.store.transact(ops)
+        return self.wf.get_app(uid, app["app_id"])
 
     def prepare(self, uid: str, app_id: str, correlation_id: str | None = None) -> dict:
         app = self.wf.get_app(uid, app_id)
@@ -285,7 +321,21 @@ class Services:
         if not job or not profile:
             raise WorkflowError("missing", "job or profile missing", 400)
         packet = prepare_packet(self.wf, uid, app, job, profile, is_judge=self.is_judge(uid), correlation_id=correlation_id)
-        return self.wf.save_packet(uid, app_id, packet)
+        prepared = self.wf.save_packet(uid, app_id, packet)
+
+        # "Prepare & apply" is an explicit application action. If preparation
+        # discovers questions, stop in NeedsInformation. Once those answers are
+        # saved and the packet is complete, approve that exact immutable hash
+        # and continue automatically. The hash is still the approval boundary.
+        if prepared.get("apply_after_prepare") and prepared["action_state"] == "NeedsApproval":
+            prepared = self.wf.approve(
+                Principal(uid, self.is_judge(uid)), app_id, prepared["packet_hash"], "prepare_and_apply")
+            self.store.update(Update(prepared["pk"], prepared["sk"], set={"apply_after_prepare": False}))
+            prepared = self.wf.get_app(uid, app_id)
+        elif prepared.get("apply_after_prepare") and prepared["action_state"] in ("ManualHandoff", "Ineligible"):
+            self.store.update(Update(prepared["pk"], prepared["sk"], set={"apply_after_prepare": False}))
+            prepared = self.wf.get_app(uid, app_id)
+        return prepared
 
     def application_detail(self, uid: str, app_id: str) -> dict:
         app = self.wf.get_app(uid, app_id)
