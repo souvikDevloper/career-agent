@@ -163,8 +163,10 @@ export function ConnectorsPage() {
         <p className="eyebrow">Set it up</p>
         <h3 className="card-title">Add the connector</h3>
         <p className="muted">
-          Paste the endpoint into your client. It discovers the rest on its own, opens a browser so you can sign in,
-          and keeps working after that — there is no token to copy and no token to re-copy in an hour.
+          The server runs on AWS Lambda behind this API — nothing runs on your machine and nothing needs your
+          machine to be awake. Paste the endpoint into your client: it discovers the rest on its own, opens a browser
+          so you can sign in, and keeps working after that. The snippet below is only a bridge for older desktop
+          clients that cannot call a remote MCP server directly.
         </p>
         <div className="field">
           <label className="label" htmlFor="mcp-endpoint">Endpoint</label>
@@ -175,7 +177,7 @@ export function ConnectorsPage() {
           </div>
         </div>
         <div className="field">
-          <label className="label" htmlFor="mcp-config">For a client that runs MCP servers locally</label>
+          <label className="label" htmlFor="mcp-config">Only if your client cannot speak remote MCP</label>
           <textarea id="mcp-config" className="textarea" rows={8} readOnly value={configSnippet} spellCheck={false} />
           <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: "wrap" }}>
             <button className="btn ghost" onClick={() => copy(configSnippet, "Configuration")}>Copy configuration</button>
