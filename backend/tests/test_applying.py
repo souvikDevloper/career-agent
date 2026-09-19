@@ -2,7 +2,7 @@ import unittest
 
 import helpers  # noqa: F401
 
-from career_agent.applying import fit_option, map_field, norm_label, strip_unsupported_numbers
+from career_agent.applying import fit_option, is_consent, map_field, norm_label, strip_unsupported_numbers
 from career_agent.demo import DEMO_FACTS, DEMO_SAVED_ANSWERS, PORTAL_SEED_JOBS
 from career_agent.handlers import portal as portal_handler
 from career_agent.sources.portal import parse_form
@@ -93,3 +93,82 @@ class UnsupportedNumberBoundaries(unittest.TestCase):
 
     def test_percentage_not_in_source_is_dropped(self):
         self.assertEqual(strip_unsupported_numbers("I improved it by 90%.", self.SOURCE), "")
+
+
+class TestRegexesSurviveTheirOwnSource:
+    r"""A compiled pattern must not contain control characters.
+
+    Written after the same mistake three times: a `\b` word boundary that passed
+    through a shell heredoc arrives as the escape `\x08`, a literal backspace.
+    The module imports, the regex compiles, every test that does not exercise
+    that exact branch passes, and the feature is silently dead - a consent field
+    went unrecognised and blocked whole application packets. Checking the
+    compiled pattern catches it at the point the mistake is made.
+    """
+
+    def test_no_compiled_pattern_contains_a_control_character(self):
+        import importlib
+        import pkgutil
+        import re as _re
+
+        import career_agent
+
+        offenders = []
+        for mod in pkgutil.walk_packages(career_agent.__path__, "career_agent."):
+            try:
+                loaded = importlib.import_module(mod.name)
+            except Exception:  # a module that needs runtime config is not our concern here
+                continue
+            for name, value in vars(loaded).items():
+                if isinstance(value, _re.Pattern) and any(ord(c) < 32 for c in str(value.pattern)):
+                    offenders.append(f"{mod.name}.{name}")
+        assert offenders == [], f"control characters in compiled patterns: {offenders}"
+
+
+class TestConsentIsRecognisedWhateverWidgetRendersIt:
+    """Greenhouse renders a privacy acknowledgement as a one-option select, not a
+    checkbox. Matching only checkboxes left it as an unanswerable required field,
+    which blocked every packet for that employer."""
+
+    def test_a_single_answer_select_acknowledgement_is_a_consent(self):
+        field = {"label": "I acknowledge that I have read the Candidate Privacy Notice",
+                 "type": "select", "required": True, "options": [{"label": "Yes", "value": "1"}]}
+        assert is_consent(field) is True
+
+    def test_a_checkbox_is_still_a_consent(self):
+        assert is_consent({"label": "I agree to the terms", "type": "checkbox", "required": True,
+                           "options": []}) is True
+
+    def test_an_ordinary_question_is_not_a_consent(self):
+        assert is_consent({"label": "What is your current job title?", "type": "text", "required": True,
+                           "options": []}) is False
+
+    def test_a_real_multiple_choice_question_is_not_a_consent(self):
+        """"Do you agree with our engineering values" with five answers is a question."""
+        field = {"label": "How strongly do you agree with this statement?", "type": "select", "required": True,
+                 "options": [{"label": str(n), "value": str(n)} for n in range(5)]}
+        assert is_consent(field) is False
+
+
+class TestTheResumeAnswersWhatEmployersKeepAsking:
+    FACTS = {"name": "Asha Rao",
+             "experience": [{"title": "Backend Engineer", "company": "Northwind", "end": "Present"},
+                            {"title": "Intern", "company": "Older Place", "end": "2024"}]}
+
+    def field(self, label, ftype="text"):
+        return {"label": label, "name": label.lower().replace(" ", "_"), "type": ftype,
+                "required": True, "options": []}
+
+    def test_legal_name_is_the_name(self):
+        assert map_field(self.field("What is your Legal Name?"), self.FACTS, {}, None) == ("Asha Rao", "resume:name")
+
+    def test_current_employer_comes_from_the_ongoing_role(self):
+        got = map_field(self.field("What is the name of your current employer?"), self.FACTS, {}, None)
+        assert got == ("Northwind", "resume:experience")
+
+    def test_current_title_comes_from_the_ongoing_role(self):
+        got = map_field(self.field("What is your current job title?"), self.FACTS, {}, None)
+        assert got == ("Backend Engineer", "resume:experience")
+
+    def test_an_empty_resume_does_not_invent_an_employer(self):
+        assert map_field(self.field("What is your current employer?"), {"name": "Asha"}, {}, None) is None

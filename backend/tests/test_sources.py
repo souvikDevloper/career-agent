@@ -263,3 +263,47 @@ class AmazonNormalize(unittest.TestCase):
         job = amazon.normalize(self.raw(company_name="ASSPL - Karnataka"))
         self.assertEqual(job["company"], "Amazon")
         self.assertEqual(job["legal_entity"], "ASSPL - Karnataka")
+
+
+class TestGreenhousePublishesTheRealApplicationForm:
+    """The same unauthenticated endpoint that serves a posting also serves its
+    application form. That is what makes a packet checkable before a browser is
+    opened: we know every field the employer will receive, its type, and whether
+    it is required, instead of guessing and discovering the gap at submit time.
+    """
+
+    QUESTIONS = [
+        {"label": "First Name", "required": True, "fields": [{"name": "first_name", "type": "input_text", "values": []}]},
+        {"label": "Resume/CV", "required": True, "fields": [{"name": "resume", "type": "input_file", "values": []}]},
+        {"label": "Why this role?", "required": False, "fields": [{"name": "cover_letter_text", "type": "textarea", "values": []}]},
+        {"label": "Are you based in India?", "required": True,
+         "fields": [{"name": "question_1", "type": "multi_value_single_select",
+                     "values": [{"label": "Yes", "value": 1}, {"label": "No", "value": 0}]}]},
+    ]
+
+    def form(self):
+        return greenhouse.parse_questions(self.QUESTIONS)
+
+    def test_every_greenhouse_type_maps_to_one_the_packet_builder_understands(self):
+        kinds = {f["name"]: f["type"] for f in self.form()["fields"]}
+        assert kinds == {"first_name": "text", "resume": "file",
+                         "cover_letter_text": "textarea", "question_1": "select"}
+
+    def test_required_travels_from_the_question_to_each_of_its_fields(self):
+        required = {f["name"]: f["required"] for f in self.form()["fields"]}
+        assert required["first_name"] is True and required["cover_letter_text"] is False
+
+    def test_choices_keep_their_labels_and_values_as_strings(self):
+        choice = next(f for f in self.form()["fields"] if f["name"] == "question_1")
+        assert choice["options"] == [{"label": "Yes", "value": "1"}, {"label": "No", "value": "0"}]
+
+    def test_the_signature_changes_when_the_employer_changes_the_form(self):
+        """Approval is bound to the form we read; a changed form must not reuse it."""
+        altered = [*self.QUESTIONS[:3],
+                   {"label": "Are you based in India?", "required": True,
+                    "fields": [{"name": "question_1", "type": "multi_value_single_select",
+                                "values": [{"label": "Yes", "value": 1}]}]}]
+        assert greenhouse.parse_questions(altered)["signature"] != self.form()["signature"]
+
+    def test_a_question_with_no_field_name_is_skipped_rather_than_crashing(self):
+        assert greenhouse.parse_questions([{"label": "Broken", "required": True, "fields": [{"type": "input_text"}]}])["fields"] == []

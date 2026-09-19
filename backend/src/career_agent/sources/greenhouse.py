@@ -66,3 +66,52 @@ def fetch_board(board: str) -> list[dict]:
         raise ValueError("invalid board token")
     data: Any = fetch_json(f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs?content=true", HOSTS, timeout=20)
     return [normalize(board, j) for j in data.get("jobs", [])]
+
+
+# Greenhouse publishes each job's real application form - every field name, its
+# type, and whether it is required - on the same unauthenticated endpoint that
+# serves the posting. That is the difference between guessing at a form and
+# answering the one the employer will actually receive: a packet can be checked
+# for completeness before a browser is ever opened.
+_TYPES = {
+    "input_text": "text",
+    "textarea": "textarea",
+    "input_file": "file",
+    "multi_value_single_select": "select",
+    "multi_value_multi_select": "select",
+}
+
+
+def parse_questions(questions: list[dict]) -> dict:
+    """Normalise Greenhouse's question list into the shape the packet builder reads."""
+    fields: list[dict] = []
+    for question in questions or []:
+        label = (question.get("label") or "").strip()
+        required = bool(question.get("required"))
+        for field in question.get("fields") or []:
+            name = field.get("name")
+            if not name:
+                continue
+            options = [{"label": str(v.get("label", "")), "value": str(v.get("value", ""))}
+                       for v in (field.get("values") or [])]
+            fields.append({
+                "name": name,
+                "type": _TYPES.get(field.get("type", ""), "text"),
+                "required": required,
+                "label": label or name.replace("_", " "),
+                "options": options,
+            })
+    signature = sha256([(f["name"], f["type"], f["required"], f["label"],
+                         [o["value"] for o in f["options"]]) for f in fields])
+    return {"fields": fields, "signature": signature, "action": None}
+
+
+def read_form(board: str, job_id: str) -> dict:
+    data: Any = fetch_json(
+        f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs/{job_id}?questions=true", HOSTS, timeout=20)
+    if not isinstance(data, dict):
+        raise ValueError("greenhouse returned no job")
+    form = parse_questions(data.get("questions") or [])
+    if not form["fields"]:
+        raise ValueError("greenhouse returned no application questions")
+    return form
