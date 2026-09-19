@@ -448,6 +448,22 @@
       if (!remembered?.ok) return;
 
       const packet = (await send({ type: "packet" })).data;
+
+      // If the employer shell embeds the actual ATS form, the same companion
+      // script is injected into that HTTPS child frame. Let that frame own the
+      // application instead of having the top document race it and mark the
+      // workflow paused while the form is still being filled.
+      if (window.top === window) {
+        const embeddedApplication = [...document.querySelectorAll("iframe[src]")].some((frame) => {
+          const src = String(frame.getAttribute("src") || "").toLowerCase();
+          return /greenhouse|workday|lever|ashby|application|apply/.test(src);
+        });
+        if (embeddedApplication) {
+          banner("Career Agent: continuing inside the embedded employer application…");
+          return;
+        }
+      }
+
       let started = false;
       banner(`Career Agent: ready to apply to ${packet.title || "this role"}…`);
 
@@ -540,20 +556,6 @@
             await sleep(1200);
             continue;
           }
-        }
-
-        // Some employer career pages (notably Greenhouse-backed custom
-        // sites) embed the actual application form in a cross-origin iframe.
-        // The companion is injected into that frame too; the top document must
-        // not declare failure while the child frame is doing the real work.
-        const embeddedApplication = [...document.querySelectorAll("iframe[src]")].some((frame) => {
-          const src = String(frame.getAttribute("src") || "").toLowerCase();
-          return /greenhouse|workday|lever|ashby|application|apply/.test(src);
-        });
-        if (embeddedApplication && window.top === window) {
-          banner("Career Agent: continuing inside the embedded employer application…");
-          await sleep(1500);
-          continue;
         }
 
         const reason = "Career Agent could not safely identify the next application control. Continue manually on this page.";
