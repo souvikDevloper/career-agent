@@ -246,6 +246,8 @@ class AmazonNormalize(unittest.TestCase):
         job = amazon.normalize(self.raw())
         self.assertEqual(job["url"], "https://www.amazon.jobs/en/jobs/10552765/software-dev-engineer-intern")
         self.assertEqual(job["apply"]["kind"], "external")
+        self.assertEqual(job["apply"]["url"],
+                         "https://account.amazon.jobs/en-US/applicant/jobs/10552765/apply")
 
     def test_country_is_carried_for_filtering(self):
         self.assertEqual(amazon.normalize(self.raw())["country"], "IND")

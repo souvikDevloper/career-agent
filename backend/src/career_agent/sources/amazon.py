@@ -90,8 +90,11 @@ def normalize(raw: dict) -> dict:
             r"\bintern(ship)?\b", _clean(raw.get("title")), re.I) else None,
         "description": description[:12000],
         "url": url,
-        # Submitting needs an Amazon candidate account, so this is a handoff.
-        "apply": {"kind": "external", "url": url},
+        # Authenticated applications live on account.amazon.jobs. Point the
+        # browser companion at the actual application flow rather than making it
+        # rediscover the Apply link from the public posting page.
+        "apply": {"kind": "external",
+                  "url": f"https://account.amazon.jobs/en-US/applicant/jobs/{external_id}/apply"},
         "published_at": posted_iso(raw.get("posted_date")),
         # updated_time is a phrase like "10 days", which is an age rather than a
         # date; the posting date is the only thing here that can be compared.

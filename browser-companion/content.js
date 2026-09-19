@@ -264,13 +264,13 @@
       const token = hash.get("career-agent-session");
       const api = hash.get("career-agent-api");
       if (token && api) {
-        await send({ type: "remember", token, api });
+        await send({ type: "remember", token, api, host: location.hostname });
         hash.delete("career-agent-session");
         hash.delete("career-agent-api");
         history.replaceState(null, "", location.pathname + location.search + (hash.toString() ? "#" + hash : ""));
       }
 
-      const remembered = await chrome.runtime.sendMessage({ type: "session" });
+      const remembered = await chrome.runtime.sendMessage({ type: "session", host: location.hostname });
       if (!remembered?.ok) return;
 
       const packet = (await send({ type: "packet" })).data;
@@ -337,7 +337,7 @@
           return;
         }
 
-        const next = actionButton(/^(continue|next|save and continue|continue application)$/);
+        const next = actionButton(/^(continue|next|save and continue|save continue|continue application)$/);
         if (next) {
           await rememberLearnedAnswers();
           continueInSameTab(next);
@@ -350,6 +350,21 @@
           continueInSameTab(apply);
           await sleep(1500);
           continue;
+        }
+
+        // Amazon has optional interstitial steps such as SMS Notifications.
+        // Their button copy varies between "Skip", "Not now" and "Save & Continue".
+        // Only take a skip-style action when the current page explicitly says
+        // the step is optional; never skip an unknown required question.
+        const pageText = norm(document.body?.innerText || "");
+        if (/optional/.test(pageText)) {
+          const skip = actionButton(/^(skip|skip for now|not now|continue without|save continue)$/);
+          if (skip) {
+            await rememberLearnedAnswers();
+            continueInSameTab(skip);
+            await sleep(1200);
+            continue;
+          }
         }
 
         const reason = "Career Agent could not safely identify the next application control. Continue manually on this page.";
