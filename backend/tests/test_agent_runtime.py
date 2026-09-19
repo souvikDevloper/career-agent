@@ -188,3 +188,61 @@ class TestPrepareSaysWhetherWeCanSubmit:
     def test_an_unknown_connector_is_treated_as_not_submittable(self):
         """Defaulting the other way would promise a submission we cannot make."""
         assert self.run("something-new")["we_can_submit"] is False
+
+
+class TestDirectAmazonChatSearch:
+    """Explicit Amazon searches should not depend on the chat model choosing a tool."""
+
+    def test_extracts_company_role_and_bengaluru(self):
+        got = __import__("career_agent.handlers.worker", fromlist=["_direct_amazon_filters"])._direct_amazon_filters(
+            "Find Amazon SDE 1 jobs in Bengaluru."
+        )
+        assert got == {"company": "Amazon", "role": "sde 1", "location": "Bengaluru"}
+
+    def test_bangalore_alias_is_normalized(self):
+        got = __import__("career_agent.handlers.worker", fromlist=["_direct_amazon_filters"])._direct_amazon_filters(
+            "show me amazon software engineer openings in Bangalore"
+        )
+        assert got == {"company": "Amazon", "role": "software engineer", "location": "Bengaluru"}
+
+    def test_plain_amazon_question_is_not_intercepted(self):
+        got = __import__("career_agent.handlers.worker", fromlist=["_direct_amazon_filters"])._direct_amazon_filters(
+            "What is Amazon's interview process?"
+        )
+        assert got is None
+
+    def test_direct_path_skips_agent_and_finishes_operation(self, monkeypatch):
+        from career_agent.handlers import worker
+
+        class Clock:
+            def iso(self):
+                return "2026-09-19T10:00:00+00:00"
+
+        class Store:
+            def __init__(self):
+                self.puts = []
+            def put(self, item):
+                self.puts.append(item)
+
+        class WF:
+            def __init__(self):
+                self.clock = Clock()
+                self.progress = []
+            def op_progress(self, uid, op_id, **kw):
+                self.progress.append((uid, op_id, kw))
+
+        class Svc:
+            def __init__(self):
+                self.wf = WF()
+                self.store = Store()
+            def search(self, uid, op_id, **kw):
+                assert kw["filters"] == {"company": "Amazon", "role": "sde 1", "location": "Bengaluru"}
+                kw["stats"].update({"live_postings": 8})
+                return [{"score": 82, "job": {"title": "SDE-1 (FTC)", "location": "Bengaluru"}}]
+
+        monkeypatch.setattr(worker.agent, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("agent should not run")))
+        svc = Svc()
+        worker.run_chat(svc, "u1", "op1", "Find Amazon SDE 1 jobs in Bengaluru.", "chat", "cid")
+        assert svc.wf.progress[-1][2]["status"] == "succeeded"
+        assert svc.wf.progress[-1][2]["final"]["runtime"] == "direct-search"
+        assert "SDE-1 (FTC)" in svc.store.puts[-1]["text"]
