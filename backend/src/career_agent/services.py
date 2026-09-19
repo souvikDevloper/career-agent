@@ -332,7 +332,11 @@ class Services:
                 Principal(uid, self.is_judge(uid)), app_id, prepared["packet_hash"], "prepare_and_apply")
             self.store.update(Update(prepared["pk"], prepared["sk"], set={"apply_after_prepare": False}))
             prepared = self.wf.get_app(uid, app_id)
-        elif prepared.get("apply_after_prepare") and prepared["action_state"] in ("ManualHandoff", "Ineligible"):
+        elif prepared.get("apply_after_prepare") and prepared["action_state"] in (
+            "NeedsUserPresence", "Authorized", "Queued", "ManualHandoff", "Ineligible"
+        ):
+            # Auto modes may already have authorized the exact packet inside
+            # save_packet. The one-shot intent has served its purpose.
             self.store.update(Update(prepared["pk"], prepared["sk"], set={"apply_after_prepare": False}))
             prepared = self.wf.get_app(uid, app_id)
         return prepared
