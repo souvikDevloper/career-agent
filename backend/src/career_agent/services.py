@@ -121,7 +121,7 @@ class Services:
                     try:
                         discovery.poll(self.wf, feed, force=True)
                     except Exception as exc:  # a stale answer beats no answer
-                        log(logger, "warning", "inline_refresh_failed", feed=feed, error=str(exc)[:200])
+                        log(logger, "inline_refresh.failed", feed=feed, error=str(exc)[:200])
                     else:
                         jobs = [j for j in jobs if j.get("feed") != feed]
                         jobs.extend(discovery.cached_jobs(self.wf, feed))

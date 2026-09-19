@@ -83,15 +83,15 @@ def live_search(wf, *, company: str, role: str = "", limit: int = 100) -> list[d
         try:
             found = ask()
         except (FetchError, ValueError, KeyError) as exc:
-            log(logger, "warning", "live_search_failed", feed=feed, error=str(exc)[:200])
+            log(logger, "live_search.failed", feed=feed, error=str(exc)[:200])
             continue
         for job in found:
             job["feed"] = feed
             try:
                 save_job_snapshot(wf, job)
             except Exception as exc:  # a job we cannot store is still worth answering with
-                log(logger, "warning", "live_snapshot_failed", job=job.get("job_key"), error=str(exc)[:160])
-        log(logger, "info", "live_search", feed=feed, role=role, found=len(found))
+                log(logger, "live_search.snapshot_failed", job=job.get("job_key"), error=str(exc)[:160])
+        log(logger, "live_search.ok", feed=feed, role=role, found=len(found))
         out.extend(found)
     return out
 

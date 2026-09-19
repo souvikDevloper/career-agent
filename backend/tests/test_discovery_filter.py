@@ -11,6 +11,9 @@ from __future__ import annotations
 
 from helpers import T0  # noqa: F401  (adds src/ to sys.path)
 
+import pytest
+
+from career_agent import discovery
 from career_agent.discovery import _names_match, filter_jobs, keyword_filter
 
 PREFS: dict = {"roles": [], "excluded_companies": []}
@@ -493,3 +496,89 @@ class TestLiveSearchAsksOnlyTheEmployerNamed:
 
     def test_a_longer_name_may_contain_the_board_name(self):
         assert _names_match("mastercard inc", "mastercard") is True
+
+
+class TestLiveSearchRuns:
+    """Exercise the whole function, not just its name matching.
+
+    This shipped broken: the structured logger takes (logger, event, **fields)
+    and it was called with a level as a third positional argument, so every live
+    search raised TypeError the moment it succeeded in fetching anything. The
+    agent reported "a technical error" for Amazon and answered with GitLab roles
+    instead. Nothing caught it because nothing called live_search.
+    """
+
+    class Store:
+        def __init__(self):
+            self.saved = []
+
+        def get(self, *a, **k):
+            return None
+
+        def update(self, *a, **k):
+            pass
+
+        def put(self, item, *a, **k):
+            self.saved.append(item)
+
+        def transact(self, *a, **k):
+            pass
+
+    class Clock:
+        def now(self):
+            return 0.0
+
+        def iso(self):
+            return "2026-09-19T00:00:00Z"
+
+    def wf(self):
+        holder = type("WF", (), {})()
+        holder.store = self.Store()
+        holder.clock = self.Clock()
+        return holder
+
+    @pytest.fixture(autouse=True)
+    def boards(self, monkeypatch):
+        monkeypatch.setattr(discovery, "cfg", lambda: type("S", (), {
+            "amazon_boards": ("IND",), "workday_boards": ("intel:wd1:External",)})())
+        monkeypatch.setattr(discovery, "save_job_snapshot", lambda wf, job: (True, False))
+
+    def test_it_returns_what_the_employer_answered(self, monkeypatch):
+        monkeypatch.setattr(discovery.amazon, "search",
+                            lambda country, query, limit=100: [{"job_key": "a1", "title": "SDE-1 (FTC)"}])
+        got = discovery.live_search(self.wf(), company="amazon", role="sde 1")
+        assert [j["title"] for j in got] == ["SDE-1 (FTC)"]
+
+    def test_every_result_is_tagged_with_the_feed_that_produced_it(self, monkeypatch):
+        """Without this the snapshot lands under the wrong index and the job
+        becomes unfindable by the very search that just returned it."""
+        monkeypatch.setattr(discovery.amazon, "search",
+                            lambda country, query, limit=100: [{"job_key": "a1", "title": "SDE-1"}])
+        assert discovery.live_search(self.wf(), company="amazon")[0]["feed"] == "amazon:IND"
+
+    def test_a_workday_tenant_is_asked_when_it_is_named(self, monkeypatch):
+        monkeypatch.setattr(discovery.workday, "search",
+                            lambda spec, query, limit=20: [{"job_key": "w1", "title": "Module Engineer"}])
+        got = discovery.live_search(self.wf(), company="intel", role="engineer")
+        assert [j["feed"] for j in got] == ["workday:intel:wd1:External"]
+
+    def test_an_employer_we_do_not_read_asks_nobody(self, monkeypatch):
+        called = []
+        monkeypatch.setattr(discovery.amazon, "search", lambda *a, **k: called.append("amazon") or [])
+        monkeypatch.setattr(discovery.workday, "search", lambda *a, **k: called.append("workday") or [])
+        assert discovery.live_search(self.wf(), company="google", role="engineer") == []
+        assert called == []
+
+    def test_one_board_failing_does_not_lose_the_other(self, monkeypatch):
+        def boom(*a, **k):
+            raise discovery.FetchError("HTTP 503")
+
+        monkeypatch.setattr(discovery.amazon, "search", boom)
+        monkeypatch.setattr(discovery.workday, "search",
+                            lambda spec, query, limit=20: [{"job_key": "w1", "title": "Engineer"}])
+        got = discovery.live_search(self.wf(), company="intel")
+        assert [j["title"] for j in got] == ["Engineer"]
+
+    def test_no_company_named_asks_nobody(self, monkeypatch):
+        monkeypatch.setattr(discovery.amazon, "search", lambda *a, **k: [{"job_key": "x"}])
+        assert discovery.live_search(self.wf(), company="", role="engineer") == []
