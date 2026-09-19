@@ -260,3 +260,36 @@ class TestACompanyNameFiltersTheEmployer:
 
     def test_a_company_plus_a_role_still_narrows(self):
         assert keyword_filter(self.CORPUS, "amazon support", PREFS) == []
+
+
+class TestAPlaceNameFiltersTheLocation:
+    """Asking for India returned a role in Seoul, because its description
+    mentioned working with teams in India. Same mistake as the company one."""
+
+    CORPUS = [
+        job("Matchgroup", "Product Designer, International Growth", location="Seoul, South Korea",
+            description="work with teams in India and Japan", source="lever-public"),
+        job("Stripe", "Software Engineer, Internal Systems", location="Bengaluru, India"),
+        job("Amazon", "Software Development Engineer II", location="Bengaluru, Karnataka, IND",
+            source="amazon-jobs"),
+        job("Nvidia", "Senior Software Engineer", location="US, CA, Santa Clara", source="workday-public"),
+    ]
+
+    def test_a_place_term_means_that_place(self):
+        got = [j["company"] for j in keyword_filter(self.CORPUS, "engineer india", PREFS)]
+        assert "Matchgroup" not in got
+        assert set(got) == {"Stripe", "Amazon"}
+
+    def test_a_country_spelled_differently_by_the_board_still_matches(self):
+        """Amazon writes "IND", Stripe writes "India"; a person types one word."""
+        assert "Amazon" in [j["company"] for j in keyword_filter(self.CORPUS, "india", PREFS)]
+
+    def test_a_city_works_as_well_as_a_country(self):
+        assert set(j["company"] for j in keyword_filter(self.CORPUS, "bengaluru", PREFS)) == {"Stripe", "Amazon"}
+
+    def test_a_query_with_no_place_is_unaffected(self):
+        assert len(keyword_filter(self.CORPUS, "designer", PREFS)) == 1
+
+    def test_company_and_place_narrow_together(self):
+        assert [j["company"] for j in keyword_filter(self.CORPUS, "amazon india", PREFS)] == ["Amazon"]
+        assert keyword_filter(self.CORPUS, "nvidia india", PREFS) == []
