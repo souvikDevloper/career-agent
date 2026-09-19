@@ -70,8 +70,9 @@ class Services:
 
     # ---- search & matching ------------------------------------------------------
 
-    def search(self, uid: str, op_id: str, keywords: str, *, limit: int = 6, correlation_id: str | None = None,
-               refresh: bool = True, stats: dict | None = None) -> list[dict]:
+    def search(self, uid: str, op_id: str, keywords: str = "", *, limit: int = 6,
+               correlation_id: str | None = None, refresh: bool = True, stats: dict | None = None,
+               filters: dict | None = None, min_score: int = 0) -> list[dict]:
         if not self.profiles.current(uid):
             raise WorkflowError("no_profile", "Upload your resume first so I can explain fit.", 400)
         judge = self.is_judge(uid)
@@ -83,19 +84,20 @@ class Services:
         # some needing several sequential pages, polling them here made a person
         # asking a question wait minutes for data that was already at most half an
         # hour old. The smoke test caught this as a timeout.
-        # The test employer is for the pipeline demo on the command centre, where it
-        # is the only place an end-to-end browser submission can honestly be shown.
-        # It has no business in a job search: a fictional company competing with real
-        # openings is the thing that made results look made up.
-        sources = [s for s in discovery.all_sources() if s != portal.SOURCE]
-        if refresh:
+        sources = discovery.all_sources()
+        if refresh and cfg().enable_test_employer:
             self.wf.op_progress(uid, op_id, status="running", message="Checking the test employer")
             discovery.poll(self.wf, portal.SOURCE, force=True)
         self.wf.op_progress(uid, op_id, status="running", message=f"Reading {len(sources)} feeds")
         for src in sources:
             jobs.extend(discovery.cached_jobs(self.wf, src))
-        matched = discovery.keyword_filter(jobs, keywords, prefs)
-        candidates = matched[:limit]
+        # Structured filters when the caller has them, free text when it only has a
+        # string. One implementation either way.
+        active = {k: v for k, v in (filters or {}).items() if v}
+        matched = (discovery.filter_jobs(jobs, prefs, **active) if active
+                   else discovery.keyword_filter(jobs, keywords, prefs))
+        # Scoring costs a model call each, so never score more than asked for.
+        candidates = matched[: max(1, min(12, limit))]
         discovery.hydrate(self.wf, candidates)
         if stats is not None:
             # What was actually looked at. An empty result is only credible if the
@@ -104,6 +106,7 @@ class Services:
                 "live_boards": sorted({j.get("board") or j.get("source") for j in jobs if j.get("company")}),
                 "live_postings": len(jobs),
                 "matched": len(matched),
+                "filters": active or {"keywords": keywords},
             })
         self.wf.op_progress(uid, op_id, message=f"{len(candidates)} candidates after filters; explaining fit")
         # Scored concurrently. Each match is one model call against a long resume
@@ -126,6 +129,8 @@ class Services:
                         log(logger, "search.score_failed", job=candidates[i].get("job_key"),
                             error=type(exc).__name__, detail=str(exc)[:160], correlation_id=correlation_id)
         ordered = [c for c in results if c]
+        if min_score:
+            ordered = [c for c in ordered if (c.get("score") or 0) >= min_score]
         for card in ordered:
             self.wf.op_progress(uid, op_id, result=card)
         return ordered

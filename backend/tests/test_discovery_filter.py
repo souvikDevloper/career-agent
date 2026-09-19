@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from helpers import T0  # noqa: F401  (adds src/ to sys.path)
 
-from career_agent.discovery import keyword_filter
+from career_agent.discovery import filter_jobs, keyword_filter
 
 PREFS: dict = {"roles": [], "excluded_companies": []}
 
@@ -220,16 +220,29 @@ class TestAbbreviations:
         assert keyword_filter(self.CORPUS, "microsoft sde", PREFS) == []
 
 
-class TestTestEmployerIsNotASearchResult:
-    """A fictional company competing with real openings is what made results
-    look made up. It belongs to the pipeline demo, not to a job search."""
+class TestTestEmployerIsOff:
+    """A fictional company competing with real openings is what made results look
+    invented. It is off unless a deploy parameter turns it on for the submission
+    demo, which is the one place a real browser submission can honestly be shown."""
 
-    def test_the_portal_is_excluded_from_the_searched_sources(self):
+    def test_it_is_absent_by_default(self, monkeypatch):
         from career_agent.discovery import all_sources
         from career_agent.sources import portal
-        searched = [s for s in all_sources() if s != portal.SOURCE]
-        assert portal.SOURCE not in searched
-        assert portal.SOURCE in all_sources(), "the monitor must still poll it for the demo"
+        monkeypatch.delenv("ENABLE_TEST_EMPLOYER", raising=False)
+        assert portal.SOURCE not in all_sources()
+
+    def test_it_can_be_turned_on_for_the_demo(self, monkeypatch):
+        from career_agent.discovery import all_sources
+        from career_agent.sources import portal
+        monkeypatch.setenv("ENABLE_TEST_EMPLOYER", "true")
+        assert portal.SOURCE in all_sources()
+
+    def test_a_typo_does_not_turn_it_on(self, monkeypatch):
+        from career_agent.discovery import all_sources
+        from career_agent.sources import portal
+        for value in ("1", "yes", "True ", ""):
+            monkeypatch.setenv("ENABLE_TEST_EMPLOYER", value)
+            assert portal.SOURCE not in all_sources(), value
 
 
 class TestACompanyNameFiltersTheEmployer:
@@ -293,3 +306,67 @@ class TestAPlaceNameFiltersTheLocation:
     def test_company_and_place_narrow_together(self):
         assert [j["company"] for j in keyword_filter(self.CORPUS, "amazon india", PREFS)] == ["Amazon"]
         assert keyword_filter(self.CORPUS, "nvidia india", PREFS) == []
+
+
+class TestStructuredFilters:
+    """The agent passes the parts of a request separately instead of one phrase
+    the backend has to interpret. Every earlier bug in this file came from
+    guessing which field a word belonged to."""
+
+    CORPUS = [
+        job("Nvidia", "Senior Software Engineer, AI Inference", location="US, CA, Santa Clara",
+            source="workday-public"),
+        job("Nvidia", "Systems Engineer", location="Bengaluru, India", source="workday-public"),
+        job("Stripe", "Technical Support Engineer", location="Dublin",
+            description="PyTorch, NVIDIA NeMo and vLLM experience"),
+        job("Amazon", "Software Development Engineer II", location="Bengaluru, Karnataka, IND",
+            source="amazon-jobs"),
+        job("Amazon", "Financial Analyst Intern", location="Bengaluru, Karnataka, IND", source="amazon-jobs"),
+    ]
+
+    def filt(self, **kw):
+        return [(j["company"], j["title"]) for j in filter_jobs(self.CORPUS, PREFS, **kw)]
+
+    def test_company_restricts_to_that_employer(self):
+        assert all(c == "Nvidia" for c, _ in self.filt(company="Nvidia"))
+
+    def test_a_mention_in_another_posting_is_not_the_company(self):
+        assert "Stripe" not in [c for c, _ in self.filt(company="Nvidia")]
+
+    def test_company_and_location_together(self):
+        assert self.filt(company="Nvidia", location="India") == [("Nvidia", "Systems Engineer")]
+
+    def test_location_spans_the_spellings_boards_use(self):
+        got = {c for c, _ in self.filt(location="India")}
+        assert got == {"Nvidia", "Amazon"}
+
+    def test_role_searches_only_the_work(self):
+        assert self.filt(company="Amazon", role="intern") == [("Amazon", "Financial Analyst Intern")]
+
+    def test_an_abbreviation_still_resolves(self):
+        assert self.filt(company="Amazon", role="sde") == [("Amazon", "Software Development Engineer II")]
+
+    def test_empty_filters_return_everything(self):
+        assert len(filter_jobs(self.CORPUS, PREFS)) == len(self.CORPUS)
+
+    def test_a_company_we_do_not_carry_returns_nothing(self):
+        assert self.filt(company="Microsoft") == []
+
+    def test_punctuation_in_the_employer_name_does_not_matter(self):
+        corpus = [job("Match Group", "Product Designer", location="Seoul")]
+        assert len(filter_jobs(corpus, PREFS, company="matchgroup")) == 1
+        assert len(filter_jobs(corpus, PREFS, company="Match Group")) == 1
+
+    def test_work_mode_is_an_exact_filter(self):
+        corpus = [{**job("Acme", "Engineer"), "work_mode": "remote"},
+                  {**job("Acme", "Engineer Two"), "work_mode": "onsite"}]
+        assert len(filter_jobs(corpus, PREFS, work_mode="remote")) == 1
+
+    def test_employment_type_is_an_exact_filter(self):
+        corpus = [{**job("Acme", "Intern Role"), "employment_type": "internship"},
+                  {**job("Acme", "Staff Role"), "employment_type": None}]
+        assert len(filter_jobs(corpus, PREFS, employment_type="internship")) == 1
+
+    def test_excluded_companies_still_win(self):
+        prefs = {"roles": [], "excluded_companies": ["Nvidia"]}
+        assert filter_jobs(self.CORPUS, prefs, company="Nvidia") == []

@@ -54,6 +54,12 @@ class Settings:
     amazon_boards: tuple[str, ...] = field(
         default_factory=lambda: tuple(b.strip() for b in _env("AMAZON_BOARDS", "").split(",") if b.strip())
     )
+    # The fictional employer exists only for the end-to-end submission demo, which
+    # is the one place a real browser submission can honestly be shown. Off by
+    # default: it has no business in a product that answers questions about real
+    # jobs, and a fictional company competing with real openings is what made
+    # results look invented.
+    enable_test_employer: bool = field(default_factory=lambda: _env("ENABLE_TEST_EMPLOYER", "").lower() == "true")
     global_daily_model_calls: int = field(default_factory=lambda: int(_env("GLOBAL_DAILY_MODEL_CALLS", "4000")))
     user_daily_model_calls: int = field(default_factory=lambda: int(_env("USER_DAILY_MODEL_CALLS", "300")))
     judge_daily_model_calls: int = field(default_factory=lambda: int(_env("JUDGE_DAILY_MODEL_CALLS", "80")))

@@ -29,6 +29,11 @@ Ground rules:
 - Never name which boards we monitor from memory. The "searched" summary lists the boards
   that were actually read for that query; use it, and say how many live postings were
   looked at. Coverage changes, and a confident wrong list is worse than no list.
+- Split a request into search_jobs fields: the employer into company, the place into location,
+  the rest into role. "NVIDIA engineering jobs in Bengaluru above 70" is
+  company="NVIDIA", location="Bengaluru", role="engineering", min_score=70. Do not put an
+  employer or a place into role - that searches the text of every posting instead of
+  restricting to the one that was asked for.
 - A fit score is our own explained 0-100 rubric, not an employer's ATS score or a probability of an interview.
 - Do not suggest applying to something you just scored poorly. Under 50 means the evidence is
   not there; say what is missing instead. Over 70 is worth applying to. Between the two, say it
@@ -113,20 +118,34 @@ def t_update_preferences(roles: list[str] | None = None, locations: list[str] | 
     return {"ok": True, "preferences": prefs}
 
 
-def t_search_jobs(keywords: str, limit: int = 6) -> dict:
-    """Search current openings from supported sources and explain fit for each. Results stream to the user's screen.
+def t_search_jobs(role: str = "", company: str = "", location: str = "", work_mode: str = "",
+                  employment_type: str = "", min_score: int = 0, limit: int = 6) -> dict:
+    """Search current openings and explain fit for each. Results stream to the user's screen.
+
+    Pass the parts of the request separately rather than as one phrase. Naming an
+    employer or a place restricts the search to it exactly, which is the difference
+    between answering the question and answering a similar one.
 
     Args:
-        keywords: What to look for, e.g. "backend intern python bengaluru".
-        limit: Number of jobs to score (1-8).
+        role: The kind of work, e.g. "backend engineer" or "sde intern". Searched across title and description.
+        company: One employer, e.g. "Amazon". Only that employer's postings are returned.
+        location: One city or country, e.g. "Bengaluru" or "India". Matches however the board spells it.
+        work_mode: One of "remote", "hybrid", "onsite". Leave empty for any.
+        employment_type: e.g. "internship". Leave empty for any.
+        min_score: Only return matches scoring at or above this, 0-100. Use when the user asks for a bar.
+        limit: How many to score, 1-12. Each one costs a model call, so ask for what is needed.
     """
     ctx = CTX.get()
     stats: dict = {}
-    cards = ctx.services.search(ctx.user_id, ctx.op_id, keywords, limit=max(1, min(8, int(limit))),
-                                correlation_id=ctx.correlation_id, stats=stats)
+    cards = ctx.services.search(
+        ctx.user_id, ctx.op_id, limit=max(1, min(12, int(limit))), correlation_id=ctx.correlation_id, stats=stats,
+        min_score=max(0, min(100, int(min_score or 0))),
+        filters={"role": role, "company": company, "location": location,
+                 "work_mode": work_mode, "employment_type": employment_type},
+    )
     ctx.actions.append({"type": "search", "count": len(cards)})
     return {"results": [{"job_key": c["job_key"], "title": c["job"].get("title"), "company": c["job"].get("company"),
-                         "score": c["score"], "test_environment": bool(c["job"].get("test_environment")),
+                         "location": c["job"].get("location"), "score": c["score"],
                          "blocked": c["blocked"], "unknowns": c["unknowns"][:2], "why": (c.get("explanation") or "")[:240]}
                         for c in cards],
             "searched": stats}

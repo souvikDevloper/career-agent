@@ -46,7 +46,8 @@ def all_sources(extra: list[str] | None = None) -> list[str]:
     boards += [f"workday:{b}" for b in s.workday_boards]
     boards += [f"oracle:{b}" for b in s.oracle_boards]
     boards += [f"amazon:{b}" for b in s.amazon_boards]
-    return list(dict.fromkeys([portal.SOURCE, *boards, *(extra or [])]))
+    first = [portal.SOURCE] if s.enable_test_employer else []
+    return list(dict.fromkeys([*first, *boards, *(extra or [])]))
 
 
 def poll(wf, source: str, force: bool = False) -> dict[str, Any]:
@@ -174,11 +175,9 @@ _SUFFIXES = ("ings", "ing", "ers", "er", "ies", "es", "s")
 def _stem(word: str) -> str:
     """Crude, deliberately.
 
-    A person types "engineering" and the posting says "Engineer"; requiring the
-    exact word found nothing for a company with four hundred live openings.
-    Trimming a common suffix and matching on the stem as a substring covers
-    engineer/engineering/engineers and developer/developers without a
-    dependency or a language model.
+    A person types "engineering" and the posting says "Engineer". Trimming a
+    common suffix and matching the stem as a substring covers the forms people
+    use without a dependency or a model.
     """
     for suffix in _SUFFIXES:
         if word.endswith(suffix) and len(word) - len(suffix) >= 4:
@@ -212,62 +211,103 @@ def _matches(word: str, hay: str) -> bool:
     return any(alias in hay for alias in ALIASES.get(word, ()))
 
 
-def keyword_filter(jobs: list[dict], keywords: str, prefs: dict) -> list[dict]:
-    """Every meaningful word in the query has to appear somewhere in the job.
+def _words(text: str) -> list[str]:
+    return [w for w in re.split(r"[^a-z0-9+#.]+", (text or "").lower()) if len(w) > 1 and w not in STOP]
 
-    This was an OR: one matching word was enough to qualify. So "microsoft
-    internship" matched anything containing "internship", and a search for a
-    company we do not cover came back full of confident results from a company
-    the person never asked about. Returning nothing is the honest answer to a
-    query nothing matches, and the caller says so.
 
-    Words are still scored for ranking - a hit in the title counts for more than
-    one buried in the description - but scoring only orders what already
-    qualified.
+def _place_matches(wanted: str, location: str) -> bool:
+    """One place, spelled the way each board spells it.
+
+    Amazon writes "Bengaluru, Karnataka, IND", Stripe writes "Bengaluru, India",
+    Twilio writes "Remote - India". A person types one word for all three.
     """
-    words = [w for w in re.split(r"[^a-z0-9+#.]+", (keywords or "").lower()) if len(w) > 1 and w not in STOP]
-    roles = [r.lower() for r in prefs.get("roles", [])]
-    excluded = {c.lower() for c in prefs.get("excluded_companies", [])}
+    place = (location or "").lower()
+    for word in _words(wanted):
+        if word in place:
+            continue
+        if any(alias in place for alias in _COUNTRY_ALIASES.get(word, ())):
+            continue
+        return False
+    return True
 
-    # Some words name a field rather than describe one. "nvidia" is an employer,
-    # "bengaluru" is a place; matching either anywhere in the posting text gives
-    # answers that are true about the posting and useless as answers. Asking for
-    # NVIDIA returned Stripe roles listing "NVIDIA NeMo", and asking for India
-    # returned a role in Seoul whose description happened to mention India.
-    #
-    # So a word that names an employer filters the employer, a word that names a
-    # place filters the place, and everything else is searched across the text.
-    companies = _field_tokens(jobs, "company")
-    places = _field_tokens(jobs, "location") - companies
-    wanted_companies = [w for w in words if w in companies]
-    wanted_places = [w for w in words if w in places]
-    other_words = [w for w in words if w not in companies and w not in places]
+
+def filter_jobs(jobs: list[dict], prefs: dict, *, role: str = "", company: str = "", location: str = "",
+                work_mode: str = "", employment_type: str = "") -> list[dict]:
+    """Structured filters, applied exactly. No guessing what a word meant.
+
+    This replaced a single free-text string that the backend tried to interpret
+    with heuristics, and got wrong three times in a row: a search for NVIDIA
+    returned Stripe roles that listed "NVIDIA NeMo" in their requirements, and a
+    search for India returned a role in Seoul whose description mentioned India.
+    Both were true statements about the posting and useless as answers.
+
+    The caller knows which word is a company and which is a place - a language
+    model is good at exactly that - so it says so, and each filter is applied to
+    the field it names. Only `role` is a text search, and only across the parts
+    of a posting that describe the work.
+    """
+    role_words = _words(role)
+    company_words = _words(company)
+    excluded = {c.lower() for c in prefs.get("excluded_companies", [])}
+    preferred_roles = [r.lower() for r in prefs.get("roles", [])]
+    mode = (work_mode or "").strip().lower()
+    kind = (employment_type or "").strip().lower()
 
     out = []
-    for j in _dedupe(jobs):
-        company = (j.get("company") or "").lower()
-        if company in excluded:
+    for job in _dedupe(jobs):
+        employer = (job.get("company") or "").lower()
+        if employer in excluded:
             continue
-        title = (j.get("title") or "").lower()
-        hay = f"{title} {j.get('location', '')} {company} {(j.get('description') or '')[:1500]}".lower()
-        if wanted_companies and not all(w in company for w in wanted_companies):
+        # Compared without punctuation, because a board writes "Match Group" and a
+        # person types "matchgroup". Every word must be there: naming two
+        # employers matches nothing, which is the truth rather than a guess at
+        # which one was meant.
+        squashed = re.sub(r"[^a-z0-9]", "", employer)
+        if company_words and not all(re.sub(r"[^a-z0-9]", "", w) in squashed for w in company_words):
             continue
-        if wanted_places:
-            place = (j.get("location") or "").lower()
-            if not all(w in place or w in _COUNTRY_ALIASES.get(w, ()) and any(
-                    a in place for a in _COUNTRY_ALIASES[w]) for w in wanted_places):
-                continue
-        if other_words and not all(_matches(w, hay) for w in other_words):
+        if location and not _place_matches(location, job.get("location") or ""):
             continue
-        score = sum(3 if _matches(w, title) else 1 for w in other_words)
-        score += 2 * (len(wanted_companies) + len(wanted_places))
-        score += sum(4 for r in roles if r and r in title)
-        if not words and not roles:
-            score = 1
-        if score > 0:
-            out.append((score, j))
+        if mode and (job.get("work_mode") or "").lower() != mode:
+            continue
+        if kind and kind not in (job.get("employment_type") or "").lower():
+            continue
+
+        title = (job.get("title") or "").lower()
+        hay = f"{title} {(job.get('description') or '')[:1500]} {' '.join(job.get('departments') or [])}".lower()
+        if role_words and not all(_matches(w, hay) for w in role_words):
+            continue
+
+        score = sum(3 if _matches(w, title) else 1 for w in role_words)
+        score += sum(4 for r in preferred_roles if r and r in title)
+        score += 2 * bool(company_words) + 2 * bool(location)
+        out.append((score or 1, job))
+
     out.sort(key=lambda t: (-t[0], t[1].get("first_seen_at") or ""))
     return [j for _, j in out]
+
+
+def parse_query(jobs: list[dict], keywords: str) -> dict:
+    """Free text to structured filters, for callers that only have a string.
+
+    The agent passes filters directly and never comes through here. This exists
+    for the REST search endpoint and for a person typing into a box, and it
+    decides what a word names by looking at what is actually in the corpus.
+    """
+    words = _words(keywords)
+    companies = _field_tokens(jobs, "company")
+    places = _field_tokens(jobs, "location") - companies
+    return {
+        # Every company word is kept, not just the first. Dropping one silently
+        # answers a different question than the one that was asked.
+        "company": " ".join(w for w in words if w in companies),
+        "location": " ".join(w for w in words if w in places),
+        "role": " ".join(w for w in words if w not in companies and w not in places),
+    }
+
+
+def keyword_filter(jobs: list[dict], keywords: str, prefs: dict) -> list[dict]:
+    """Back-compatible free-text search, over the same one implementation."""
+    return filter_jobs(jobs, prefs, **parse_query(jobs, keywords))
 
 
 STOP = {"find", "me", "jobs", "job", "roles", "role", "for", "in", "the", "and", "or", "a", "an", "with", "show", "search",
