@@ -942,7 +942,7 @@ def speak(event, p, cid):
 # ---------------------------------------------------------------------------
 
 _RESUME_BUILDER_SYSTEM = """You are an expert technical resume writer and LaTeX typesetter.
-The user will send you their current LaTeX resume source (or a partial excerpt) and a request.
+The user will send you their current LaTeX resume source, their verified PROFILE FACTS, and a request.
 
 Your job:
 1. Give concise, actionable feedback as plain text.
@@ -951,21 +951,39 @@ Your job:
    Only omit `latex_patch` (null) when you are just answering a question or giving advice.
 
 Rules:
-- Never invent experience, qualifications, or metrics that are not already in the resume.
+- Never invent experience, qualifications, employers, dates or metrics. Every claim in the resume must
+  come from the current LaTeX or the PROFILE FACTS. If a number would make a bullet stronger and it is
+  not in either, ask the user for it in `reply` instead of writing one.
 - Suggest specific improvements with examples, not vague advice.
 - Keep LaTeX valid and compilable. Use only standard packages.
-- Format bullet points with strong action verbs and measurable outcomes.
+- If the source uses Jake's Resume template (custom commands such as \\resumeSubheading,
+  \\resumeProjectHeading, \\resumeItem, \\resumeSubHeadingListStart), keep the whole preamble and every
+  \\newcommand exactly as it is and edit only the content between \\begin{document} and
+  \\end{document}, using those same commands. Do not switch the template unless asked.
+- Format bullet points with strong action verbs and measurable outcomes (only measurable outcomes that are real).
 - Response JSON schema: {"reply": "<plain text reply>", "latex_patch": "<full LaTeX source or null>"}
 """
 
 
 class ResumeBuilderChatIn(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
-    latex_context: str = Field(default="", max_length=6000)
+    latex_context: str = Field(default="", max_length=30_000)
 
 
 class ResumeBuilderCompileIn(BaseModel):
     latex: str = Field(min_length=10, max_length=80_000)
+
+
+def _builder_profile_facts(svc, user_id: str) -> str:
+    """The user's current profile facts as compact JSON for the prompt ("none" when there is no profile)."""
+    try:
+        cur = svc.profiles.current(user_id)
+    except AttributeError:  # a stripped-down service (tests) without a profile store
+        return "none"
+    if not cur or not cur.get("facts"):
+        return "none"
+    facts = {k: v for k, v in cur["facts"].items() if k not in {"suggestions", "work_authorization", "uncertain"}}
+    return json.dumps(facts, ensure_ascii=False, default=str)[:8000]
 
 
 @route("POST", r"/api/resume/builder/chat")
@@ -989,10 +1007,12 @@ def resume_builder_chat(event, p, cid):
     if not svc.wf.reserve_usage(p.user_id, "model_calls", 1, cap, s.global_daily_model_calls):
         raise WorkflowError("quota", "Model call quota reached for today.", 429)
 
+    facts = _builder_profile_facts(svc, p.user_id)
     prompt = (f"CURRENT LATEX:\n```latex\n{data.latex_context}\n```\n\n"
+              f"PROFILE FACTS (verified, the only source of truth for claims):\n{facts}\n\n"
               f"USER REQUEST:\n{data.message}")
     try:
-        parsed = llm.json_call(_RESUME_BUILDER_SYSTEM, prompt, max_tokens=4096, correlation_id=cid)
+        parsed = llm.json_call(_RESUME_BUILDER_SYSTEM, prompt, max_tokens=6000, correlation_id=cid)
     except llm.ModelUnavailable as exc:
         # The editor is useless without the model, and a 500 tells the user
         # nothing they can act on.
@@ -1015,9 +1035,9 @@ def resume_builder_compile(event, p, cid):
     Falls back to a stub PDF when no TeX engine is available (local dev without Docker layer).
     """
     import base64
+    import os
     import subprocess
     import tempfile
-    import os
 
     data = ResumeBuilderCompileIn(**body_json(event))
 
@@ -1043,9 +1063,16 @@ def resume_builder_compile(event, p, cid):
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 continue
 
-        # No TeX engine found — compile using the robust vector PDF generator
-        from ..demo import minimal_pdf
+        # No TeX engine found. Jake-style resumes get a proper laid-out preview; anything else is
+        # flattened to text by the generic renderer below.
         import re
+
+        from ..demo import minimal_pdf
+        from ..latex_preview import render_resume_pdf
+
+        laid_out = render_resume_pdf(data.latex)
+        if laid_out is not None:
+            return respond(200, {"pdf_b64": base64.b64encode(laid_out).decode(), "engine": "resume-preview"})
 
         def _clean_latex(s: str) -> str:
             s = re.sub(r"\\documentclass[\s\S]*?\\begin\{document\}", "", s)
