@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { extname, join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import zlib from "node:zlib";
 
 // Resolve the built UI relative to this file so the server runs from any cwd.
 const DIST = resolve(dirname(fileURLToPath(import.meta.url)), "..", "dist");
@@ -71,6 +72,147 @@ const DETAIL = (id) => {
     tasks: a.app_id === "app_1" ? [{ task_id: "t1", title: "Complete online assessment", due: new Date(now + 2.5 * 864e5).toISOString(), kind: "assessment_invite", status: "open", note: "60-minute online assessment on the Northwind test platform." }] : [] };
 };
 
+// Dynamic vector PDF compiler: transforms LaTeX markup into a clean, complete typeset PDF.
+function compileLatexToPdf(latex) {
+  if (!latex || typeof latex !== "string") {
+    latex = "\\textbf{Aarav Mehta}\n\\section*{Summary}\nSoftware Engineer building scalable cloud systems.";
+  }
+
+  // Pre-normalize LaTeX: split on double backslashes, sections, items, and rules
+  const normalized = latex
+    .replace(/\\\\/g, "\n")
+    .replace(/\\section/g, "\n\\section")
+    .replace(/\\item/g, "\n\\item")
+    .replace(/\\hrule/g, "\n\\hrule\n");
+
+  const lines = normalized.split("\n");
+  const ops = [];
+  let y = 805; // Top of A4 (595 x 842 pt)
+
+  function esc(s) {
+    return s.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+  }
+
+  let namePrinted = false;
+
+  for (let raw of lines) {
+    let line = raw.trim();
+    if (!line || line.startsWith("%") || line.startsWith("\\documentclass") ||
+        line.startsWith("\\usepackage") || line.startsWith("\\begin{document}") ||
+        line.startsWith("\\end{document}") || line.startsWith("\\definecolor") ||
+        line.startsWith("\\titleformat") || line.startsWith("\\setlength")) {
+      continue;
+    }
+
+    // Check for horizontal divider
+    if (line.includes("\\hrule") || line.includes("\\titlerule") || line.includes("\\rule{")) {
+      y -= 4;
+      ops.push(`0.3 0.3 0.6 RG 1 w 40 ${y} m 555 ${y} l S`);
+      y -= 10;
+      continue;
+    }
+
+    // Check for Section Header
+    if (line.includes("\\section*{") || line.includes("\\section{")) {
+      const title = line.replace(/.*\\section\*?\{([^}]+)\}.*/, "$1").replace(/[{}]/g, "").toUpperCase();
+      y -= 10;
+      ops.push(`BT /F2 12 Tf 0.2 0.2 0.6 rg 40 ${y} Td (${esc(title)}) Tj ET`);
+      y -= 4;
+      ops.push(`0.2 0.2 0.6 RG 1.5 w 40 ${y} m 555 ${y} l S`);
+      y -= 14;
+      continue;
+    }
+
+    // Clean remaining markup
+    let text = line
+      .replace(/\\href\{[^}]+\}\{([^}]+)\}/g, "$1")
+      .replace(/\\textbf\{([^}]+)\}/g, "$1")
+      .replace(/\\textit\{([^}]+)\}/g, "$1")
+      .replace(/\\color\{[^}]+\}/g, "")
+      .replace(/\\LARGE/g, "")
+      .replace(/\\Large/g, "")
+      .replace(/\\large/g, "")
+      .replace(/\\small/g, "")
+      .replace(/\\bfseries/g, "")
+      .replace(/\\selectfont/g, "")
+      .replace(/\\fontsize\{[^}]+\}\{[^}]+\}/g, "")
+      .replace(/\\vspace\{[^}]+\}/g, "")
+      .replace(/\\quad/g, "  |  ")
+      .replace(/\\hfill/g, "   ")
+      .replace(/\\textbullet/g, "•")
+      .replace(/\\bullet/g, "•")
+      .replace(/\\\$/g, "$")
+      .replace(/\\%/g, "%")
+      .replace(/\\&/g, "&")
+      .replace(/\\\\/g, " ")
+      .replace(/\\begin\{[^}]+\}/g, "")
+      .replace(/\\end\{[^}]+\}/g, "")
+      .replace(/[{}]/g, "")
+      .replace(/%[^\n]*/g, "")
+      .trim();
+
+    if (!text) continue;
+
+    // Header / Name
+    if (!namePrinted && y > 750) {
+      ops.push(`BT /F2 18 Tf 0.1 0.1 0.2 rg 40 ${y} Td (${esc(text)}) Tj ET`);
+      y -= 20;
+      namePrinted = true;
+      continue;
+    }
+
+    // Bullet items
+    if (raw.trim().startsWith("\\item") || text.startsWith("•")) {
+      const bulletText = text.replace(/^•\s*/, "").replace(/^\\item\s*/, "");
+      ops.push(`BT /F1 9.5 Tf 0.15 0.15 0.2 rg 55 ${y} Td (\\x95  ${esc(bulletText.slice(0, 95))}) Tj ET`);
+      y -= 13;
+      if (bulletText.length > 95) {
+        ops.push(`BT /F1 9.5 Tf 0.15 0.15 0.2 rg 65 ${y} Td (${esc(bulletText.slice(95, 190))}) Tj ET`);
+        y -= 13;
+      }
+      continue;
+    }
+
+    // Sub-headers or regular lines
+    const isBold = raw.includes("\\textbf{");
+    const font = isBold ? "/F2 10.5 Tf" : "/F1 9.5 Tf";
+    ops.push(`BT ${font} 0.15 0.15 0.2 rg 40 ${y} Td (${esc(text.slice(0, 105))}) Tj ET`);
+    y -= 14;
+  }
+
+  const stream = ops.join("\n");
+  const comp = zlib.deflateSync(Buffer.from(stream, "latin1"));
+
+  const objs = [
+    Buffer.from("<< /Type /Catalog /Pages 2 0 R >>"),
+    Buffer.from("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+    Buffer.from("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>"),
+    Buffer.from("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"),
+    Buffer.from("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>"),
+    Buffer.concat([
+      Buffer.from(`<< /Length ${comp.length} /Filter /FlateDecode >>\nstream\n`),
+      comp,
+      Buffer.from("\nendstream")
+    ])
+  ];
+
+  let out = Buffer.from("%PDF-1.4\n");
+  const offsets = [];
+  for (let i = 0; i < objs.length; i++) {
+    offsets.push(out.length);
+    out = Buffer.concat([out, Buffer.from(`${i + 1} 0 obj\n`), objs[i], Buffer.from("\nendobj\n")]);
+  }
+  const xref = out.length;
+  let xrefStr = `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n`;
+  for (const off of offsets) {
+    xrefStr += String(off).padStart(10, "0") + " 00000 n \n";
+  }
+  xrefStr += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  out = Buffer.concat([out, Buffer.from(xrefStr)]);
+
+  return out.toString("base64");
+}
+
 const routes = {
   "GET /config.json": () => ({ region: "us-east-1", userPoolId: "x", userPoolClientId: "y" }),
   "POST /api/public/demo-session": () => ({ id_token: "h.eyJzdWIiOiJ1MSJ9.s", access_token: "a", expires_in: 3600, example_workspace: true }),
@@ -82,6 +224,16 @@ const routes = {
   "GET /api/chat": () => ({ messages: [{ role: "user", text: "Find cloud internships that fit me", at: iso(9e5), source: "voice" }, { role: "assistant", text: "Three openings fit you today.\n\n- **Cloud Engineer Intern (AWS)** at Northwind Labs \u2014 86. Your Lambda + DynamoDB work at Lotus Fintech is direct evidence.\n- **Backend Intern** at Cloudflare \u2014 71. Strong Python, but they ask for Go.\n- **Platform Intern** at Acme \u2014 64. Hybrid in Pune, which is inside your filters.\n\nThe most common gap across all three is `AWS SAM`. One packet is waiting for your approval.", at: iso(8.9e5), runtime: "strands-agents" }] }),
   "GET /api/insights": () => ({ funnel: { discovered: 5, prepared: 4, submitted: 1, replied: 1, assessment: 1, interview: 0 }, match_count: 4, avg_score: 65, score_histogram: [{ range: "0-49", count: 1 }, { range: "50-64", count: 1 }, { range: "65-80", count: 1 }, { range: "81-100", count: 1 }], top_gaps: [{ skill: "AWS SAM", jobs: 3 }, { skill: "Kubernetes", jobs: 2 }, { skill: "Tableau", jobs: 1 }], enough_data: true, note: null, next_steps: ["'AWS SAM' is the most common unmet requirement (3 jobs). Add a project that shows it, if you have one.", "2 application(s) are waiting on you."] }),
   "GET /api/tasks": () => ({ tasks: DETAIL("app_1").tasks }),
+  // Resume Builder endpoints
+  "POST /api/resume/builder/compile": () => ({ pdf_b64: MOCK_PDF_B64 }),
+  "POST /api/resume/builder/chat": () => ({
+    reply: "I've reviewed your LaTeX and the job description. Here are my suggestions:\n\n1. **Strengthen the summary** — replace \"results-driven\" with a concrete metric (e.g., \"Shipped 4 production services handling 1M+ req/day\").\n2. **Add AWS SAM** to your skills table — it appears in 3 of your target job descriptions.\n3. **Quantify the Cloudflare bullet** — \"reduced latency from 800 ms to 120 ms\" is stronger than a general migration claim.\n\nWant me to apply these changes and give you updated LaTeX?",
+    latex_patch: null,
+  }),
+  "POST /api/resume/builder/sync-profile": () => {
+    ME.profile.version += 1;
+    return { ok: true, profile: ME.profile };
+  },
 };
 
 // The MCP panel speaks the real protocol, so the mock answers it for real too -
@@ -150,6 +302,43 @@ http.createServer(async (req, res) => {
     if (!reply) { res.writeHead(202); return res.end(); }
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify(reply));
+  }
+  if (key === "POST /api/resume/builder/compile") {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    let latex = "";
+    try {
+      const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      latex = payload.latex || "";
+    } catch {}
+    const pdf_b64 = compileLatexToPdf(latex);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ pdf_b64, engine: "vector-renderer" }));
+  }
+  if (key === "POST /api/resume/builder/chat") {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    let message = "";
+    let latexContext = "";
+    try {
+      const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      message = payload.message || "";
+      latexContext = payload.latex_context || "";
+    } catch {}
+
+    let reply = "I analyzed your resume and optimized your key bullet points. Here is what I refined:\n\n• **Quantified Impact**: Added explicit metrics to your FastAPI service on AWS Lambda (processed 1M+ daily loan requests with 99.9% uptime).\n• **Target Keywords**: Incorporated AWS SAM, GitHub Actions CI, and Terraform into your core competencies.\n• **High-Impact Verbs**: Swapped passive phrasing for active leadership terms.\n\nClick **Apply changes to Resume** to update your resume and profile.";
+    let latex_patch = null;
+
+    if (latexContext) {
+      latex_patch = latexContext
+        .replace(/Built a Python FastAPI service for loan document status[^\n\\]*/i,
+                 "Architected a high-throughput Python FastAPI service on AWS Lambda with DynamoDB, processing 1M+ daily loan verification transactions with sub-180ms p99 latency")
+        .replace(/Built a Python FastAPI service on AWS Lambda[^\n\\]*/i,
+                 "Architected a high-throughput Python FastAPI service on AWS Lambda with DynamoDB, processing 1M+ daily loan verification transactions with sub-180ms p99 latency");
+    }
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ reply, latex_patch }));
   }
   let body = routes[key]?.();
   if (key === "POST /api/commands") {
