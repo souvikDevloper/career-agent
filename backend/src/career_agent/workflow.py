@@ -252,7 +252,8 @@ class Workflow:
             "schema_version": "packet/1", "created_at": self._now_iso(), "field_evidence": packet.get("field_evidence", {}),
             "fields": packet.get("fields", []),
         }
-        can_submit = connectors.can(app["connector"], "submit")
+        can_submit = (connectors.can(app["connector"], "submit")
+                      and bool(packet.get("target", {}).get("submittable", True)))
         if missing:
             target = "NeedsInformation"
         elif not can_submit:

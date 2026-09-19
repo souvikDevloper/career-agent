@@ -34,6 +34,16 @@ def _requisition(raw: dict) -> str:
     return value if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{1,48}", value) else str(raw["id"])
 
 
+GREENHOUSE_HOSTED = "job-boards.greenhouse.io"
+
+
+def _apply_target(board: str, raw: dict) -> dict:
+    absolute = raw.get("absolute_url") or ""
+    if GREENHOUSE_HOSTED in absolute:
+        return {"kind": "hosted_form", "url": f"https://{GREENHOUSE_HOSTED}/{board}/jobs/{raw['id']}"}
+    return {"kind": "external", "url": absolute or None}
+
+
 def normalize(board: str, raw: dict) -> dict:
     description = html_to_text(raw.get("content", ""))
     loc = (raw.get("location") or {}).get("name") or ""
@@ -49,7 +59,11 @@ def normalize(board: str, raw: dict) -> dict:
         "work_mode": "remote" if "remote" in loc.lower() else None,
         "description": description[:12000],
         "url": raw.get("absolute_url"),
-        "apply": {"kind": "external", "url": raw.get("absolute_url")},
+        # Some employers host the application on Greenhouse; others embed it in
+        # their own careers site, where the form sits behind their bot protection
+        # and is not ours to drive. The board itself says which, so the answer is
+        # read off the posting rather than kept in a list we would have to curate.
+        "apply": _apply_target(board, raw),
         "published_at": raw.get("first_published") or raw.get("updated_at"),
         "updated_at": raw.get("updated_at"),
         "departments": [d.get("name") for d in raw.get("departments") or []],

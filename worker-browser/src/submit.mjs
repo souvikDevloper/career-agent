@@ -3,6 +3,17 @@
 
 export const RECEIPT_SELECTOR = "#receipt-reference";
 
+// Read after the submit click, and only alongside the form having gone away.
+// A posting page can say "thank you for applying" in its own copy, so the text
+// alone is not evidence that anything was sent.
+export const CONFIRMATION_PATTERNS = [
+  /thank you for applying/i,
+  /thanks for applying/i,
+  /your application (?:has been |was )?(?:successfully )?(?:submitted|received)/i,
+  /we(?:'ve| have) received your application/i,
+  /application (?:submitted|received|complete)/i,
+];
+
 export function hostAllowed(url, allowedHosts) {
   try {
     const u = new URL(url);
@@ -44,6 +55,20 @@ export async function lockDown(context, allowedHosts, { allowLocal = false } = {
 }
 
 /**
+ * Find a field by the identifier the employer's own API gave us.
+ *
+ * The same identifier reaches the page as a different attribute depending on who
+ * built the form: the test portal names its inputs, Greenhouse renders a React
+ * form whose text inputs carry only `id`, and its multi-selects use
+ * `name="question_123[]"`. Looking only at `name` meant every field on a real
+ * Greenhouse form came back missing and the packet was abandoned before submit.
+ */
+export function fieldLocator(page, name) {
+  const e = cssEscape(name);
+  return page.locator(`[name="${e}"], [name="${e}[]"], [id="${e}"]`);
+}
+
+/**
  * Fill the approved answers into the live form.
  * @returns {Promise<{filled:string[], missing:string[]}>}
  */
@@ -51,7 +76,7 @@ export async function fillForm(page, answers, resumePath) {
   const filled = [];
   const missing = [];
   for (const [name, value] of Object.entries(answers)) {
-    const loc = page.locator(`[name="${cssEscape(name)}"]`);
+    const loc = fieldLocator(page, name);
     const count = await loc.count();
     if (count === 0) {
       missing.push(name);
@@ -71,7 +96,9 @@ export async function fillForm(page, answers, resumePath) {
     } else if (type === "checkbox") {
       await first.check();
     } else if (type === "radio") {
-      await page.locator(`[name="${cssEscape(name)}"][value="${cssEscape(String(value))}"]`).check();
+      const v = cssEscape(String(value));
+      const e = cssEscape(name);
+      await page.locator(`[name="${e}"][value="${v}"], [id="${e}"][value="${v}"]`).check();
     } else {
       await first.fill(String(value));
     }
@@ -107,12 +134,24 @@ export async function clickAndConfirm(page, { timeoutMs = 25000 } = {}) {
   } catch {
     // fall through to classify
   }
-  const text = (await page.content().catch(() => "")).toLowerCase();
-  if (text.includes("captcha")) return { outcome: "known_failure", reason: "captcha_required" };
+  const html = (await page.content().catch(() => "")).toLowerCase();
+  if (html.includes("captcha")) return { outcome: "known_failure", reason: "captcha_required" };
   const errors = await page
     .locator("ul[style*='b42318'] li")
     .allTextContents()
     .catch(() => []);
   if (errors.length) return { outcome: "known_failure", reason: `employer form rejected: ${errors.join("; ").slice(0, 200)}` };
+
+  // A board that issues no reference number still has to be distinguishable from
+  // a page that silently did nothing. Require both halves: wording that says it
+  // arrived, and the form no longer being on the page.
+  const stillShowingForm = await page
+    .locator('button[type="submit"], input[type="submit"]')
+    .count()
+    .catch(() => 1);
+  const visible = await page.locator("body").innerText().catch(() => "");
+  if (!stillShowingForm && CONFIRMATION_PATTERNS.some((re) => re.test(visible))) {
+    return { outcome: "submitted", reason: "confirmed by page wording; employer issued no reference" };
+  }
   return { outcome: "unknown", reason: "no confirmation received" };
 }

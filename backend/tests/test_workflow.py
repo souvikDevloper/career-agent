@@ -62,10 +62,35 @@ class ReviewMode(unittest.TestCase):
         self.assertEqual(len(outbox(store, "notify")), 1)
 
     def test_manual_handoff_for_connector_without_submit(self):
+        """Amazon, Workday and Oracle file applications from inside an account we
+        have no way to reach, so the packet is handed to the person instead."""
         wf, _, _ = make()
-        app = new_app(wf, connector="greenhouse-public")
+        app = new_app(wf, connector="amazon-jobs")
         app = wf.save_packet("u1", app["app_id"], packet())
         self.assertEqual(app["action_state"], "ManualHandoff")
+
+    def test_manual_handoff_when_this_posting_is_hosted_off_the_board(self):
+        """Greenhouse can submit - but only to forms Greenhouse actually hosts.
+
+        Stripe, Databricks and Rubrik embed Greenhouse in their own careers site,
+        where the form sits behind their own bot protection. Treating connector
+        capability as posting capability would have queued a submission that
+        could only fail at the browser.
+        """
+        wf, _, _ = make()
+        app = new_app(wf, connector="greenhouse-public")
+        off_board = packet(target={"url": "https://www.rubrik.com/careers/job.751?gh_jid=751",
+                                   "connector": "greenhouse-public", "submittable": False})
+        app = wf.save_packet("u1", app["app_id"], off_board)
+        self.assertEqual(app["action_state"], "ManualHandoff")
+
+    def test_a_greenhouse_hosted_posting_goes_to_approval(self):
+        wf, _, _ = make()
+        app = new_app(wf, connector="greenhouse-public")
+        hosted = packet(target={"url": "https://job-boards.greenhouse.io/twilio/jobs/8177722",
+                                "connector": "greenhouse-public", "submittable": True})
+        app = wf.save_packet("u1", app["app_id"], hosted)
+        self.assertEqual(app["action_state"], "NeedsApproval")
 
 
 class AutoModes(unittest.TestCase):
