@@ -6,6 +6,7 @@ Delivery is at-least-once; every handler is idempotent (operations, outbox keys,
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from .. import agent
@@ -106,8 +107,92 @@ def process(msg: dict) -> None:
         raise
 
 
+
+_AMAZON_SEARCH_WORDS = {
+    "find", "search", "show", "get", "look", "looking", "jobs", "job", "roles", "role",
+    "openings", "opening", "positions", "position",
+}
+_AMAZON_ROLE_STOP = _AMAZON_SEARCH_WORDS | {
+    "me", "please", "for", "in", "at", "the", "a", "an", "any", "current", "latest", "available",
+}
+_AMAZON_LOCATIONS = (
+    ("Bengaluru", ("bengaluru", "bangalore", "blr")),
+    ("Hyderabad", ("hyderabad",)),
+    ("Pune", ("pune", "poona")),
+    ("Chennai", ("chennai", "madras")),
+    ("Mumbai", ("mumbai", "bombay")),
+    ("Delhi", ("delhi", "new delhi")),
+    ("Noida", ("noida",)),
+    ("Gurugram", ("gurugram", "gurgaon")),
+    ("Kolkata", ("kolkata", "calcutta")),
+    ("India", ("india", "ind")),
+)
+
+
+def _direct_amazon_filters(text: str) -> dict[str, str] | None:
+    """Parse an explicit Amazon job-search command without asking the chat model.
+
+    The employer and location are structured fields, so this route reaches
+    amazon.jobs live search directly instead of depending on the model to choose
+    search_jobs first. Keep it deliberately narrow: only explicit Amazon search
+    commands are intercepted; everything else still goes through the agent.
+    """
+    lower = (text or "").lower()
+    tokens = re.findall(r"[a-z0-9+#.]+", lower)
+    if "amazon" not in tokens or not any(word in _AMAZON_SEARCH_WORDS for word in tokens):
+        return None
+
+    location = ""
+    location_tokens: set[str] = set()
+    for canonical, aliases in _AMAZON_LOCATIONS:
+        hit = next((alias for alias in aliases if re.search(r"\b" + re.escape(alias) + r"\b", lower)), None)
+        if hit:
+            location = canonical
+            location_tokens.update(re.findall(r"[a-z0-9]+", hit))
+            break
+
+    role_tokens = [
+        token for token in tokens
+        if token != "amazon" and token not in _AMAZON_ROLE_STOP and token not in location_tokens
+    ]
+    return {"company": "Amazon", "role": " ".join(role_tokens), "location": location}
+
+
+def _direct_search_reply(cards: list[dict], filters: dict[str, str], stats: dict) -> str:
+    role = filters.get("role") or "jobs"
+    location = filters.get("location")
+    target = f"Amazon {role}" + (f" in {location}" if location else "")
+    if not cards:
+        looked = stats.get("live_postings")
+        suffix = f" I checked {looked} live postings." if isinstance(looked, int) else ""
+        return f"I searched {target} directly and found no matches.{suffix}"
+
+    preview = []
+    for card in cards[:3]:
+        job = card.get("job") or {}
+        where = job.get("location") or "location not listed"
+        preview.append(f"{job.get('title') or 'Untitled role'} — {where} ({card.get('score', 0)}/100)")
+    more = f" +{len(cards) - 3} more." if len(cards) > 3 else ""
+    return f"Found {len(cards)} matches for {target}. " + "; ".join(preview) + more
+
+
+
 def run_chat(svc, uid: str, op_id: str, text: str, source: str, cid: str | None) -> None:
     from ..util import new_id
+
+    direct = _direct_amazon_filters(text)
+    if direct:
+        stats: dict = {}
+        svc.wf.op_progress(uid, op_id, status="running", message="Searching Amazon Jobs directly")
+        cards = svc.search(uid, op_id, correlation_id=cid, stats=stats, filters=direct)
+        reply = _direct_search_reply(cards, direct, stats)
+        actions = [{"type": "search", "count": len(cards), "filters": direct}]
+        ts = svc.wf.clock.iso()
+        svc.store.put({"pk": f"USER#{uid}", "sk": f"CHAT#{ts}#{op_id}#a", "entity": "chat", "role": "assistant",
+                       "text": reply, "op_id": op_id, "at": ts, "actions": actions, "runtime": "direct-search"})
+        svc.wf.op_progress(uid, op_id, status="succeeded",
+                           final={"reply": reply, "actions": actions, "runtime": "direct-search"})
+        return
 
     svc.wf.op_progress(uid, op_id, status="running", message="Thinking")
     rows = svc.store.query(f"USER#{uid}", "CHAT#", limit=13, newest_first=True)
