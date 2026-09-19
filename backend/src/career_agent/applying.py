@@ -11,7 +11,7 @@ from typing import Any
 
 from . import connectors, llm
 from .config import settings as cfg
-from .sources import portal
+from .sources import greenhouse, portal
 from .util import sha256
 
 COVER_SYSTEM = """You write a short, truthful application note for a student.
@@ -51,6 +51,32 @@ def _school(facts: dict) -> str | None:
     return eds[0]["school"] if eds else None
 
 
+CONSENT_WORDS = re.compile(r"\b(confirm|consent|acknowledge|agree|privacy notice|terms)\b")
+
+
+def is_consent(field: dict) -> bool:
+    """A box the person must tick to proceed, whatever widget the board renders it as.
+
+    Greenhouse asks for the same acknowledgement as a select whose only answer is
+    "Yes". Matching on checkbox alone missed it, so a privacy-notice consent came
+    back as an unanswerable required field and blocked the whole packet.
+    """
+    if not CONSENT_WORDS.search(norm_label(field["label"])):
+        return False
+    if field["type"] == "checkbox":
+        return True
+    return field["type"] == "select" and len(field.get("options") or []) <= 2
+
+
+def _current_role(facts: dict) -> dict:
+    """The position the person holds now, or the most recent one on the resume."""
+    ongoing = ("", "present", "current", "now", "ongoing")
+    for role in facts.get("experience") or []:
+        if str(role.get("end") or "").strip().lower() in ongoing:
+            return role
+    return (facts.get("experience") or [{}])[0]
+
+
 def map_field(field: dict, facts: dict, saved: dict, cover_note: str | None) -> tuple[Any, str] | None:
     """Return (value, source) or None when unknown."""
     label = norm_label(field["label"])
@@ -70,6 +96,17 @@ def map_field(field: dict, facts: dict, saved: dict, cover_note: str | None) -> 
         return None
     if label in saved_norm:
         return saved_norm[label], "saved_answer:user"
+    # Real employer forms ask for these constantly and the resume already answers
+    # them; without this every Greenhouse application stopped to ask the user for
+    # facts they had already uploaded.
+    if "legal name" in label and facts.get("name"):
+        return facts["name"], "resume:name"
+    if ("current" in label or "recent" in label) and ("employer" in label or "company" in label):
+        employer = _current_role(facts).get("company")
+        return (employer, "resume:experience") if employer else None
+    if ("current" in label or "recent" in label) and ("title" in label or "role" in label or "position" in label):
+        title = _current_role(facts).get("title") or facts.get("headline")
+        return (title, "resume:experience") if title else None
     if ftype == "file" or "resume" in label or "cv" == label:
         return "__RESUME__", "profile:resume"
     if "authoriz" in label or "visa" in label or "sponsor" in label:
@@ -144,6 +181,22 @@ def strip_unsupported_numbers(text: str, sources: str) -> str:
     return " ".join(kept).strip()
 
 
+def read_form(app: dict, job: dict, apply_url: str | None) -> dict | None:
+    """The employer's real application form, from whichever connector can produce one.
+
+    Greenhouse publishes it on the same unauthenticated endpoint that serves the
+    posting, so the packet is built against the fields that will actually be
+    received rather than a guess. A connector with no way to read a form returns
+    None and the packet falls back to what the profile alone supports.
+    """
+    connector = app.get("connector")
+    if connector == greenhouse.SOURCE and job.get("board") and job.get("external_id"):
+        return greenhouse.read_form(job["board"], job["external_id"])
+    if connector == portal.SOURCE and apply_url:
+        return portal.read_form(apply_url)
+    return None
+
+
 def prepare_packet(wf, uid: str, app: dict, job: dict, profile: dict, *, is_judge: bool, correlation_id: str | None) -> dict:
     facts = profile["facts"]
     saved = profile.get("saved_answers") or {}
@@ -156,13 +209,13 @@ def prepare_packet(wf, uid: str, app: dict, job: dict, profile: dict, *, is_judg
     fields: list[dict] = []
     apply_url = (job.get("apply") or {}).get("url") or job.get("url")
 
-    if connectors.can(app["connector"], "read_form") and apply_url:
-        form = portal.read_form(apply_url)
+    form = read_form(app, job, apply_url) if connectors.can(app["connector"], "read_form") else None
+    if form:
         form_signature = form["signature"]
         fields = form["fields"]
         for f in fields:
             mapped = map_field(f, facts, saved, cover)
-            if f["type"] == "checkbox" and ("confirm" in norm_label(f["label"]) or "consent" in norm_label(f["label"]) or "agree" in norm_label(f["label"])):
+            if is_consent(f):
                 key = norm_label(f["label"])
                 saved_norm = {norm_label(k): v for k, v in saved.items()}
                 if str(saved_norm.get(key, "")).lower() in ("yes", "true", "agree", "i agree"):
