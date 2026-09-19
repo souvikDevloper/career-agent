@@ -2,6 +2,7 @@ import unittest
 
 import helpers  # noqa: F401
 
+from career_agent.matching import _complete_skill_evidence
 from career_agent.scoring import FAIL, PASS, UNKNOWN, Evidence, derived_years, hard_filters, heuristic_evidence, score_match, verify_quotes
 
 RESUME = """Asha Rao — B.Tech Computer Science, graduating 2027.
@@ -231,3 +232,26 @@ class TestRubricV2Semantics:
         assert one_quote.components["experience"] == 22.5
         assert one_quote.components["responsibilities"] == 15.0
         assert one_quote.score > no_quotes.score
+
+
+class TestModelEvidenceIsAlwaysAString:
+    """The quote is model output and verify_quotes lowercases it against the
+    resume. A model that answers with a list of quotes instead of one raised
+    AttributeError there and cost that job its entire score - the other two
+    evidence lists were already filtered this way, this one was not.
+    """
+
+    def test_a_list_quote_becomes_an_explicit_miss(self):
+        rows = _complete_skill_evidence([{"skill": "python", "required": True, "evidence": ["a", "b"]}], {})
+        assert rows[0]["evidence"] is None
+
+    def test_a_real_quote_survives(self):
+        rows = _complete_skill_evidence([{"skill": "go", "required": True, "evidence": "I used Go at work"}], {})
+        assert rows[0]["evidence"] == "I used Go at work"
+
+    def test_verify_quotes_no_longer_raises_on_it(self):
+        ev = Evidence(skills=_complete_skill_evidence(
+            [{"skill": "python", "required": True, "evidence": {"quote": "nested"}},
+             {"skill": "go", "required": True, "evidence": "i used go at work"}], {}))
+        verify_quotes(ev, "i used go at work")
+        assert [s.get("evidence") for s in ev.skills] == [None, "i used go at work"]

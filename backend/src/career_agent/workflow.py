@@ -11,12 +11,14 @@ Invariants enforced here (not in prompts):
 
 from __future__ import annotations
 
+import random
+import time
 from dataclasses import dataclass
 from typing import Any
 
 from . import connectors, policy
 from .scoring import FAIL, UNKNOWN, hard_filters, work_mode_of
-from .store import And, C, Check, ConditionFailed, Or, Put, Store, Update
+from .store import And, C, Check, ConditionFailed, Or, Put, Store, TransactionFailed, Update
 from .submission import LOCAL_BROWSER_CONNECTORS
 from .util import Clock, canonical_json, local_date, new_id, sha256
 
@@ -28,6 +30,10 @@ from .util import Clock, canonical_json, local_date, new_id, sha256
 def U(uid: str) -> str:
     return f"USER#{uid}"
 
+
+# Three attempts covers the collisions seen in practice without turning a
+# contended write into a long stall in front of a model call.
+USAGE_RESERVE_ATTEMPTS = 3
 
 STATES = {
     "Discovered", "Ineligible", "Preparing", "NeedsInformation", "NeedsApproval", "NeedsUserPresence", "Authorized", "ManualHandoff",
@@ -1032,18 +1038,40 @@ class Workflow:
     # ---- usage metering --------------------------------------------------------
 
     def reserve_usage(self, uid: str, metric: str, amount: int, user_cap: int, global_cap: int) -> bool:
-        """Pessimistic reservation of model calls / voice seconds before work starts."""
+        """Pessimistic reservation of model calls / voice seconds before work starts.
+
+        Retried on contention, not on refusal. The two rows this touches are the
+        hottest in the table - one per user, and USAGE#GLOBAL shared by everyone -
+        and search scores its candidates in parallel, so several threads reserve
+        against the same two rows at once. DynamoDB answers that with
+        TransactionConflict, which it documents as retryable and boto3 does not
+        retry on its own: the default config here is legacy mode, and a cancelled
+        transaction can equally mean a failed condition, so the decision is left
+        to the caller. Uncaught, it propagated out of scoring and that job was
+        dropped from the results - measured at 2.3% of scored jobs.
+
+        ConditionFailed keeps falling straight through: that is the quota genuinely
+        being spent, and retrying it would be asking the same question again.
+        """
         date = local_date(self.clock.now(), "UTC")
-        try:
-            self.store.transact([
-                Update(U(uid), f"USAGE#{date}", add={metric: amount}, set={"date": date, "ttl": int(self.clock.now()) + 40 * 86400},
-                       condition=Or(C(metric, "not_exists"), C(metric, "le", user_cap - amount))),
-                Update("USAGE#GLOBAL", date, add={metric: amount}, set={"ttl": int(self.clock.now()) + 40 * 86400},
-                       condition=Or(C(metric, "not_exists"), C(metric, "le", global_cap - amount))),
-            ])
-            return True
-        except ConditionFailed:
-            return False
+        ops = [
+            Update(U(uid), f"USAGE#{date}", add={metric: amount}, set={"date": date, "ttl": int(self.clock.now()) + 40 * 86400},
+                   condition=Or(C(metric, "not_exists"), C(metric, "le", user_cap - amount))),
+            Update("USAGE#GLOBAL", date, add={metric: amount}, set={"ttl": int(self.clock.now()) + 40 * 86400},
+                   condition=Or(C(metric, "not_exists"), C(metric, "le", global_cap - amount))),
+        ]
+        for attempt in range(USAGE_RESERVE_ATTEMPTS):
+            try:
+                self.store.transact(ops)
+                return True
+            except ConditionFailed:
+                return False
+            except TransactionFailed:
+                if attempt == USAGE_RESERVE_ATTEMPTS - 1:
+                    raise
+                # Jittered, so threads that collided do not collide again together.
+                time.sleep(random.uniform(0.05, 0.15) * (attempt + 1))
+        return False
 
     def usage(self, uid: str) -> dict:
         date = local_date(self.clock.now(), "UTC")

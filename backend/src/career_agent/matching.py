@@ -52,6 +52,14 @@ def _complete_skill_evidence(skills: list[dict], requirements: dict) -> list[dic
     are explicit misses rather than disappearing from the denominator.
     """
     out = [dict(s) for s in skills if isinstance(s, dict) and s.get("skill")]
+    # The quote is model output and is only ever read as a string: verify_quotes
+    # lowercases it to check it against the resume. A model that answers with a
+    # list of quotes instead of one therefore raised AttributeError there and
+    # cost that job its entire score. The other two evidence lists are already
+    # filtered this way; this one was not.
+    for row in out:
+        if not isinstance(row.get("evidence"), str):
+            row["evidence"] = None
     by_name = {str(s["skill"]).strip().lower(): s for s in out}
     for required, key in ((True, "required_skills"), (False, "preferred_skills")):
         for name in requirements.get(key) or []:

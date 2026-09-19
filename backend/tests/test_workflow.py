@@ -2,6 +2,8 @@ import unittest
 
 from helpers import JOB, P, make, new_app, packet
 
+from career_agent import workflow
+from career_agent.store import ConditionFailed, TransactionFailed
 from career_agent.workflow import WorkflowError
 
 
@@ -419,3 +421,52 @@ class Operations(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UsageReservationUnderContention(unittest.TestCase):
+    """The two rows reserve_usage writes are the hottest in the table - one per
+    user, and USAGE#GLOBAL shared by everyone - and search scores its candidates
+    in parallel. DynamoDB answers the collision with TransactionConflict, which
+    it documents as retryable and boto3 does not retry by default. Uncaught it
+    propagated out of scoring and the job was dropped from the results.
+    """
+
+    def _wf(self, outcomes):
+        """outcomes: what each successive transact() call does."""
+        wf, store, _ = make()
+        calls = {"n": 0}
+        real = store.transact
+
+        def flaky(ops):
+            i = calls["n"]
+            calls["n"] += 1
+            if i < len(outcomes) and outcomes[i] is not None:
+                raise outcomes[i]
+            return real(ops)
+
+        store.transact = flaky
+        return wf, calls
+
+    def test_a_conflict_is_retried_and_succeeds(self):
+        wf, calls = self._wf([TransactionFailed("item[0] TransactionConflict"), None])
+        self.assertTrue(wf.reserve_usage("u1", "model_calls", 1, 100, 1000))
+        self.assertEqual(calls["n"], 2, "should have retried exactly once")
+
+    def test_it_gives_up_rather_than_retrying_forever(self):
+        conflict = TransactionFailed("item[1] TransactionConflict")
+        wf, calls = self._wf([conflict] * 10)
+        with self.assertRaises(TransactionFailed):
+            wf.reserve_usage("u1", "model_calls", 1, 100, 1000)
+        self.assertEqual(calls["n"], workflow.USAGE_RESERVE_ATTEMPTS)
+
+    def test_an_exhausted_quota_is_not_retried(self):
+        """ConditionFailed is the quota genuinely being spent. Retrying it would
+        ask the same question again and bill for the privilege."""
+        wf, calls = self._wf([ConditionFailed("cap reached")])
+        self.assertFalse(wf.reserve_usage("u1", "model_calls", 1, 100, 1000))
+        self.assertEqual(calls["n"], 1, "a refusal must not be retried")
+
+    def test_an_uncontended_reservation_still_takes_one_call(self):
+        wf, calls = self._wf([])
+        self.assertTrue(wf.reserve_usage("u1", "model_calls", 1, 100, 1000))
+        self.assertEqual(calls["n"], 1)
