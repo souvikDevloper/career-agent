@@ -279,7 +279,7 @@ def prepare_packet(wf, uid: str, app: dict, job: dict, profile: dict, *, is_judg
 
     plan = submission_plan(job, app["connector"])
     return {
-        "target": {"url": apply_url, "connector": app["connector"], "environment": app["target_environment"],
+        "target": {"url": plan.get("url") or apply_url, "connector": app["connector"], "environment": app["target_environment"],
                    "job_external_id": job.get("external_id"),
                    "submission": plan,
                    # Kept for packet/1 compatibility; new code routes by submission.mode.
