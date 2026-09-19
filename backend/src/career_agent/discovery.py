@@ -205,10 +205,17 @@ ALIASES = {
 }
 
 
+# A word, plus the endings English puts on it. Substring matching made "intern"
+# match "Internal Audit" and "Internal Systems", which is how a search for an
+# internship returned a Senior Manager role.
+_ENDINGS = r"(?:s|es|ed|ing|ings|er|ers|ship|ships)?\b"
+
+
 def _matches(word: str, hay: str) -> bool:
-    if word in hay or _stem(word) in hay:
-        return True
-    return any(alias in hay for alias in ALIASES.get(word, ()))
+    for form in (word, _stem(word)):
+        if re.search(r"\b" + re.escape(form) + _ENDINGS, hay):
+            return True
+    return any(re.search(r"\b" + re.escape(alias), hay) for alias in ALIASES.get(word, ()))
 
 
 def _words(text: str) -> list[str]:

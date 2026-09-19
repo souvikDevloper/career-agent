@@ -370,3 +370,27 @@ class TestStructuredFilters:
     def test_excluded_companies_still_win(self):
         prefs = {"roles": [], "excluded_companies": ["Nvidia"]}
         assert filter_jobs(self.CORPUS, prefs, company="Nvidia") == []
+
+
+class TestWordBoundaries:
+    """Substring matching made "intern" match "Internal Audit", so a search for
+    an internship returned a Senior Manager role."""
+
+    CORPUS = [
+        job("Gitlab", "Senior Manager, Internal Audit", location="Bangalore, India"),
+        job("Stripe", "Software Engineer, Internal Systems", location="Bengaluru, India"),
+        job("Twilio", "Software Engineer Intern", location="Remote - India"),
+        job("Rubrik", "Backend Engineering Internship", location="Bangalore"),
+    ]
+
+    def test_intern_does_not_match_internal(self):
+        got = [j["company"] for j in filter_jobs(self.CORPUS, PREFS, role="intern")]
+        assert set(got) == {"Twilio", "Rubrik"}
+
+    def test_a_word_still_matches_its_own_endings(self):
+        assert len(filter_jobs(self.CORPUS, PREFS, role="engineering")) == 3
+        assert len(filter_jobs(self.CORPUS, PREFS, role="internship")) == 2
+
+    def test_a_narrow_role_stays_narrow(self):
+        got = [j["company"] for j in filter_jobs(self.CORPUS, PREFS, role="backend intern")]
+        assert got == ["Rubrik"]
