@@ -112,6 +112,28 @@ export function cssEscape(s) {
 }
 
 /**
+ * Whether the page is actually challenging us, rather than merely having a
+ * captcha configured.
+ *
+ * Nearly every ATS page mentions "captcha" in its source: Greenhouse ships
+ * `GOOGLE_RECAPTCHA_INVISIBLE_KEY` and `"disable_captcha": false` in a config
+ * blob on every job. Searching the HTML for the word therefore reported
+ * captcha_required for every submission including the ones that worked. An
+ * invisible captcha only surfaces when it is suspicious, and what surfaces is a
+ * visible frame asking a person to prove something - so that is what we look for.
+ */
+export async function captchaChallenged(page) {
+  const frames = page.locator(
+    'iframe[src*="recaptcha/api2/bframe"], iframe[src*="hcaptcha.com"][src*="challenge"], iframe[title*="challenge" i]',
+  );
+  const count = await frames.count().catch(() => 0);
+  for (let i = 0; i < count; i++) {
+    if (await frames.nth(i).isVisible().catch(() => false)) return true;
+  }
+  return false;
+}
+
+/**
  * Click submit and classify the result.
  * @returns {Promise<{outcome:"submitted"|"known_failure"|"unknown", reference?:string, reason?:string}>}
  */
@@ -134,8 +156,9 @@ export async function clickAndConfirm(page, { timeoutMs = 25000 } = {}) {
   } catch {
     // fall through to classify
   }
-  const html = (await page.content().catch(() => "")).toLowerCase();
-  if (html.includes("captcha")) return { outcome: "known_failure", reason: "captcha_required" };
+  if (await captchaChallenged(page)) {
+    return { outcome: "known_failure", reason: "captcha_required" };
+  }
   const errors = await page
     .locator("ul[style*='b42318'] li")
     .allTextContents()
