@@ -25,7 +25,8 @@ class Scoring(unittest.TestCase):
         prefs = {"roles": ["backend"], "work_modes": ["hybrid", "remote"]}
         facts = {"education": [{"graduation_year": 2027}]}
         full = Evidence(skills=[{"skill": s, "required": True, "evidence": "Python"} for s in ["Python", "DynamoDB", "Go"]],
-                        experience=1, experience_evidence=["x"], responsibilities=1, responsibilities_evidence=["x"])
+                        experience=1, experience_evidence=["a", "b", "c"],
+                        responsibilities=1, responsibilities_evidence=["d", "e", "f"])
         partial = Evidence(skills=[{"skill": "Python", "required": True, "evidence": "Python"},
                                    {"skill": "Go", "required": True, "evidence": None}], experience=1, responsibilities=1)
         self.assertEqual(score_match(JOB, prefs, facts, full).score, 100)
@@ -186,3 +187,47 @@ class TestAProvisionalScoreIsNotCached:
         m.match("u1", job)
         assert len(m.store.written) == 1, "a provisional score must be re-scored, not returned"
         assert m.store.written[0]["extractor"] == "bedrock:x"
+
+
+class TestRubricV2Semantics:
+    def test_no_saved_preferences_are_neutral_not_free_ten_points(self):
+        ev = Evidence(skills=[], experience=0, responsibilities=0)
+        got = score_match({"title": "Engineer", "company": "Acme", "requirements": {}}, {}, {}, ev)
+        assert got.components["preferences"] == 5.0
+
+    def test_saved_role_mismatch_is_a_preference_not_an_eligibility_block(self):
+        ev = Evidence(skills=[], experience=0, responsibilities=0)
+        got = score_match({"title": "Data Engineer", "company": "Acme", "requirements": {}},
+                          {"roles": ["frontend"]}, {}, ev)
+        role = next(f for f in got.filters if f.check == "role")
+        assert role.status == FAIL and role.mandatory is False
+        assert got.blocked is False
+
+    def test_saved_location_mismatch_is_not_a_hard_block(self):
+        ev = Evidence(skills=[], experience=0, responsibilities=0)
+        got = score_match({"title": "Engineer", "company": "Acme", "location": "Pune", "requirements": {}},
+                          {"locations": ["Bengaluru"]}, {}, ev)
+        loc = next(f for f in got.filters if f.check == "location")
+        assert loc.status == FAIL and loc.mandatory is False
+        assert got.blocked is False
+
+    def test_confirmed_no_work_authorization_is_a_real_block(self):
+        job = {"title": "Engineer", "company": "Acme",
+               "requirements": {"work_authorization_required": True}}
+        facts = {"work_authorization": {"verified": True, "value": "No"}}
+        got = score_match(job, {}, facts, Evidence())
+        auth = next(f for f in got.filters if f.check == "work_authorization")
+        assert auth.status == FAIL
+        assert got.blocked is True
+
+    def test_subjective_components_need_resume_evidence(self):
+        job = {"title": "Engineer", "company": "Acme", "requirements": {}}
+        no_quotes = score_match(job, {}, {}, Evidence(experience=1, responsibilities=1))
+        one_quote = score_match(job, {}, {}, Evidence(
+            experience=1, experience_evidence=["one"],
+            responsibilities=1, responsibilities_evidence=["one"]))
+        assert no_quotes.components["experience"] == 6.0
+        assert no_quotes.components["responsibilities"] == 4.0
+        assert one_quote.components["experience"] == 22.5
+        assert one_quote.components["responsibilities"] == 15.0
+        assert one_quote.score > no_quotes.score
