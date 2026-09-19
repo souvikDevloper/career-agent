@@ -392,6 +392,24 @@ class TestAmazonIsSearchedNotMirrored:
         assert "sort=relevant" in seen["url"]
 
 
+    def test_search_uses_explicit_page_and_date_sort(self, monkeypatch):
+        seen = []
+        data = [[
+            ["g1", "Software Engineer, Search", None,
+             None, None, None, None, "Google", None, [["Bengaluru, Karnataka, India"]]]
+        ], None, 1, 20]
+        html = "AF_initDataCallback({key: 'ds:1', data:" + __import__("json").dumps(data) + "});"
+
+        def fake(url, hosts, **kw):
+            seen.append(url)
+            return 200, html.encode(), {}
+
+        monkeypatch.setattr(google, "fetch", fake)
+        jobs = google.search("SWE early career roles", location="India", limit=20)
+        assert "page=1" in seen[0]
+        assert "sort_by=date" in seen[0]
+        assert jobs and jobs[0]["title"] == "Software Engineer, Search"
+
 class TestAdzunaIsSecondClassOnPurpose:
     """An aggregator holds a copy of someone else's posting.
 
@@ -494,6 +512,11 @@ class TestGoogleQueryNormalization:
         query, level = google.query_plan("SWE internship openings")
         assert query == "software engineer"
         assert level == "INTERN_AND_APPRENTICE"
+
+    def test_one_letter_role_typo_does_not_poison_google_query(self):
+        query, level = google.query_plan("SWE early career rolesi")
+        assert query == "software engineer"
+        assert level == "EARLY"
 
 
 class TestGoogleCareersDirectSearch:
