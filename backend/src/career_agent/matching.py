@@ -59,7 +59,9 @@ class Matcher:
             try:
                 data = llm.json_call(MATCH_SYSTEM, MATCH_PROMPT.format(
                     title=job.get("title"), company=job.get("company"), location=job.get("location"),
-                    description=(job.get("description") or "")[:7000], resume=resume_text[:9000],
+                    # Trimmed deliberately. These two strings are what the model spends its time
+                    # on, and the evidence that decides a match is near the top of both.
+                    description=(job.get("description") or "")[:4000], resume=resume_text[:5000],
                     structured=requirements), max_tokens=1800, correlation_id=correlation_id)
                 if not isinstance(data, dict):
                     raise ValueError("match response was not a JSON object")

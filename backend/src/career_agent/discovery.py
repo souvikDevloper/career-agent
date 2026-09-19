@@ -93,6 +93,31 @@ def cached_jobs(wf, source: str, limit: int = 300) -> list[dict]:
     return wf.store.query(f"SOURCE#{source}", "", index="gsi1", limit=limit, newest_first=True)
 
 
+# Boards spell one country several ways: "IND", "India", "Remote - India".
+_COUNTRY_ALIASES = {
+    "india": ("india", "ind", "bengaluru", "bangalore", "hyderabad", "pune", "chennai", "mumbai", "delhi", "noida", "gurgaon"),
+    "usa": ("usa", "united states", "us,"),
+    "uk": ("united kingdom", "uk,", "london"),
+}
+
+
+def _field_tokens(jobs: list[dict], field: str) -> set:
+    """The distinct words that appear in one field across the corpus.
+
+    Used to tell "is this word naming a company/place, or describing a job?" -
+    which is the difference between a filter and a search term.
+    """
+    out: set = set()
+    for job in jobs:
+        for token in re.split(r"[^a-z0-9]+", (job.get(field) or "").lower()):
+            if len(token) > 2:
+                out.add(token)
+    for name, aliases in _COUNTRY_ALIASES.items():
+        if any(a in out for a in aliases):
+            out.add(name)
+    return out
+
+
 def _dedupe(jobs: list[dict]) -> list[dict]:
     """One row per real opening.
 
@@ -204,14 +229,19 @@ def keyword_filter(jobs: list[dict], keywords: str, prefs: dict) -> list[dict]:
     roles = [r.lower() for r in prefs.get("roles", [])]
     excluded = {c.lower() for c in prefs.get("excluded_companies", [])}
 
-    # A word that names an employer we carry is a filter on the employer, not a
-    # word to look for anywhere in the text. Asking for NVIDIA returned Stripe
-    # roles, because a Stripe posting mentioned "NVIDIA NeMo" in its
-    # requirements - which is a true statement about the posting and a useless
-    # answer to the question.
-    known = {tok for j in jobs for tok in re.split(r"[^a-z0-9]+", (j.get("company") or "").lower()) if len(tok) > 2}
-    wanted_companies = [w for w in words if w in known]
-    other_words = [w for w in words if w not in known]
+    # Some words name a field rather than describe one. "nvidia" is an employer,
+    # "bengaluru" is a place; matching either anywhere in the posting text gives
+    # answers that are true about the posting and useless as answers. Asking for
+    # NVIDIA returned Stripe roles listing "NVIDIA NeMo", and asking for India
+    # returned a role in Seoul whose description happened to mention India.
+    #
+    # So a word that names an employer filters the employer, a word that names a
+    # place filters the place, and everything else is searched across the text.
+    companies = _field_tokens(jobs, "company")
+    places = _field_tokens(jobs, "location") - companies
+    wanted_companies = [w for w in words if w in companies]
+    wanted_places = [w for w in words if w in places]
+    other_words = [w for w in words if w not in companies and w not in places]
 
     out = []
     for j in _dedupe(jobs):
@@ -222,9 +252,15 @@ def keyword_filter(jobs: list[dict], keywords: str, prefs: dict) -> list[dict]:
         hay = f"{title} {j.get('location', '')} {company} {(j.get('description') or '')[:1500]}".lower()
         if wanted_companies and not all(w in company for w in wanted_companies):
             continue
+        if wanted_places:
+            place = (j.get("location") or "").lower()
+            if not all(w in place or w in _COUNTRY_ALIASES.get(w, ()) and any(
+                    a in place for a in _COUNTRY_ALIASES[w]) for w in wanted_places):
+                continue
         if other_words and not all(_matches(w, hay) for w in other_words):
             continue
-        score = sum(3 if _matches(w, title) else 1 for w in other_words) + 2 * len(wanted_companies)
+        score = sum(3 if _matches(w, title) else 1 for w in other_words)
+        score += 2 * (len(wanted_companies) + len(wanted_places))
         score += sum(4 for r in roles if r and r in title)
         if not words and not roles:
             score = 1
