@@ -121,3 +121,68 @@ class TestTheExperienceFilterUsesIt:
         got = self.result({"experience": [{"title": "Intern"}]})
         assert got.status == UNKNOWN
         assert "no dated roles" in got.detail
+
+
+class TestAProvisionalScoreIsNotCached:
+    """A keyword score is a stand-in, and must not settle in as the answer.
+
+    Two copies of the same Amazon SDE-1 posting sat at 81 and 39 with identical
+    descriptions. The difference was which one the model answered for: the other
+    timed out, fell back to the keyword extractor, and the cache then returned
+    that number for good. The extractor cannot even reach the same range - with
+    no extracted requirements it takes the neutral half-credit on skills - so the
+    two numbers were never comparable, and they were being compared.
+    """
+
+    class Store:
+        def __init__(self, existing):
+            self.existing = existing
+            self.written = []
+
+        def get(self, pk, sk, consistent=True):
+            return self.existing
+
+        def put(self, item, condition=None):
+            self.written.append(item)
+
+    def matcher(self, monkeypatch, existing, extractor):
+        from career_agent.matching import Matcher
+
+        wf = type("WF", (), {})()
+        wf.store = self.Store(existing)
+        wf.settings = lambda uid: {"preferences": {}}
+        wf.clock = type("C", (), {"iso": staticmethod(lambda: "2026-09-19T00:00:00Z")})()
+        wf.reserve_usage = lambda *a, **k: True
+        profiles = type("P", (), {})()
+        profiles.current = lambda uid: {"version": 1, "facts": {}, "resume_text": "python go"}
+        m = Matcher(wf, profiles)
+        monkeypatch.setattr(m, "evidence_for",
+                            lambda *a, **k: (Evidence(skills=[], extractor=extractor), {}, "why"))
+        return m
+
+    def job(self):
+        return {"job_key": "amazon:1", "title": "SDE-1 (FTC)", "company": "Amazon", "content_hash": "h1"}
+
+    def cached(self, extractor, fingerprint):
+        return {"fingerprint": fingerprint, "score": 39, "extractor": extractor}
+
+    def fingerprint_of(self, m, job):
+        from career_agent.util import sha256
+        return sha256([job.get("content_hash"), 1, {}])
+
+    def test_a_model_score_is_reused(self, monkeypatch):
+        job = self.job()
+        m = self.matcher(monkeypatch, None, "bedrock:x")
+        fp = self.fingerprint_of(m, job)
+        m.store.existing = self.cached("bedrock:us.amazon.nova", fp)
+        assert m.match("u1", job)["score"] == 39, "a real score should come straight from the cache"
+        assert m.store.written == []
+
+    def test_a_keyword_score_is_scored_again(self, monkeypatch):
+        job = self.job()
+        m = self.matcher(monkeypatch, None, "bedrock:x")
+        fp = self.fingerprint_of(m, job)
+        m.store.existing = self.cached("heuristic", fp)
+        m.match("u1", job)
+        assert len(m.store.written) == 1, "a provisional score must be re-scored, not returned"
+        assert m.store.written[0]["extractor"] == "bedrock:x"

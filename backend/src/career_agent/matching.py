@@ -59,12 +59,19 @@ class Matcher:
         why = "your daily model allowance is used up" if not within_budget else "the model did not answer in time"
         if within_budget:
             try:
-                data = llm.json_call(MATCH_SYSTEM, MATCH_PROMPT.format(
+                prompt = MATCH_PROMPT.format(
                     title=job.get("title"), company=job.get("company"), location=job.get("location"),
                     # Trimmed deliberately. These two strings are what the model spends its time
                     # on, and the evidence that decides a match is near the top of both.
                     description=(job.get("description") or "")[:4000], resume=resume_text[:5000],
-                    structured=requirements), max_tokens=1800, correlation_id=correlation_id)
+                    structured=requirements)
+                # One retry, because the failure being recovered from is a timeout
+                # against a slow endpoint rather than a bad request - and the cost
+                # of not retrying is a permanent keyword score on a real job.
+                try:
+                    data = llm.json_call(MATCH_SYSTEM, prompt, max_tokens=1800, correlation_id=correlation_id)
+                except llm.ModelUnavailable:
+                    data = llm.json_call(MATCH_SYSTEM, prompt, max_tokens=1800, correlation_id=correlation_id)
                 if not isinstance(data, dict):
                     raise ValueError("match response was not a JSON object")
                 if not requirements:
@@ -98,7 +105,16 @@ class Matcher:
         key = f"MATCH#{job['job_key']}"
         fingerprint = sha256([job.get("content_hash"), profile["version"], prefs])
         existing = self.store.get(f"USER#{uid}", key)
-        if existing and existing.get("fingerprint") == fingerprint and not force:
+        # A keyword score is a stand-in for a real one, so it must never be cached
+        # as though it were the answer. Otherwise one model timeout fixes that job
+        # at a keyword score permanently: two copies of the same Amazon SDE-1
+        # posting sat at 81 and 39, identical descriptions, differing only in
+        # which of them the model happened to answer for. The keyword extractor
+        # also cannot reach the same range - with no extracted requirements it
+        # takes the neutral half-credit on skills - so the two numbers were never
+        # comparable, and the user was comparing them.
+        provisional = bool(existing) and str(existing.get("extractor") or "").startswith("heuristic")
+        if existing and existing.get("fingerprint") == fingerprint and not force and not provisional:
             return existing
         evidence, requirements, explanation = self.evidence_for(uid, job, profile, is_judge=is_judge, correlation_id=correlation_id)
         job_for_score = dict(job, requirements=requirements)
