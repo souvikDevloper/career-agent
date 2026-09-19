@@ -728,6 +728,19 @@ html { scroll-behavior: smooth; }
 .agent-sky > div { position: absolute; inset: 0; }
 @media (prefers-reduced-motion: reduce) { .agent-sky { display: none; } }
 
+/* One scroll container, not two.
+   The height used to be calc(100dvh - 156px) - a guess at the topbar plus the
+   page padding. Whenever that guess was low the page became scrollable as well
+   as the thread, so the wheel moved whichever of the two the cursor was over,
+   and the page had only a few pixels of travel: it reads as scrolling being
+   dead everywhere except directly on the messages. The shell is now measured
+   rather than estimated, and the card simply fills what is left. */
+.shell-fills { height: 100vh; height: 100dvh; overflow: hidden; }
+.shell-fills .main { display: flex; flex-direction: column; min-height: 0; }
+.content-fills { flex: 1; min-height: 0; display: flex; flex-direction: column;
+  padding-bottom: 20px; overflow: hidden; }
+.content-fills > .chat-card { flex: 1; min-height: 0; }
+
 .chat-card { position: relative; z-index: 1; display: flex; flex-direction: column;
   height: calc(100vh - 156px); height: calc(100dvh - 156px);
   min-height: 420px; padding: 0; overflow: hidden;

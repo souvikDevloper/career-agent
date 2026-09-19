@@ -17,7 +17,7 @@ const AtmosphericCanvas = lazy(() =>
 
 export function AgentPage() {
   return (
-    <Shell title="Agent">
+    <Shell title="Agent" fills>
       {/* Decorative only: it never takes pointer events, and the page is fully
           readable before (or without) it, so a slow or failed chunk costs nothing. */}
       <div className="agent-sky" aria-hidden="true">
