@@ -95,11 +95,55 @@ def cached_jobs(wf, source: str, limit: int = 300) -> list[dict]:
 
 
 # Boards spell one country several ways: "IND", "India", "Remote - India".
-_COUNTRY_ALIASES = {
-    "india": ("india", "ind", "bengaluru", "bangalore", "hyderabad", "pune", "chennai", "mumbai", "delhi", "noida", "gurgaon"),
-    "usa": ("usa", "united states", "us,"),
-    "uk": ("united kingdom", "uk,", "london"),
+# A place is an equivalence class, not a one-way lookup.
+#
+# "Bangalore" and "Bengaluru" are one city spelled two ways, so a search for
+# either has to match a posting written the other way; the first version of this
+# table only mapped country -> city, so "bangalore" matched nothing at all while
+# "india" worked, and Amazon's 204 Bengaluru openings were invisible to anyone
+# who typed the spelling they actually use.
+_SAME_PLACE = (
+    ("bangalore", "bengaluru"),
+    ("gurgaon", "gurugram"),
+    ("bombay", "mumbai"),
+    ("madras", "chennai"),
+    ("calcutta", "kolkata"),
+    ("poona", "pune"),
+    ("trivandrum", "thiruvananthapuram"),
+    ("nyc", "new york"),
+    ("sf", "san francisco"),
+    ("bengaluru", "blr"),
+)
+
+# Containment is deliberately one-way: a region matches its cities, because a
+# person asking for India means any of them, but a city does not match the bare
+# region - someone who asks for Bengaluru has not asked for Delhi.
+_REGIONS = {
+    "india": ("ind", "bengaluru", "hyderabad", "pune", "chennai", "mumbai", "delhi",
+              "noida", "gurgaon", "kolkata", "ahmedabad", "jaipur", "trivandrum", "coimbatore"),
+    "usa": ("us", "united states", "america"),
+    "uk": ("united kingdom", "england", "london"),
+    "emea": ("europe", "united kingdom", "ireland", "germany", "france", "netherlands", "spain", "poland"),
+    "apac": ("singapore", "japan", "australia", "korea", "taiwan", "china", "hong kong"),
 }
+
+
+def _build_place_aliases() -> dict[str, tuple[str, ...]]:
+    """Every spelling that should satisfy a search for one place."""
+    same: dict[str, set] = {}
+    for group in _SAME_PLACE:
+        for word in group:
+            same.setdefault(word, set()).update(group)
+    out = {word: set(forms) for word, forms in same.items()}
+    for region, members in _REGIONS.items():
+        forms = {region}
+        for member in members:
+            forms.update(same.get(member, {member}))
+        out.setdefault(region, set()).update(forms)
+    return {word: tuple(sorted(forms)) for word, forms in out.items()}
+
+
+_PLACE_ALIASES = _build_place_aliases()
 
 
 def _field_tokens(jobs: list[dict], field: str) -> set:
@@ -113,8 +157,8 @@ def _field_tokens(jobs: list[dict], field: str) -> set:
         for token in re.split(r"[^a-z0-9]+", (job.get(field) or "").lower()):
             if len(token) > 2:
                 out.add(token)
-    for name, aliases in _COUNTRY_ALIASES.items():
-        if any(a in out for a in aliases):
+    for name, forms in _PLACE_ALIASES.items():
+        if any(all(w in out for w in form.split()) for form in forms):
             out.add(name)
     return out
 
@@ -227,6 +271,33 @@ def _words(text: str) -> list[str]:
     return [w for w in re.split(r"[^a-z0-9+#.]+", (text or "").lower()) if len(w) > 1 and w not in STOP]
 
 
+_LEVELS = {"1": 1, "i": 1, "one": 1, "2": 2, "ii": 2, "two": 2,
+           "3": 3, "iii": 3, "three": 3, "4": 4, "iv": 4, "four": 4}
+_LEVEL_RE = re.compile(r"\b(iv|iii|ii|[1-4])\b")
+
+
+def _wanted_level(role: str) -> int | None:
+    """"SDE 2" names a level, and someone asking for one does not want the other.
+
+    A bare numeral with no role word in front of it is not a level, so "2 jobs"
+    does not silently become a seniority filter.
+    """
+    tokens = [t for t in re.split(r"[^a-z0-9]+", (role or "").lower()) if t]
+    for i, token in enumerate(tokens):
+        hit = re.fullmatch(r"(?:sde|swe|l)([1-4])", token)
+        if hit:
+            return int(hit.group(1))
+        if token in _LEVELS and i > 0:
+            return _LEVELS[token]
+    return None
+
+
+def _title_level(title: str) -> int:
+    """Amazon writes SDE I as "Software Development Engineer" with no numeral."""
+    hit = _LEVEL_RE.search((title or "").lower())
+    return _LEVELS.get(hit.group(1), 1) if hit else 1
+
+
 def _place_matches(wanted: str, location: str) -> bool:
     """One place, spelled the way each board spells it.
 
@@ -235,11 +306,11 @@ def _place_matches(wanted: str, location: str) -> bool:
     """
     place = (location or "").lower()
     for word in _words(wanted):
-        if word in place:
-            continue
-        if any(alias in place for alias in _COUNTRY_ALIASES.get(word, ())):
-            continue
-        return False
+        # Whole words only. As a substring, "ind" sits inside "Windsor", so a
+        # search for India used to return jobs in Windsor, Ontario.
+        forms = _PLACE_ALIASES.get(word, (word,))
+        if not any(re.search(r"\b" + re.escape(form) + r"\b", place) for form in forms):
+            return False
     return True
 
 
@@ -262,6 +333,7 @@ def filter_jobs(jobs: list[dict], prefs: dict, *, role: str = "", company: str =
     company_words = _words(company)
     excluded = {c.lower() for c in prefs.get("excluded_companies", [])}
     preferred_roles = [r.lower() for r in prefs.get("roles", [])]
+    level = _wanted_level(role)
     mode = (work_mode or "").strip().lower()
     kind = (employment_type or "").strip().lower()
 
@@ -285,6 +357,8 @@ def filter_jobs(jobs: list[dict], prefs: dict, *, role: str = "", company: str =
             continue
 
         title = (job.get("title") or "").lower()
+        if level is not None and _title_level(title) != level:
+            continue
         hay = f"{title} {(job.get('description') or '')[:1500]} {' '.join(job.get('departments') or [])}".lower()
         if role_words and not all(_matches(w, hay) for w in role_words):
             continue

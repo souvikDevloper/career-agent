@@ -400,3 +400,71 @@ class TestWordBoundaries:
     def test_a_narrow_role_stays_narrow(self):
         got = [j["company"] for j in filter_jobs(self.CORPUS, PREFS, role="backend intern")]
         assert got == ["Rubrik"]
+
+
+class TestPlacesAreEquivalenceClasses:
+    """A city spelled two ways is one city.
+
+    Amazon writes "Bengaluru, Karnataka, IND" and the people who search for it
+    type "Bangalore". The first version of this table only mapped country to
+    city, so "india" worked and "bangalore" matched nothing at all - 204 live
+    Amazon openings were invisible to anyone using the spelling they actually
+    use, and the agent reported them as not existing.
+    """
+
+    CORPUS = [
+        job("Amazon", "Software Development Engineer", location="Bengaluru, Karnataka, IND"),
+        job("Amazon", "Software Development Engineer II", location="Hyderabad, Telangana, IND"),
+        job("Amazon", "Software Development Engineer", location="Gurugram, Haryana, IND"),
+        job("Nvidia", "Software Engineer", location="Windsor, Ontario"),
+        job("Twilio", "Software Engineer", location="Remote - India"),
+    ]
+
+    def where(self, location):
+        return [j["location"] for j in filter_jobs(self.CORPUS, PREFS, location=location)]
+
+    def test_the_spelling_a_person_types_finds_the_spelling_the_board_uses(self):
+        assert self.where("bangalore") == ["Bengaluru, Karnataka, IND"]
+        assert self.where("bengaluru") == ["Bengaluru, Karnataka, IND"]
+        assert self.where("gurgaon") == ["Gurugram, Haryana, IND"]
+
+    def test_a_country_matches_its_cities_however_they_are_written(self):
+        assert len(self.where("india")) == 4  # three IND cities plus "Remote - India"
+
+    def test_a_city_does_not_widen_to_its_country(self):
+        """Asking for Bengaluru is not asking for Hyderabad."""
+        assert self.where("bangalore") == ["Bengaluru, Karnataka, IND"]
+
+    def test_a_place_is_a_whole_word(self):
+        """As a substring "ind" sits inside "Windsor", so searching India used to
+        return jobs in Ontario."""
+        assert "Windsor, Ontario" not in self.where("india")
+
+
+class TestSeniorityLevel:
+    """"SDE 2" names a level, and someone asking for one does not want the other."""
+
+    CORPUS = [
+        job("Amazon", "Software Development Engineer"),
+        job("Amazon", "Software Development Engineer II"),
+        job("Amazon", "Software Dev Engineer-II, Infra"),
+        job("Amazon", "Software Development Engineer III, HST"),
+    ]
+
+    def titles(self, role):
+        return [j["title"] for j in filter_jobs(self.CORPUS, PREFS, role=role)]
+
+    def test_a_level_excludes_the_other_levels(self):
+        assert self.titles("sde 2") == ["Software Development Engineer II", "Software Dev Engineer-II, Infra"]
+        assert self.titles("sde ii") == ["Software Development Engineer II", "Software Dev Engineer-II, Infra"]
+        assert self.titles("sde 3") == ["Software Development Engineer III, HST"]
+
+    def test_an_unnumbered_title_is_level_one(self):
+        """Amazon writes SDE I as "Software Development Engineer" with no numeral."""
+        assert self.titles("sde 1") == ["Software Development Engineer"]
+
+    def test_no_level_asked_means_every_level(self):
+        assert len(self.titles("sde")) == 4
+
+    def test_a_bare_numeral_is_not_a_seniority_filter(self):
+        assert len(filter_jobs(self.CORPUS, PREFS, role="2")) == 4

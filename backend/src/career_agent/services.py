@@ -22,6 +22,11 @@ logger = get_logger("services")
 AUTO_PREPARE_MIN_SCORE = 60
 
 
+def _same_employer(wanted: str, company: str | None) -> bool:
+    name = (company or "").lower()
+    return bool(name) and (wanted in name or name in wanted)
+
+
 class Services:
     def __init__(self, store: Store, clock: Clock | None = None, s3: Any = None) -> None:
         self.wf = Workflow(store, clock)
@@ -94,6 +99,23 @@ class Services:
         # Structured filters when the caller has them, free text when it only has a
         # string. One implementation either way.
         active = {k: v for k, v in (filters or {}).items() if v}
+        # Someone who names an employer is asking what that employer has open right
+        # now, so refresh that one board before answering rather than serving a
+        # cache up to half an hour old. One board, never all of them: polling the
+        # whole set inline is what made a question wait minutes and timed out the
+        # smoke test.
+        named = (active.get("company") or "").strip().lower()
+        if refresh and named:
+            feeds = {j["feed"] for j in jobs if j.get("feed") and _same_employer(named, j.get("company"))}
+            for feed in sorted(feeds)[:2]:
+                self.wf.op_progress(uid, op_id, message=f"Refreshing {feed}")
+                try:
+                    discovery.poll(self.wf, feed, force=True)
+                except Exception as exc:  # a stale answer beats no answer
+                    log(logger, "warning", "inline_refresh_failed", feed=feed, error=str(exc)[:200])
+                else:
+                    jobs = [j for j in jobs if j.get("feed") != feed]
+                    jobs.extend(discovery.cached_jobs(self.wf, feed))
         matched = (discovery.filter_jobs(jobs, prefs, **active) if active
                    else discovery.keyword_filter(jobs, keywords, prefs))
         # Scoring costs a model call each, so never score more than asked for.
@@ -102,11 +124,21 @@ class Services:
         if stats is not None:
             # What was actually looked at. An empty result is only credible if the
             # agent can say what it searched, so this travels back to the model.
+            employers = sorted({j["company"] for j in jobs if j.get("company")})
+            wanted = (active.get("company") or "").strip().lower()
+            # "0 Google roles" and "Google is not a board we read" are different
+            # answers, and only one of them is true. Without this the model saw an
+            # empty list and reported that an employer we have never polled had no
+            # openings - a confident, checkable lie.
+            covered = None if not wanted else any(
+                wanted in e.lower() or e.lower() in wanted for e in employers)
             stats.update({
                 "live_boards": sorted({j.get("board") or j.get("source") for j in jobs if j.get("company")}),
                 "live_postings": len(jobs),
                 "matched": len(matched),
                 "filters": active or {"keywords": keywords},
+                "employers_covered": employers,
+                "company_covered": covered,
             })
         self.wf.op_progress(uid, op_id, message=f"{len(candidates)} candidates after filters; explaining fit")
         # Scored concurrently. Each match is one model call against a long resume
