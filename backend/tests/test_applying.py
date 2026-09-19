@@ -198,6 +198,17 @@ class TestLiveScreeningQuestionResolution(unittest.TestCase):
         self.assertEqual(got[0]["value"], "Yes")
         self.assertEqual(got[0]["source"], "resume:education")
 
+    def test_programming_language_is_not_misclassified_as_age_demographic(self):
+        field = {
+            "name": "programming",
+            "label": "Do you have experience programming with at least one software programming language?",
+            "type": "select",
+            "required": True,
+            "options": [{"value": "Yes", "label": "Yes"}, {"value": "No", "label": "No"}],
+        }
+        facts = {"skills": [{"name": "Python"}], "projects": [], "education": []}
+        self.assertEqual(map_field(field, facts, {}, None), ("Yes", "resume:skills"))
+
     def test_programming_language_question_is_grounded_in_resume_skills(self):
         profile = {
             "facts": {
