@@ -60,7 +60,13 @@ export function Assistant({ compact = false }: { compact?: boolean }) {
   const [caption, setCaption] = useState("");
   const [level, setLevel] = useState(0);
   const [voiceReplies, setVoiceReplies] = useState(true);
-  const [atBottom, setAtBottom] = useState(true);
+  // Whether the reader is at the bottom is a ref, not state, and deliberately so.
+  // As state it was a dependency of the scroll effect, so the moment a scroll
+  // upward passed back within 60px of the end it flipped to true, re-ran the
+  // effect and smooth-scrolled to the bottom - fighting the wheel. A separate
+  // piece of state drives only the button, and only when it actually flips.
+  const atBottomRef = useRef(true);
+  const [showJump, setShowJump] = useState(false);
   const [hasEarlier, setHasEarlier] = useState(false);
   const [copied, setCopied] = useState<number | null>(null);
   const voice = useRef<VoiceSession | null>(null);
@@ -157,16 +163,25 @@ export function Assistant({ compact = false }: { compact?: boolean }) {
     if (el) el.scrollTo({ top: el.scrollHeight, behavior });
   }, []);
 
-  // Only follow the conversation when the reader is already at the bottom;
-  // yanking them down while they scroll back through an answer is hostile.
+  // Follow the conversation only when it actually grew, and only if the reader
+  // was already at the end. A reply streams in many updates a second; scrolling
+  // on every render meant a smooth scroll was always mid-flight, and its own
+  // animation generated the scroll events that fought the next one.
+  const lastSeen = useRef("");
   useLayoutEffect(() => {
-    if (atBottom) scrollToBottom();
-  }, [messages, atBottom, scrollToBottom]);
+    const last = messages[messages.length - 1];
+    const signature = `${messages.length}:${last?.text?.length ?? 0}`;
+    if (signature === lastSeen.current) return;
+    lastSeen.current = signature;
+    if (atBottomRef.current) scrollToBottom("auto");
+  }, [messages, scrollToBottom]);
 
   function onScroll() {
     const el = scroller.current;
     if (!el) return;
-    setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 60);
+    const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    atBottomRef.current = atEnd;
+    setShowJump((shown) => (shown === !atEnd ? shown : !atEnd));
   }
 
   const grow = useCallback(() => {
@@ -195,7 +210,10 @@ export function Assistant({ compact = false }: { compact?: boolean }) {
     stopSpeaking();
     setInput("");
     setBusy(true);
-    setAtBottom(true);
+    // Sending is an explicit "show me the new one", so follow it regardless of
+    // where they had scrolled to read something earlier.
+    atBottomRef.current = true;
+    setShowJump(false);
     requestAnimationFrame(grow);
     setMessages((m) => [...m, { role: "user", text: clean, source }, { role: "assistant", text: "", pending: true }]);
     const controller = new AbortController();
@@ -378,8 +396,8 @@ export function Assistant({ compact = false }: { compact?: boolean }) {
           );
         })}
       </div>
-      {!atBottom && messages.length > 0 && (
-        <button className="to-bottom" onClick={() => { setAtBottom(true); scrollToBottom(); }}>
+      {showJump && messages.length > 0 && (
+        <button className="to-bottom" onClick={() => { atBottomRef.current = true; setShowJump(false); scrollToBottom(); }}>
           Jump to latest
         </button>
       )}
