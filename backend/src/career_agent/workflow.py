@@ -362,22 +362,36 @@ class Workflow:
             raise WorkflowError("stale_packet", "application packet changed; refresh before submitting")
         settings = self.settings(p.user_id)
         packet = self.latest_packet(p.user_id, app_id)
-        decision = self.decide_submission(p, app, settings, packet=packet)
+        # Starting the browser companion is not the external write boundary.
+        # A previous pause for login/MFA/questions must not trigger the submit
+        # cooldown before the user has actually submitted anything.
+        decision = self.decide_submission(p, app, settings, reserve_check=True, packet=packet)
         if not decision.allowed:
-            raise WorkflowError("forbidden", "submission policy no longer allows this application", 403)
+            reasons = set(decision.reasons or [])
+            if "forbid-daily-cap-exhausted" in reasons:
+                message = "daily application cap reached"
+            elif "forbid-missing-required-answers" in reasons:
+                message = "required application answers are still missing"
+            elif "forbid-paused-or-cancelled" in reasons:
+                message = "application is paused"
+            elif "forbid-connector-without-submit-capability" in reasons:
+                message = "this application route is not available to the browser companion"
+            elif not app.get("approved_hash") or app.get("approved_hash") != app.get("packet_hash"):
+                message = "the current application packet is no longer approved"
+            else:
+                message = "submission policy no longer allows this application"
+            raise WorkflowError("forbidden", message, 403)
 
         ledger_sk = self.ledger_key(p.user_id, settings)
         cap = int(settings.get("daily_cap", 5))
         now = self.clock.now()
-        cooldown = int(settings.get("cooldown_seconds", 120))
         attempt_id = new_id("local_")
         try:
             self.store.transact([
                 Update(U(p.user_id), ledger_sk,
-                       set={"cap": cap, "timezone": settings["timezone"], "last_submit_at": now},
+                       set={"cap": cap, "timezone": settings["timezone"]},
                        add={"used": 1, "reserved": 1},
-                       condition=And(Or(C("used", "not_exists"), C("used", "lt", cap)),
-                                     Or(C("last_submit_at", "not_exists"), C("last_submit_at", "le", now - cooldown)))),
+                       condition=Or(C("used", "not_exists"), C("used", "lt", cap))),
                 self._transition(app, "Submitting", {
                     "current_attempt": attempt_id,
                     "local_browser_packet_hash": packet_hash,
@@ -398,13 +412,42 @@ class Workflow:
             raise WorkflowError("invalid_state", "browser session is not the current submission")
         if app.get("local_browser_dispatched_at"):
             return app
+        now_epoch = self.clock.now()
         now = self._now_iso()
-        self.store.transact([
-            Update(app["pk"], app["sk"],
-                   set={"local_browser_dispatched_at": now, "updated_at": now, "version": app["version"] + 1},
-                   condition=And(C("version", "eq", app["version"]), C("action_state", "eq", "Submitting"))),
-            self.event_put(p.user_id, "submission.local_dispatched", {"packet_hash": packet_hash[:12]}, app_id),
-        ])
+        settings = self.settings(p.user_id)
+        ledger = app.get("local_browser_ledger") or self.ledger_key(p.user_id, settings)
+        cooldown = int(settings.get("cooldown_seconds", 120))
+        try:
+            self.store.transact([
+                # Cooldown belongs at the real external-write boundary, not at
+                # browser start. This is the first point where we know Submit is
+                # actually about to be clicked.
+                Update(U(p.user_id), ledger,
+                       set={"last_submit_at": now_epoch},
+                       condition=Or(C("last_submit_at", "not_exists"),
+                                    C("last_submit_at", "le", now_epoch - cooldown))),
+                Update(app["pk"], app["sk"],
+                       set={"local_browser_dispatched_at": now, "updated_at": now, "version": app["version"] + 1},
+                       condition=And(C("version", "eq", app["version"]), C("action_state", "eq", "Submitting"))),
+                self.event_put(p.user_id, "submission.local_dispatched", {"packet_hash": packet_hash[:12]}, app_id),
+            ])
+        except ConditionFailed:
+            # No employer write happened. Release the reservation and let the
+            # user retry from Browser ready after the cooldown instead of
+            # leaving the application wedged in Submitting.
+            fresh = self.get_app(p.user_id, app_id)
+            if fresh["action_state"] == "Submitting" and not fresh.get("local_browser_dispatched_at"):
+                try:
+                    self.store.transact([
+                        Update(U(p.user_id), ledger, add={"used": -1, "reserved": -1}),
+                        self._transition(fresh, "NeedsUserPresence",
+                                         {"last_error": "submission cooldown is still active; try again shortly"}),
+                        self.event_put(p.user_id, "submission.user_presence_needed",
+                                       {"reason": "submission cooldown is still active"}, app_id),
+                    ])
+                except ConditionFailed:
+                    pass
+            raise WorkflowError("rate_limited", "submission cooldown is still active; try again shortly", 409) from None
         return self.get_app(p.user_id, app_id)
 
     def local_browser_complete(self, p: Principal, app_id: str, packet_hash: str, outcome: str,
