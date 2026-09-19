@@ -61,6 +61,38 @@ class ReviewMode(unittest.TestCase):
         self.assertEqual(app["action_state"], "NeedsInformation")
         self.assertEqual(len(outbox(store, "notify")), 1)
 
+    def test_legacy_browser_ready_packet_can_be_explicitly_approved_in_place(self):
+        """Old deployed packets could already be Browser ready without approved_hash.
+
+        Clicking Apply in signed-in browser is an explicit approval of that exact
+        hash, so the workflow should repair the missing approval without forcing
+        an impossible NeedsUserPresence -> NeedsApproval round-trip.
+        """
+        from career_agent.store import Update
+
+        wf, store, _ = make()
+        app = new_app(wf, connector="amazon-jobs")
+        local = packet(target={"url": "https://account.amazon.jobs/en-US/applicant/jobs/123/apply",
+                               "connector": "amazon-jobs",
+                               "submission": {"mode": "local_browser", "can_submit": True,
+                                              "requires_user_presence": True}})
+        app = wf.save_packet("u1", app["app_id"], local)
+        self.assertEqual(app["action_state"], "NeedsApproval")
+
+        # Simulate an application persisted by an older release.
+        store.update(Update(app["pk"], app["sk"], set={
+            "action_state": "NeedsUserPresence",
+            "approved_hash": None,
+        }))
+        app = wf.get_app("u1", app["app_id"])
+        repaired = wf.approve(P("u1"), app["app_id"], app["packet_hash"], "browser_launch")
+        self.assertEqual(repaired["action_state"], "NeedsUserPresence")
+        self.assertEqual(repaired["approved_hash"], repaired["packet_hash"])
+        decision = wf.decide_submission(
+            P("u1"), repaired, wf.settings("u1"), reserve_check=True,
+            packet=wf.latest_packet("u1", repaired["app_id"]))
+        self.assertTrue(decision.allowed)
+
     def test_authenticated_portal_requires_approval_then_user_presence(self):
         """A live Amazon packet follows the same approval gate as cloud submit,
         then hands execution to the user's signed-in browser."""
