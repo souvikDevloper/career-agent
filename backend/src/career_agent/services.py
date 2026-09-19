@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any
@@ -23,15 +24,20 @@ logger = get_logger("services")
 AUTO_PREPARE_MIN_SCORE = 60
 
 
-# Scoring a wider pool than was asked for is right - retrieval relevance and
-# resume fit are different rankings - but every extra candidate is another model
-# call, and this endpoint is slow enough that six of them already time out
-# sometimes. Tripling to eighteen put a routine search at six sequential rounds
-# of three, minutes rather than seconds, on a demo where speed has been the
-# loudest complaint. Half again, capped at twelve, keeps the re-ranking honest at
-# a cost the endpoint can actually carry.
-CANDIDATE_POOL_MULTIPLIER = 1.5
-CANDIDATE_POOL_CAP = 12
+# Scoring a wider pool than was asked for is the right call: retrieval relevance
+# and resume fit are different rankings, and the best fit often sits below a
+# merely keyword-heavy posting. Triple was trimmed to half again while the
+# endpoint was timing out; with the concurrency limit and the retry in place it
+# has not failed once in six hours and the median invocation is under ten
+# seconds, so the wider pool is affordable again.
+#
+# What stays is the bound. The pool is an intention, not a promise: scoring stops
+# at SCORING_BUDGET_SECONDS once enough has been scored to answer, so a slow run
+# costs a shorter list rather than a dead search or a Lambda that runs out of
+# time mid-flight.
+CANDIDATE_POOL_MULTIPLIER = 3
+CANDIDATE_POOL_CAP = 24
+SCORING_BUDGET_SECONDS = 150
 
 
 def _candidate_pool_size(total: int, requested: int) -> int:
@@ -209,6 +215,7 @@ class Services:
                     pool.submit(self.matcher.match, uid, job, is_judge=judge, correlation_id=correlation_id): i
                     for i, job in enumerate(candidates)
                 }
+                started = time.monotonic()
                 for future in as_completed(futures):
                     i = futures[future]
                     try:
@@ -216,6 +223,16 @@ class Services:
                     except Exception as exc:  # one bad posting must not lose the rest
                         log(logger, "search.score_failed", job=candidates[i].get("job_key"),
                             error=type(exc).__name__, detail=str(exc)[:160], correlation_id=correlation_id)
+                    # Answer with what is scored rather than run the invocation out
+                    # of time. Only once there is enough to fill the request - a
+                    # short answer is acceptable, an empty one never is.
+                    scored = sum(1 for c in results if c)
+                    if scored >= requested and time.monotonic() - started > SCORING_BUDGET_SECONDS:
+                        log(logger, "search.budget_reached", scored=scored, pool=len(candidates),
+                            correlation_id=correlation_id)
+                        for pending in futures:
+                            pending.cancel()
+                        break
         ordered = [c for c in results if c]
         # A search result list is a ranking. Previously it preserved retrieval
         # order even after computing fit scores, so "best match" could literally
