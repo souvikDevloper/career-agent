@@ -14,7 +14,7 @@ import KineticScoreGauge from "../components/motion/KineticScoreGauge";
 const STEPS = [
   { key: "published", label: "Published", icon: IFile, hint: "Test employer posts a new role" },
   { key: "detected", label: "Detected", icon: IRadar, hint: "Monitor finds it on the next check" },
-  { key: "scored", label: "Scored", icon: ITarget, hint: "Nova extracts evidence; rubric scores" },
+  { key: "scored", label: "Scored", icon: ITarget, hint: "AI extracts evidence; rubric scores" },
   { key: "prepared", label: "Prepared", icon: IBrain, hint: "Form read, facts mapped, note drafted" },
   { key: "authorized", label: "Authorized", icon: IShield, hint: "Cedar + caps + your approval/mandate" },
   { key: "submitted", label: "Receipt", icon: ICheck, hint: "Isolated browser submits; receipt stored" },

@@ -23,3 +23,34 @@ def test_requirements_override_model_required_flag():
         {"required_skills": [], "preferred_skills": ["Docker"]},
     )
     assert got[0]["required"] is False
+
+
+def test_unavailable_model_uses_one_bounded_call_then_provisional_evidence(monkeypatch):
+    from career_agent import llm
+    from career_agent.matching import Matcher
+    wf, _store, _clock = helpers.make()
+    matcher = Matcher(wf, None)
+    calls = []
+    def unavailable(*args, **kwargs):
+        calls.append(kwargs)
+        raise llm.ModelUnavailable("timed out")
+    monkeypatch.setattr(llm, "json_call", unavailable)
+    evidence, _, explanation = matcher.evidence_for("u1", {"title": "Software Engineer"},
+        {"resume_text": "Python"}, is_judge=False, correlation_id=None, timeout_seconds=12)
+    assert len(calls) == 1
+    assert calls[0]["timeout_seconds"] == 12
+    assert calls[0]["repair"] is False
+    assert evidence.extractor.startswith("heuristic")
+    assert "keyword" in explanation
+
+
+def test_evidence_reports_the_provider_that_actually_answered(monkeypatch):
+    from career_agent import llm
+    from career_agent.matching import Matcher
+    wf, _store, _clock = helpers.make()
+    monkeypatch.setenv("MODEL_PROVIDER", "anthropic")
+    monkeypatch.setenv("FALLBACK_MODEL_ID", "actual-model")
+    monkeypatch.setattr(llm, "json_call", lambda *a, **k: {"requirements": {}, "skills": []})
+    evidence, _, _ = Matcher(wf, None).evidence_for("u1", {"title": "Engineer"},
+        {"resume_text": "Python"}, is_judge=False, correlation_id=None)
+    assert evidence.extractor == "anthropic:actual-model"

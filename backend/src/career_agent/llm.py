@@ -36,22 +36,26 @@ def is_unavailable(exc: BaseException) -> bool:
     return isinstance(exc, ModelUnavailable) or any(sign in str(exc) for sign in MODEL_DOWN_SIGNS)
 
 
-def client():
+def client(timeout_seconds: float | None = None):
     global _client
-    if _client is None:
+    if _client is None or timeout_seconds is not None:
         import boto3
         from botocore.config import Config
 
+        if timeout_seconds is not None:
+            return boto3.client("bedrock-runtime", region_name=settings().region,
+                                config=Config(retries={"total_max_attempts": 1},
+                                              connect_timeout=min(5, timeout_seconds), read_timeout=timeout_seconds))
         _client = boto3.client("bedrock-runtime", region_name=settings().region,
                                config=Config(retries={"max_attempts": 3, "mode": "adaptive"}, read_timeout=120))
     return _client
 
 
 def converse(system: str, content: list[dict], *, max_tokens: int = 1500, temperature: float = 0.2,
-             correlation_id: str | None = None) -> tuple[str, dict]:
+             correlation_id: str | None = None, timeout_seconds: float | None = None) -> tuple[str, dict]:
     """A single user turn. Returns (text, usage)."""
     res = chat(system, [{"role": "user", "content": content}], max_tokens=max_tokens,
-               temperature=temperature, correlation_id=correlation_id)
+               temperature=temperature, correlation_id=correlation_id, timeout_seconds=timeout_seconds)
     return response_text(res), res.get("usage", {})
 
 
@@ -156,20 +160,23 @@ def extract_json(text: str) -> Any:
 
 
 def json_call(system: str, prompt: str, *, documents: list[dict] | None = None, max_tokens: int = 2000,
-              correlation_id: str | None = None) -> Any:
+              correlation_id: str | None = None, timeout_seconds: float | None = None, repair: bool = True) -> Any:
     content: list[dict] = []
     for doc in documents or []:
         content.append({"document": doc})
     content.append({"text": prompt + "\n\nRespond with JSON only."})
-    text, _ = converse(system, content, max_tokens=max_tokens, temperature=0.1, correlation_id=correlation_id)
+    call_options = {"timeout_seconds": timeout_seconds} if timeout_seconds is not None else {}
+    text, _ = converse(system, content, max_tokens=max_tokens, temperature=0.1, correlation_id=correlation_id, **call_options)
     try:
         return extract_json(text)
     except ValueError:
+        if not repair:
+            raise
         # Last resort: a second billed call the caller's usage reservation did
         # not account for, so it is logged to keep that cost visible.
         log(logger, "model.json_repair", chars=len(text), correlation_id=correlation_id)
         text2, _ = converse(system, [{"text": f"Convert this into valid JSON only, no prose:\n{text[:6000]}"}],
-                            max_tokens=max_tokens, temperature=0, correlation_id=correlation_id)
+                            max_tokens=max_tokens, temperature=0, correlation_id=correlation_id, **call_options)
         return extract_json(text2)
 
 
@@ -283,7 +290,7 @@ def _to_bedrock_response(data: dict) -> dict:
 
 
 def _openai_chat(system: str, messages: list[dict], tools: list[dict] | None,
-                 max_tokens: int, temperature: float) -> dict:
+                 max_tokens: int, temperature: float, timeout_seconds: float | None = None) -> dict:
     import urllib.error
     import urllib.request
 
@@ -307,7 +314,7 @@ def _openai_chat(system: str, messages: list[dict], tools: list[dict] | None,
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=170) as response:  # noqa: S310 - fixed https base from config
+        with urllib.request.urlopen(request, timeout=timeout_seconds or 170) as response:  # noqa: S310 - fixed https base from config
             return _to_bedrock_response(json.loads(response.read().decode()))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf8", "ignore")[:300]
@@ -323,15 +330,15 @@ def provider() -> str:
 
 
 def chat(system: str, messages: list[dict], *, tools: list[dict] | None = None, max_tokens: int = 1500,
-         temperature: float = 0.2, correlation_id: str | None = None) -> dict:
+         temperature: float = 0.2, correlation_id: str | None = None, timeout_seconds: float | None = None) -> dict:
     """One call, in Bedrock's Converse response shape, whichever provider answered."""
     started = time.time()
     which = provider()
     try:
         if which == "openai":
-            res = _openai_chat(system, messages, tools, max_tokens, temperature)
+            res = _openai_chat(system, messages, tools, max_tokens, temperature, timeout_seconds)
         elif which == "anthropic":
-            res = _anthropic_chat(system, messages, tools, max_tokens, temperature)
+            res = _anthropic_chat(system, messages, tools, max_tokens, temperature, timeout_seconds)
         else:
             kwargs: dict[str, Any] = {
                 "modelId": settings().model_id,
@@ -342,7 +349,8 @@ def chat(system: str, messages: list[dict], *, tools: list[dict] | None = None, 
                 kwargs["system"] = [{"text": system}]
             if tools:
                 kwargs["toolConfig"] = {"tools": tools}
-            res = client().converse(**kwargs)
+            runtime = client() if timeout_seconds is None else client(timeout_seconds=timeout_seconds)
+            res = runtime.converse(**kwargs)
     except Exception as exc:
         log(logger, "model.error", provider=which, error=type(exc).__name__,
             detail=str(exc)[:300], correlation_id=correlation_id)
@@ -428,7 +436,7 @@ def _from_anthropic(data: dict) -> dict:
 
 
 def _anthropic_chat(system: str, messages: list[dict], tools: list[dict] | None,
-                    max_tokens: int, temperature: float) -> dict:
+                    max_tokens: int, temperature: float, timeout_seconds: float | None = None) -> dict:
     import urllib.error
     import urllib.request
 
@@ -446,7 +454,7 @@ def _anthropic_chat(system: str, messages: list[dict], tools: list[dict] | None,
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=170) as response:  # noqa: S310 - fixed https base from config
+        with urllib.request.urlopen(request, timeout=timeout_seconds or 170) as response:  # noqa: S310 - fixed https base from config
             return _from_anthropic(json.loads(response.read().decode()))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf8", "ignore")[:300]

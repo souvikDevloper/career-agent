@@ -3,6 +3,7 @@ import { api, requestId, waitForOperation } from "../lib/api";
 import { useMe } from "../lib/me";
 import { timeAgo } from "../lib/format";
 import { Shell } from "../components/Shell";
+import { ProfileAnswers } from "../components/ProfileAnswers";
 import { Badge, Empty, Spinner, useToast } from "../components/ui";
 import { IBrain, ICheck, IFile, IShield, IUpload } from "../components/Icons";
 
@@ -167,13 +168,7 @@ export function ProfilePage() {
               </div>
             )}
           </div>
-          <div className="card pad glass-stripe">
-            <div className="card-title"><h3>Saved answers</h3><Badge>{Object.keys(profile?.saved_answers || {}).length}</Badge></div>
-            <p className="small muted">Answers you gave to employer questions, reused only for identical questions.</p>
-            {Object.entries(profile?.saved_answers || {}).map(([q, a]) => (
-              <div key={q} className="answer" style={{ gridTemplateColumns: "1fr auto" }}><span className="k small">{q}</span><span className="v small">{a}</span></div>
-            ))}
-          </div>
+          <ProfileAnswers answers={profile?.saved_answers || {}} enabled={!!profile && !me?.example_workspace} onSave={reload} />
         </div>
       </div>
     </Shell>

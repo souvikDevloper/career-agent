@@ -18,7 +18,7 @@ from .. import applying, connectors, discovery, llm, voice
 from ..config import settings as cfg
 from ..demo import DEMO_FACTS, DEMO_PREFERENCES, DEMO_RESUME_TEXT, DEMO_SAVED_ANSWERS, PUBLISHABLE_TEMPLATES, minimal_pdf
 from ..resume import ResumeError, resume_doc_id
-from ..store import C, Delete, Put, Update
+from ..store import And, C, ConditionFailed, Delete, Put, Update
 from ..util import get_logger, log, new_id
 from ..workflow import Principal, WorkflowError
 from .common import SECURITY_HEADERS, body_json, correlation, error, portal_signature, principal, respond, services, verify_signature
@@ -73,10 +73,19 @@ class BrowserCompleteIn(BaseModel):
     reason: str | None = Field(default=None, max_length=500)
 
 
+class BrowserQuestionContext(BaseModel):
+    section: str = Field(pattern=r"^(experience|education|personal)$")
+    index: int = Field(default=0, ge=0, le=50)
+    date_field: str | None = Field(default=None, pattern=r"^(start|end)$")
+    date_part: str | None = Field(default=None, pattern=r"^(month|year)$")
+
+
 class BrowserQuestionIn(BaseModel):
+    id: str | None = Field(default=None, max_length=200)
     label: str = Field(min_length=1, max_length=600)
     options: list[str] = Field(default_factory=list, max_length=50)
     required: bool = True
+    context: BrowserQuestionContext | None = None
 
 
 class BrowserQuestionsIn(BaseModel):
@@ -85,6 +94,19 @@ class BrowserQuestionsIn(BaseModel):
 
 class WatchIn(BaseModel):
     keywords: str = Field(min_length=1, max_length=200)
+    interval_minutes: int = Field(default=5, ge=5, le=10080)
+    company: str | None = Field(default=None, max_length=100)
+    role: str | None = Field(default=None, max_length=100)
+    location: str | None = Field(default=None, max_length=100)
+
+
+class WatchUpdateIn(BaseModel):
+    interval_minutes: int | None = Field(default=None, ge=5, le=10080)
+    keywords: str | None = Field(default=None, min_length=1, max_length=200)
+    company: str | None = Field(default=None, max_length=100)
+    role: str | None = Field(default=None, max_length=100)
+    location: str | None = Field(default=None, max_length=100)
+    enabled: bool | None = None
 
 
 class SearchIn(BaseModel):
@@ -452,11 +474,8 @@ def put_answers(event, p, cid):
     answers = body.get("answers") or {}
     if not isinstance(answers, dict) or len(answers) > 40:
         raise ValueError("answers must be an object")
-    prof = _svc().profiles.save_answers(p.user_id, answers)
-    app_id = body.get("reprepare_app_id")
-    if app_id:
-        _svc().request_prepare(p.user_id, app_id=app_id)
-    return respond(200, {"profile": _profile_public(prof)})
+    result = _svc().save_profile_answers(p.user_id, answers, reprepare_app_id=body.get("reprepare_app_id"))
+    return respond(200, {"profile": _profile_public(result["profile"]), "reprepared_app_ids": result["reprepared_app_ids"]})
 
 
 @route("GET", r"/api/resume/file")
@@ -557,7 +576,13 @@ def matches(event, p, cid):
 @route("POST", r"/api/watches")
 def create_watch(event, p, cid):
     data = WatchIn(**body_json(event))
-    return respond(201, {"watch": _strip(_svc().create_watch(p.user_id, data.keywords))})
+    return respond(201, {"watch": _strip(_svc().create_watch(p.user_id, **data.model_dump()))})
+
+
+@route("PUT", r"/api/watches/(?P<wid>w_[a-z0-9]+)")
+def update_watch(event, p, cid, wid):
+    data = WatchUpdateIn(**body_json(event))
+    return respond(200, {"watch": _strip(_svc().update_watch(p.user_id, wid, **data.model_dump(exclude_none=True)))})
 
 
 @route("DELETE", r"/api/watches/(?P<wid>w_[a-z0-9]+)")
@@ -668,10 +693,16 @@ def browser_session_create(event, p, cid, app_id):
     """
     data = BrowserSessionIn(**body_json(event))
     svc = _svc()
+    return _create_browser_session(svc, p, app_id, data.packet_hash, approve_launch=True)
+
+
+def _create_browser_session(svc, p, app_id: str, packet_hash: str, *, approve_launch: bool, runner_id: str | None = None) -> dict:
     app = svc.wf.get_app(p.user_id, app_id)
     packet = svc.wf.latest_packet(p.user_id, app_id)
-    if not packet or packet["hash"] != data.packet_hash or app.get("packet_hash") != data.packet_hash:
+    if not packet or packet["hash"] != packet_hash or app.get("packet_hash") != packet_hash:
         raise WorkflowError("stale_packet", "refresh: the application packet changed")
+    if approve_launch and app["action_state"] == "Submitting" and not app.get("local_browser_dispatched_at"):
+        app = svc.wf.local_browser_reopen(p, app_id, packet_hash)
     if app["action_state"] != "NeedsUserPresence":
         raise WorkflowError("invalid_state", f"application is {app['action_state']}, not ready for the browser companion")
 
@@ -680,10 +711,10 @@ def browser_session_create(event, p, cid, app_id):
     # invariant was enforced can legitimately be Browser ready with no
     # approved_hash. Repair them here rather than showing a contradictory
     # "approve first" error when there is no approval button in this state.
-    if app.get("approved_hash") != data.packet_hash:
-        app = svc.wf.approve(p, app_id, data.packet_hash, "browser_launch")
+    if approve_launch and app.get("approved_hash") != packet_hash:
+        app = svc.wf.approve(p, app_id, packet_hash, "browser_launch")
 
-    decision = svc.wf.decide_submission(p, app, svc.wf.settings(p.user_id), packet=packet)
+    decision = svc.wf.decide_submission(p, app, svc.wf.settings(p.user_id), reserve_check=True, packet=packet)
     if not decision.allowed:
         reasons = set(decision.reasons or [])
         if "forbid-daily-cap-exhausted" in reasons:
@@ -699,13 +730,120 @@ def browser_session_create(event, p, cid, app_id):
     token = secrets.token_urlsafe(32)
     token_hash = __import__("hashlib").sha256(token.encode()).hexdigest()
     expires = int(time.time()) + 600
-    svc.store.put({
+    session = {
         "pk": f"BROWSERSESSION#{token_hash}", "sk": "SESSION", "entity": "browser_session",
-        "user_id": p.user_id, "app_id": app_id, "packet_hash": data.packet_hash,
+        "user_id": p.user_id, "app_id": app_id, "packet_hash": packet_hash,
         "is_judge": bool(p.is_judge), "created_at": svc.wf.clock.iso(), "ttl": expires,
-    }, C("pk", "not_exists"))
+        "runner_id": runner_id,
+    }
+    try:
+        svc.store.transact([
+            Put(session, C("pk", "not_exists")),
+            Update(app["pk"], app["sk"],
+                   set={"browser_session_id": session["pk"], "version": app["version"] + 1},
+                   condition=And(C("version", "eq", app["version"]), C("action_state", "eq", "NeedsUserPresence"))),
+        ])
+    except ConditionFailed:
+        raise WorkflowError("conflict", "application changed while opening the browser; refresh and try again", 409) from None
     target = ((packet.get("body") or {}).get("target") or {}).get("url") or app.get("url")
     return respond(201, {"token": token, "target_url": target, "expires_in": 600})
+
+
+@route("POST", r"/api/browser-runner")
+def browser_runner_connect(event, p, cid):
+    """Pair one installed browser with a queue of policy-authorized applications."""
+    if p.is_judge:
+        raise WorkflowError("forbidden", "Connect a browser from your own account", 403)
+    svc = _svc()
+    token = secrets.token_urlsafe(32)
+    digest = __import__("hashlib").sha256(token.encode()).hexdigest()
+    expires = int(time.time()) + 7 * 86400
+    svc.store.update(Update(f"USER#{p.user_id}", "BROWSER_RUNNER", set={
+        "token_hash": digest, "expires_at": expires, "enabled": True,
+    }))
+    svc.store.put({"pk": f"BROWSERRUNNER#{digest}", "sk": "RUNNER", "user_id": p.user_id, "ttl": expires})
+    return respond(201, {"token": token, "expires_at": expires})
+
+
+@route("GET", r"/api/browser-runner")
+def browser_runner_status(event, p, cid):
+    row = _svc().store.get(f"USER#{p.user_id}", "BROWSER_RUNNER") or {}
+    return respond(200, {"connected": bool(row.get("enabled") and row.get("expires_at", 0) > time.time()),
+                         "expires_at": row.get("expires_at"), "last_seen_at": row.get("last_seen_at"),
+                         "active_app_id": row.get("active_app_id")})
+
+
+@route("DELETE", r"/api/browser-runner")
+def browser_runner_disconnect(event, p, cid):
+    svc = _svc()
+    state = svc.store.get(f"USER#{p.user_id}", "BROWSER_RUNNER") or {}
+    svc.store.update(Update(f"USER#{p.user_id}", "BROWSER_RUNNER", set={"enabled": False}))
+    active = svc.store.get(f"USER#{p.user_id}", f"APP#{state.get('active_app_id')}") or {}
+    if active.get("action_state") == "Submitting" and not active.get("local_browser_dispatched_at"):
+        try:
+            svc.wf.local_browser_reopen(p, active["app_id"], active["packet_hash"])
+        except (ConditionFailed, WorkflowError):
+            pass  # a dispatch or completion won the race; never rewind that write
+    return respond(200, {"connected": False})
+
+
+@route("POST", r"/api/public/browser-runner/(?P<token>[A-Za-z0-9_-]{20,})/next", auth=False)
+def browser_runner_next(event, p, cid, token):
+    svc = _svc()
+    digest = __import__("hashlib").sha256(token.encode()).hexdigest()
+    capability = svc.store.get(f"BROWSERRUNNER#{digest}", "RUNNER") or {}
+    now = int(time.time())
+    uid = capability.get("user_id")
+    state = svc.store.get(f"USER#{uid}", "BROWSER_RUNNER") or {}
+    if (not uid or capability.get("ttl", 0) <= now or not state.get("enabled")
+            or state.get("token_hash") != digest or state.get("expires_at", 0) <= now):
+        raise WorkflowError("expired", "browser connection expired or disconnected; reconnect in Settings", 410)
+    svc.store.update(Update(f"USER#{uid}", "BROWSER_RUNNER", set={"last_seen_at": svc.wf.clock.iso()}))
+    active = svc.store.get(f"USER#{uid}", f"APP#{state.get('active_app_id')}") or {}
+    if active.get("action_state") in ("Submitting", "OutcomeUnknown"):
+        if (active["action_state"] == "Submitting" and not active.get("local_browser_dispatched_at")
+                and state.get("launch_until", 0) <= now):
+            # The browser never reached the external write. Release its slot,
+            # surface the interruption and let other jobs continue. A reopened
+            # application must get a fresh capability; old tabs lose ownership.
+            svc.wf.local_browser_reopen(Principal(uid, svc.is_judge(uid)), active["app_id"], active["packet_hash"])
+            svc.store.update(Update(f"USER#{uid}", "BROWSER_RUNNER", set={"launch_until": 0}))
+            state["launch_until"] = 0
+        else:
+            return respond(200, {"application": None, "reason": "current_application_in_progress"})
+    # A successful previous application releases the launch slot immediately.
+    if state.get("launch_until", 0) > now and active.get("action_state") not in (
+            "Submitted", "Withdrawn", "KnownFailure", "NeedsReview", "NeedsInformation", "Paused"):
+        return respond(200, {"application": None, "reason": "waiting_for_browser"})
+    principal_ = Principal(uid, svc.is_judge(uid))
+    settings = svc.wf.settings(uid)
+    candidates = svc.store.query(f"USER#{uid}", "APP#", limit=200)
+    for app in candidates:
+        if app.get("action_state") != "NeedsUserPresence" or app.get("last_error") or app.get("paused"):
+            continue
+        packet = svc.wf.latest_packet(uid, app["app_id"])
+        body = (packet or {}).get("body") or {}
+        if (body.get("target") or {}).get("submission", {}).get("mode") != "local_browser":
+            continue
+        if not svc.wf.decide_submission(principal_, app, settings, packet=packet).allowed:
+            continue
+        # Compare the queue lease as well as the token: concurrent extension
+        # polls cannot open two employer tabs, including after a lost response.
+        old_until = state.get("launch_until")
+        condition = C("launch_until", "eq", old_until) if old_until is not None else C("launch_until", "not_exists")
+        try:
+            svc.store.update(Update(f"USER#{uid}", "BROWSER_RUNNER",
+                                    set={"active_app_id": app["app_id"], "launch_until": now + 600},
+                                    condition=And(C("token_hash", "eq", digest), C("enabled", "eq", True), condition)))
+        except ConditionFailed:
+            return respond(200, {"application": None, "reason": "another_poll_claimed_application"})
+        try:
+            result = _create_browser_session(svc, principal_, app["app_id"], app["packet_hash"], approve_launch=False, runner_id=digest)
+        except WorkflowError:
+            svc.store.update(Update(f"USER#{uid}", "BROWSER_RUNNER", set={"launch_until": 0}))
+            return respond(200, {"application": None, "reason": "application_policy_changed"})
+        return respond(200, {"application": {**json.loads(result["body"]), "app_id": app["app_id"]}})
+    return respond(200, {"application": None, "reason": "no_authorized_applications"})
 
 
 def _browser_capability(token: str):
@@ -714,6 +852,18 @@ def _browser_capability(token: str):
     row = svc.store.get(f"BROWSERSESSION#{token_hash}", "SESSION")
     if not row or int(row.get("ttl", 0)) <= int(time.time()):
         raise WorkflowError("expired", "browser companion session expired; start again from Career Agent", 410)
+    if row.get("runner_id"):
+        runner = svc.store.get(f"USER#{row['user_id']}", "BROWSER_RUNNER") or {}
+        if not runner.get("enabled") or runner.get("token_hash") != row["runner_id"]:
+            raise WorkflowError("disconnected", "browser runner disconnected; pending application stopped", 410)
+    app = svc.wf.get_app(row["user_id"], row["app_id"])
+    if app.get("packet_hash") != row["packet_hash"]:
+        raise WorkflowError("stale_packet", "application packet changed; start a new browser session", 409)
+    owner = app.get("browser_session_id")
+    if owner and owner != row["pk"]:
+        raise WorkflowError("stale_session", "another browser session owns this application; reopen it from Career Agent", 409)
+    if app["action_state"] not in ("NeedsUserPresence", "Submitting", "Submitted", "OutcomeUnknown", "KnownFailure"):
+        raise WorkflowError("invalid_state", "this application is no longer available to the browser companion", 409)
     return svc, row
 
 
@@ -731,9 +881,13 @@ def browser_session_get(event, p, cid, token):
             "get_object", Params={"Bucket": cfg().bucket, "Key": body["resume_key"]}, ExpiresIn=600)
     return respond(200, {
         "app_id": row["app_id"], "packet_hash": row["packet_hash"],
+        "action_state": app["action_state"], "dispatched_at": app.get("local_browser_dispatched_at"),
+        "outcome": app.get("local_browser_outcome"),
         "company": app.get("company"), "title": app.get("title"),
         "target": body.get("target") or {}, "answers": body.get("answers") or {},
+        "profile_records": body.get("profile_records") or {},
         "fields": packet.get("fields") or [], "resume_url": resume_url,
+        "resume_filename": "resume.docx" if str(body.get("resume_key") or "").lower().endswith(".docx") else "resume.pdf",
     })
 
 
@@ -751,11 +905,14 @@ def browser_session_answers(event, p, cid, token):
         raise ValueError("answers must be an object with at most 30 entries")
     cleaned = {}
     for key, value in answers.items():
-        label = str(key).strip()[:120]
+        label = str(key).strip()[:600]
         if not label or value in (None, ""):
             continue
         cleaned[label] = str(value)[:1000]
     svc, row = _browser_capability(token)
+    app = svc.wf.get_app(row["user_id"], row["app_id"])
+    if app["action_state"] != "Submitting" or app.get("local_browser_dispatched_at"):
+        raise WorkflowError("invalid_state", "answers can only be saved while filling the current application", 409)
     if cleaned:
         svc.profiles.save_answers(row["user_id"], cleaned)
     return respond(200, {"saved": len(cleaned)})
@@ -772,11 +929,18 @@ def browser_session_resolve_questions(event, p, cid, token):
     """
     data = BrowserQuestionsIn(**body_json(event))
     svc, row = _browser_capability(token)
-    profile = svc.profiles.current(row["user_id"])
+    packet = svc.wf.latest_packet(row["user_id"], row["app_id"]) or {}
+    if packet.get("hash") != row["packet_hash"]:
+        raise WorkflowError("stale_packet", "application packet changed; start a new browser session", 409)
+    body = packet.get("body") or {}
+    version = body.get("profile_version")
+    profile = svc.store.get(f"USER#{row['user_id']}", f"PROFILE#V#{int(version):06d}") if version else None
     if not profile:
         raise WorkflowError("profile_required", "upload a resume before resolving application questions", 409)
-    packet = svc.wf.latest_packet(row["user_id"], row["app_id"]) or {}
-    body = packet.get("body") or {}
+    # Resume facts stay bound to the reviewed packet. Exact answers entered by
+    # the user on this live form may be reused without substituting a new resume.
+    current = svc.profiles.current(row["user_id"]) or profile
+    profile = {**profile, "saved_answers": current.get("saved_answers") or {}}
     resolved = applying.resolve_live_questions(
         profile,
         [q.model_dump() for q in data.questions],
@@ -789,7 +953,7 @@ def browser_session_resolve_questions(event, p, cid, token):
 def browser_session_start(event, p, cid, token):
     svc, row = _browser_capability(token)
     app = svc.wf.local_browser_start(
-        Principal(row["user_id"], bool(row.get("is_judge"))), row["app_id"], row["packet_hash"])
+        Principal(row["user_id"], bool(row.get("is_judge"))), row["app_id"], row["packet_hash"], session_id=row["pk"])
     return respond(200, {"application": _strip(app)})
 
 
@@ -797,7 +961,7 @@ def browser_session_start(event, p, cid, token):
 def browser_session_dispatch(event, p, cid, token):
     svc, row = _browser_capability(token)
     app = svc.wf.local_browser_dispatch(
-        Principal(row["user_id"], bool(row.get("is_judge"))), row["app_id"], row["packet_hash"])
+        Principal(row["user_id"], bool(row.get("is_judge"))), row["app_id"], row["packet_hash"], session_id=row["pk"])
     return respond(200, {"application": _strip(app)})
 
 
@@ -811,7 +975,7 @@ def browser_session_complete(event, p, cid, token):
                    "url": data.url}
     app = svc.wf.local_browser_complete(
         Principal(row["user_id"], bool(row.get("is_judge"))), row["app_id"], row["packet_hash"],
-        data.outcome, receipt=receipt, reason=data.reason)
+        data.outcome, receipt=receipt, reason=data.reason, session_id=row["pk"])
     if data.outcome in ("submitted", "known_failure"):
         token_hash = __import__("hashlib").sha256(token.encode()).hexdigest()
         svc.store.update(Update(f"BROWSERSESSION#{token_hash}", "SESSION", set={"completed_at": svc.wf.clock.iso()}))
@@ -838,6 +1002,15 @@ def app_resume(event, p, cid, app_id):
 def handoff_complete(event, p, cid, app_id):
     svc = _svc()
     app = svc.wf.get_app(p.user_id, app_id)
+    if app["action_state"] in ("Submitting", "OutcomeUnknown") and app.get("local_browser_dispatched_at"):
+        # An expired browser capability must not strand a completed application.
+        # This signed-in action records the user's report, never another Submit.
+        app = svc.wf.local_browser_complete(
+            p, app_id, app["packet_hash"], "submitted",
+            receipt={"reference": "user-reported", "user_reported": True},
+            session_id=app.get("local_browser_session_id"),
+        )
+        return respond(200, {"application": _strip(app)})
     if app["action_state"] not in ("ManualHandoff", "NeedsUserPresence"):
         raise WorkflowError("invalid_state", "Only browser/user handoffs can be marked as submitted by you.")
     svc.store.transact([svc.wf._transition(app, "Submitted", {"recruitment_stage": "applied", "receipt": {"reference": "user-reported",

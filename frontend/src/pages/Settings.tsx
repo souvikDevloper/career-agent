@@ -4,6 +4,7 @@ import { useMe } from "../lib/me";
 import { signOut } from "../lib/auth";
 import { useRouter } from "../lib/router";
 import { Shell } from "../components/Shell";
+import { BrowserConnection } from "../components/BrowserConnection";
 import { Badge, Spinner, Switch, useToast } from "../components/ui";
 import { IBell, IEye, IGlobe, IShield, ITrash, IBolt, ITarget } from "../components/Icons";
 
@@ -68,6 +69,7 @@ export function SettingsPage() {
       </div>
 
       <div className="stack">
+        {!me.example_workspace && <BrowserConnection />}
         <div className="card pad glass-stripe">
           <div className="card-title"><h3><IShield size={16} /> Approval mode</h3><Badge tone="violet">Cedar policy authz/1.0</Badge></div>
           <div className="grid g3">
@@ -91,7 +93,7 @@ export function SettingsPage() {
               </select>
             </label>
             {mandateActive ? (
-              <span className="small ink2">Automatic mandate active until <b>{new Date(s.mandate!.expires_at * 1000).toLocaleString()}</b> · scope: test employer</span>
+              <span className="small ink2">Automatic mandate active until <b>{new Date(s.mandate!.expires_at * 1000).toLocaleString()}</b> · {s.mandate?.scope?.connectors?.some((connector) => connector !== "northwind-test-portal") ? "supported employer application routes" : "test employer only — choose an automatic mode again to renew its scope"}</span>
             ) : (
               <span className="small muted">No automatic mandate. Silence is never approval.</span>
             )}

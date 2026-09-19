@@ -83,13 +83,15 @@ def process(msg: dict) -> None:
             svc.wf.op_progress(uid, op_id, status="succeeded", final=data)
         elif kind == "prepare":
             try:
-                svc.prepare(uid, msg["app_id"], cid)
+                svc.prepare(uid, msg["app_id"], cid, prepare_request_id=msg.get("prepare_request_id"))
             except WorkflowError as exc:
                 if exc.code in ("invalid_state", "invalid_transition", "not_found"):
                     log(logger, "work.prepare_skipped", reason=str(exc))
                     return
                 app = svc.wf.get_app(uid, msg["app_id"])
-                if app["action_state"] == "Preparing":
+                if app["action_state"] == "Preparing" and (
+                    not msg.get("prepare_request_id") or app.get("prepare_request_id") == msg["prepare_request_id"]
+                ):
                     svc.store.transact([
                         svc.wf._transition(app, "KnownFailure", {"last_error": str(exc)[:300]}),
                         svc.wf.event_put(uid, "application.preparation_failed",
@@ -102,18 +104,22 @@ def process(msg: dict) -> None:
                 # retry so the user sees a recoverable state and can press retry.
                 try:
                     app = svc.wf.get_app(uid, msg["app_id"])
-                    if app["action_state"] == "Preparing":
+                    if app["action_state"] == "Preparing" and (
+                        not msg.get("prepare_request_id") or app.get("prepare_request_id") == msg["prepare_request_id"]
+                    ):
                         svc.store.transact([
                             svc.wf._transition(app, "KnownFailure",
                                                {"last_error": "Could not prepare this employer form. Retry preparation."}),
                             svc.wf.event_put(uid, "application.preparation_failed",
                                              {"reason": type(exc).__name__}, app["app_id"]),
                         ])
-                except Exception:
-                    pass
+                except Exception as record_exc:
+                    log(logger, "work.prepare_failure_record_failed", reason=type(record_exc).__name__)
                 raise
+        elif kind == "check_watch":
+            svc.check_watch(uid, msg["watch_id"])
         elif kind == "match_new_job":
-            svc.match_new_job(uid, msg["job_key"], msg.get("watch_id"))
+            svc.match_new_job(uid, msg["job_key"], msg.get("watch_id"), watch_revision=msg.get("watch_revision"))
         elif kind == "monitor_now":
             summary = svc.run_monitor(force=True)
             svc.store.transact([svc.wf.event_put(uid, "monitor.checked", summary)])
@@ -131,11 +137,12 @@ def process(msg: dict) -> None:
 
 
 
-_AMAZON_SEARCH_VERBS = {"find", "search", "show", "get"}
+_AMAZON_SEARCH_VERBS = {"find", "search", "show", "get", "check", "look"}
 _AMAZON_JOB_NOUNS = {"job", "jobs", "role", "roles", "opening", "openings", "position", "positions"}
 _AMAZON_SECOND_STEPS = {
     "apply", "applying", "application", "applications", "prepare", "preparing",
     "submit", "submitting", "approve", "send",
+    "watch", "monitor", "repeat", "every", "notify", "remember", "save",
 }
 
 
@@ -155,22 +162,38 @@ def _known_place(text: str) -> str:
 
 
 def _fallback_amazon_filters(text: str) -> dict[str, str] | None:
-    """Parse only a simple, explicit Amazon job-search command.
+    """Compatibility wrapper for callers specifically testing the Amazon path."""
+    filters = _fallback_search_filters(text)
+    return filters if filters and filters["company"] == "Amazon" else None
+
+
+def _fallback_search_filters(text: str) -> dict[str, str] | None:
+    """Parse a simple, explicit search for one supported employer.
 
     This is a recovery path, not the normal chat path. Multi-step instructions
     stay with the agent so a request such as "find ... and apply" cannot lose its
     second action. Informational Amazon questions are not searches either.
     """
     tokens = re.findall(r"[a-z0-9+#]+", (text or "").lower())
-    if not tokens or "amazon" not in tokens:
+    if not tokens:
         return None
+    employers = {"amazon": "Amazon", "google": "Google", "microsoft": "Microsoft"}
+    for source in discovery.all_sources():
+        if source.startswith(("greenhouse:", "lever:", "ashby:", "workday:")):
+            name = source.split(":", 2)[1].lower()
+            employers[name] = name.title()
+    named = [name for name in employers if re.search(r"\b" + re.escape(name) + r"\b", text, re.I)]
+    if len(named) != 1:
+        return None
+    company = named[0]
 
     # The first meaningful word must be an imperative search verb. This rejects
     # questions such as "what does Amazon look for in an SDE 1?"
-    first = next((t for t in tokens if t not in {"please", "can", "could", "you"}), "")
+    conversational = {"please", "can", "could", "would", "you", "hey", "hi", "hello", "bro", "brother"}
+    first = next((t for t in tokens if t not in conversational), "")
     if first not in _AMAZON_SEARCH_VERBS:
         return None
-    if not any(t in _AMAZON_JOB_NOUNS for t in tokens):
+    if not any(t in _AMAZON_JOB_NOUNS | {"swe", "sde", "engineer", "internship", "intern"} for t in tokens):
         return None
     if any(t in _AMAZON_SECOND_STEPS for t in tokens):
         return None
@@ -179,22 +202,24 @@ def _fallback_amazon_filters(text: str) -> dict[str, str] | None:
     location_tokens = set(re.findall(r"[a-z0-9]+", location))
     role_tokens = [
         token for token in tokens
-        if token != "amazon"
+        if token not in company.split()
         and token not in discovery.STOP
         and token not in _AMAZON_JOB_NOUNS
         and token not in location_tokens
+        and token not in conversational | _AMAZON_SEARCH_VERBS | {"up"}
     ]
-    return {"company": "Amazon", "role": " ".join(role_tokens), "location": location}
+    return {"company": employers[company], "role": " ".join(role_tokens), "location": location}
 
 
 def _direct_search_reply(cards: list[dict], filters: dict[str, str], stats: dict) -> str:
     role = filters.get("role") or "jobs"
     location = filters.get("location")
-    target = f"Amazon {role}" + (f" in {location}" if location else "")
+    target = f"{filters.get('company') or 'Requested'} {role}" + (f" in {location}" if location else "")
     if not cards:
-        looked = stats.get("live_postings")
-        suffix = f" I checked {looked} live postings." if isinstance(looked, int) else ""
-        return f"I searched {target} directly and found no matches.{suffix}"
+        context = agent.ToolContext("", "", "", "chat", "", None,
+                                    actions=[{"type": "search", "count": 0}],
+                                    search_result={"results": [], "searched": {**stats, "filters": filters}})
+        return agent._ground_search_reply(context, "")
 
     preview = []
     for card in cards[:3]:
@@ -202,12 +227,13 @@ def _direct_search_reply(cards: list[dict], filters: dict[str, str], stats: dict
         where = job.get("location") or "location not listed"
         preview.append(f"{job.get('title') or 'Untitled role'} — {where} ({card.get('score', 0)}/100)")
     more = f" +{len(cards) - 3} more." if len(cards) > 3 else ""
-    return f"Found {len(cards)} matches for {target}. " + "; ".join(preview) + more
+    freshness = "Cached results: " if stats.get("freshness") in ("cached", "stale_fallback") else ""
+    return freshness + f"Found {len(cards)} matches for {target}. " + "; ".join(preview) + more
 
 
 def _finish_direct_search(svc, uid: str, op_id: str, filters: dict[str, str], cid: str | None) -> None:
     stats: dict = {}
-    svc.wf.op_progress(uid, op_id, status="running", message="Searching Amazon Jobs directly")
+    svc.wf.op_progress(uid, op_id, status="running", message=f"Searching {filters.get('company', 'employer')} directly")
     cards = svc.search(uid, op_id, correlation_id=cid, stats=stats, filters=filters)
     reply = _direct_search_reply(cards, filters, stats)
     actions = [{"type": "search", "count": len(cards), "filters": filters}]
@@ -221,7 +247,7 @@ def _finish_direct_search(svc, uid: str, op_id: str, filters: dict[str, str], ci
 def run_chat(svc, uid: str, op_id: str, text: str, source: str, cid: str | None) -> None:
     from ..util import new_id
 
-    fallback = _fallback_amazon_filters(text)
+    fallback = _fallback_search_filters(text)
     svc.wf.op_progress(uid, op_id, status="running", message="Thinking")
     rows = svc.store.query(f"USER#{uid}", "CHAT#", limit=13, newest_first=True)
     history = []
@@ -243,11 +269,11 @@ def run_chat(svc, uid: str, op_id: str, text: str, source: str, cid: str | None)
         svc._reserve_model(uid)
         reply, runtime = agent.run(ctx, history)
     except Exception as exc:
-        # A simple Amazon search can still succeed when the chat model is down or
+        # A simple employer search can still succeed when the chat model is down or
         # its allowance is exhausted. Only recover when no action has happened;
         # otherwise retrying the intent could duplicate a side effect.
         if fallback and not ctx.actions:
-            log(logger, "chat.search_fallback", company="Amazon", error=type(exc).__name__,
+            log(logger, "chat.search_fallback", company=fallback["company"], error=type(exc).__name__,
                 detail=str(exc)[:160], correlation_id=cid)
             _finish_direct_search(svc, uid, op_id, fallback, cid)
             return
@@ -257,7 +283,7 @@ def run_chat(svc, uid: str, op_id: str, text: str, source: str, cid: str | None)
     # narrow, explicit search command, an action-free answer is not completion:
     # run the deterministic search instead. Multi-step requests never qualify.
     if fallback and not ctx.actions:
-        log(logger, "chat.search_fallback", company="Amazon", reason="no_search_action", correlation_id=cid)
+        log(logger, "chat.search_fallback", company=fallback["company"], reason="no_search_action", correlation_id=cid)
         _finish_direct_search(svc, uid, op_id, fallback, cid)
         return
 

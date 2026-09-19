@@ -7,7 +7,7 @@ import re
 import urllib.parse
 
 from ..util import sha256
-from .http import fetch
+from .http import FetchError, fetch
 
 SOURCE = "google-careers"
 BASE = "https://www.google.com/about/careers/applications/jobs/results"
@@ -41,6 +41,7 @@ def query_plan(query: str) -> tuple[str, str | None]:
     its title does not literally contain "early career".
     """
     raw = (query or "software engineer").strip().lower()
+    raw = re.sub(r"\b(early|entry|new)[- ]+(career|careers|level|grad|graduate)\b", r"\1 \2", raw)
     level = None
     if re.search(r"\b(early careers?|new grad(?:uate)?s?|university graduates?|entry level)\b", raw, re.I):
         level = "EARLY"
@@ -69,13 +70,13 @@ def post_filter_role(query: str) -> str:
 def _extract(html: str) -> list:
     hit = _DS1.search(html)
     if not hit:
-        return []
+        raise FetchError("google careers results payload was not present")
     start = hit.end()
     # Find the first array after data: and balance brackets. JSON is embedded
     # directly in the page; no execution or browser is required.
     start = html.find("[", start)
     if start < 0:
-        return []
+        raise FetchError("google careers results payload was malformed")
     depth = 0
     in_str = False
     esc = False
@@ -98,10 +99,12 @@ def _extract(html: str) -> list:
             if depth == 0:
                 try:
                     data = json.loads(html[start:i + 1])
-                except Exception:
-                    return []
-                return data[0] if data and isinstance(data[0], list) else []
-    return []
+                except (ValueError, TypeError) as exc:
+                    raise FetchError("google careers results payload was malformed") from exc
+                if not isinstance(data, list) or not data or (data[0] is not None and not isinstance(data[0], list)):
+                    raise FetchError("google careers results payload shape changed")
+                return data[0] or []
+    raise FetchError("google careers results payload was incomplete")
 
 
 def _html_text(value: object) -> str:
@@ -161,6 +164,9 @@ def normalize(raw: list) -> dict | None:
         "board": "google.com",
         "external_id": external_id,
         "company": company or "Google",
+        # Google Careers also publishes YouTube roles. Keep the displayed
+        # employer while making searches for the parent careers board work.
+        "company_aliases": ["Google"],
         "title": title,
         "location": location,
         "work_mode": "remote" if "remote" in (location + " " + description).lower() else None,
@@ -199,11 +205,6 @@ def search(query: str, *, location: str = "", limit: int = 50) -> list[dict]:
         html = raw.decode("utf8", "ignore")
         rows = _extract(html)
         if not rows:
-            # A missing ds:1 blob is a source/layout failure, not evidence that
-            # Google has zero jobs. Surface it so callers do not turn parser
-            # breakage into a confident "no openings" answer.
-            if "AF_initDataCallback" not in html or "ds:1" not in html:
-                raise ValueError("google careers results payload was not present")
             break
 
         for row in rows:
@@ -213,6 +214,8 @@ def search(query: str, *, location: str = "", limit: int = 50) -> list[dict]:
                 jobs.append(job)
             if len(jobs) >= wanted:
                 return jobs
+        if rows and not any(normalize(row) for row in rows):
+            raise FetchError("google careers returned rows that could not be read")
         if len(rows) < 20:
             break
     return jobs

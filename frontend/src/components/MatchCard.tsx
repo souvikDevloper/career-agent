@@ -6,6 +6,16 @@ import SpotlightCard from "./motion/SpotlightCard";
 import { SpeakButton } from "./SpeakButton";
 import KineticScoreGauge from "./motion/KineticScoreGauge";
 
+function evidenceLabel(extractor?: string): string {
+  if (!extractor || extractor.startsWith("heuristic")) return "Provisional keyword estimate";
+  const [provider, ...modelParts] = extractor.split(":");
+  const model = modelParts.join(":").toLowerCase();
+  if (provider === "bedrock") return model.includes("nova") ? "Evidence by Amazon Nova" : "Evidence by Amazon Bedrock";
+  if (provider === "anthropic") return model.includes("claude") ? "Evidence by Claude" : "Evidence by Anthropic";
+  if (provider === "openai") return "Evidence by configured AI model";
+  return "Model evidence";
+}
+
 export function MatchRow({ m, onOpen }: { m: M; onOpen: () => void }) {
   const req = (m.skills || []).filter((s) => s.required);
   const hit = req.filter((s) => s.evidence).length;
@@ -20,6 +30,7 @@ export function MatchRow({ m, onOpen }: { m: M; onOpen: () => void }) {
           <EnvBadge env={m.job.environment} />
           {m.blocked && <Badge tone="rose">Not eligible</Badge>}
           {!m.blocked && m.unknowns?.length > 0 && <Badge tone="amber">Needs info</Badge>}
+          {m.extractor?.startsWith("heuristic") && <Badge tone="amber">Provisional score</Badge>}
         </div>
         <div className="co row wrap" style={{ gap: 14 }}>
           <span className="row" style={{ gap: 5 }}><IBuilding size={14} /> {m.job.company}</span>
@@ -70,7 +81,7 @@ export function MatchExplain({ m }: { m: M }) {
           <div className="row wrap" style={{ marginTop: 8 }}>
             <EnvBadge env={m.job.environment} />
             <Badge tone={m.auto_eligible ? "mint" : "amber"}>{m.auto_eligible ? "Eligible for automation" : "Review required"}</Badge>
-            <Badge>{m.extractor.startsWith("bedrock") ? "Evidence by Amazon Nova" : "Keyword extractor"}</Badge>
+            <span title={m.extractor || "Evidence source unavailable"}><Badge>{evidenceLabel(m.extractor)}</Badge></span>
           </div>
         </div>
       </div>

@@ -107,6 +107,31 @@ class TestContextIsAlwaysReleased:
         assert agent.CTX.current is None
 
 
+@pytest.mark.parametrize("channel", ["chat", "voice"])
+def test_watch_commands_use_the_same_tools_for_chat_and_final_voice(channel):
+    calls = []
+    class Service:
+        def create_watch(self, uid, keywords, **kwargs):
+            calls.append(("create", uid, keywords, kwargs))
+            return {"watch_id": "w1", "interval_minutes": kwargs["interval_minutes"],
+                    "filters": {k: kwargs[k] for k in ("company", "role", "location")},
+                    "next_check_at": "2026-09-20T01:00:00Z", "enabled": True}
+        def update_watch(self, uid, wid, **kwargs):
+            calls.append(("update", uid, wid, kwargs))
+            return {"watch_id": wid, "interval_minutes": kwargs["interval_minutes"], "enabled": True}
+    context = ctx(services=Service(), channel=channel)
+    agent.CTX.current = context
+    try:
+        created = agent.t_create_watch("Google SWE India", 30, "Google", "SWE early career", "India")
+        updated = agent.t_update_watch(created["watch_id"], interval_minutes=60)
+    finally:
+        agent.CTX.current = None
+    assert created["interval_minutes"] == 30
+    assert created["filters"]["company"] == "Google"
+    assert updated["interval_minutes"] == 60
+    assert [call[0] for call in calls] == ["create", "update"]
+    assert context.actions == [{"type": "watch_created", "watch_id": "w1"}, {"type": "watch_updated", "watch_id": "w1"}]
+
 class TestStrandsFollowsTheProvider:
     """Strands is an AWS open-source project and the agent framework here.
 
@@ -332,3 +357,70 @@ class TestAmazonSearchFallback:
         worker.run_chat(svc, "u1", "op1", "Find Amazon SDE 1 jobs in Bengaluru.", "chat", "cid")
         assert svc.wf.progress[-1][2]["final"]["runtime"] == "strands-agents"
         assert svc.store.puts[-1]["text"] == "agent result"
+
+
+@pytest.mark.parametrize("channel", ["chat", "voice"])
+def test_user_answer_tool_saves_once_and_reports_resumed_applications(channel):
+    seen = []
+    class Service:
+        def save_profile_answers(self, uid, supplied, reprepare_app_id=None):
+            seen.append((uid, supplied, reprepare_app_id))
+            return {"profile": {}, "reprepared_app_ids": ["app_1"]}
+    agent.CTX.current = ctx(services=Service(), channel=channel,
+                            user_text="Remember: my notice period is 30 days, and sponsorship: No.")
+    try:
+        result = agent.t_save_profile_answers(["Notice period", "Require sponsorship?"], ["30 days", "No"], "app_1")
+    finally:
+        agent.CTX.current = None
+    assert result == {"saved": True, "count": 2, "reprepared_app_ids": ["app_1"]}
+    assert seen == [("u1", {"Notice period": "30 days", "Require sponsorship?": "No"}, "app_1")]
+
+
+def test_user_answer_tool_refuses_an_answer_the_user_did_not_supply():
+    agent.CTX.current = ctx(user_text="What questions are missing?")
+    try:
+        result = agent.t_save_profile_answers(["Require sponsorship?"], ["No"])
+    finally:
+        agent.CTX.current = None
+    assert result["saved"] is False
+    assert "do not guess" in result["reason"]
+
+
+@pytest.mark.parametrize("company", ["Google", "Microsoft"])
+@pytest.mark.parametrize("channel", ["chat", "voice"])
+def test_simple_search_cannot_end_with_stale_no_tool_coverage_claim(monkeypatch, company, channel):
+    from types import SimpleNamespace
+
+    from career_agent.handlers import worker
+    puts, progress, called = [], [], []
+    svc = SimpleNamespace(
+        store=SimpleNamespace(query=lambda *a, **k: [], put=puts.append),
+        wf=SimpleNamespace(clock=SimpleNamespace(iso=lambda: "2026-09-19T00:00:00Z"),
+                           op_progress=lambda *a, **k: progress.append(k)),
+        _reserve_model=lambda uid: None, is_judge=lambda uid: False)
+    def search(uid, op, **kwargs):
+        called.append(kwargs["filters"])
+        kwargs["stats"].update({"freshness": "live", "live_postings": 1})
+        return [{"score": 78, "job": {"title": "Software Engineer II", "company": company, "location": "India"}}]
+    svc.search = search
+    monkeypatch.setattr(agent, "run", lambda *a, **k: ("We do not track this employer.", "strands-agents"))
+    worker.run_chat(svc, "u1", "op", f"hey check {company} SWE early career roles in India", channel, "cid")
+    assert called == [{"company": company, "role": "swe early career", "location": "india"}]
+    assert progress[-1]["final"]["runtime"] == "direct-search-fallback"
+    assert "Software Engineer II" in puts[-1]["text"]
+    assert "do not track" not in puts[-1]["text"]
+
+
+def test_search_fallback_does_not_swallow_watch_or_apply_instructions():
+    from career_agent.handlers.worker import _fallback_search_filters
+    assert _fallback_search_filters("Find Microsoft SWE jobs and apply to the best one") is None
+    assert _fallback_search_filters("Watch Google SWE jobs every 30 minutes") is None
+    assert _fallback_search_filters("Find Google SWE jobs and notify me every hour") is None
+
+
+def test_direct_search_fallback_reports_source_failure_as_unverified():
+    from career_agent.handlers.worker import _direct_search_reply
+    reply = _direct_search_reply([], {"company": "Microsoft", "role": "SWE", "location": "India"},
+        {"source_checks": {"failed_sources": [{"source": "microsoft:direct", "error": "HTTP 429"}]}})
+    assert "couldn't verify" in reply
+    assert "no matches" not in reply

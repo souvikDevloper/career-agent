@@ -1,12 +1,11 @@
 import helpers  # noqa: F401
 
 from career_agent import applying, policy
-from career_agent.sources import greenhouse
 from career_agent.matching import save_job_snapshot
 from career_agent.services import Services
-from career_agent.store import MemoryStore
+from career_agent.sources import greenhouse
+from career_agent.store import ConditionFailed, MemoryStore, Update
 from career_agent.util import FixedClock
-
 
 UID = "u1"
 
@@ -168,3 +167,104 @@ def test_stale_stripe_placeholder_canonical_key_is_repaired_before_application_c
     app = svc.ensure_application(UID, key)
     assert app["canonical_key"] == "greenhouse:stripe:9001"
     assert store.get(f"USER#{UID}", "APPKEY#greenhouse:stripe:9001")["app_id"] == app["app_id"]
+
+
+def test_duplicate_prepare_delivery_preserves_approved_browser_session(monkeypatch):
+    svc, _ = make_services()
+    job = save_job(svc)
+    monkeypatch.setattr(applying, "draft_cover_note", lambda *a, **k: None)
+    requested = svc.request_prepare(UID, job_key=job["job_key"], apply_after_prepare=True)
+    app = svc.prepare(UID, requested["app_id"], prepare_request_id=requested["prepare_request_id"])
+    approved = app["approved_hash"]
+    version = app["packet_version"]
+    repeated = svc.prepare(UID, app["app_id"], prepare_request_id=requested["prepare_request_id"])
+    assert repeated["action_state"] == "NeedsUserPresence"
+    assert repeated["approved_hash"] == approved
+    assert repeated["packet_version"] == version
+
+
+def test_old_prepare_delivery_cannot_replace_newer_requested_packet(monkeypatch):
+    svc, _ = make_services()
+    job = save_job(svc)
+    first = svc.request_prepare(UID, job_key=job["job_key"])
+    second = svc.request_prepare(UID, app_id=first["app_id"])
+
+    def unexpected_model_call(*args, **kwargs):
+        raise AssertionError("obsolete request should be rejected before calling a model")
+
+    monkeypatch.setattr(applying, "draft_cover_note", unexpected_model_call)
+    app = svc.prepare(UID, first["app_id"], prepare_request_id=first["prepare_request_id"])
+    assert app["prepare_request_id"] == second["prepare_request_id"]
+    assert app["packet_version"] == 0
+
+
+def test_new_request_arriving_during_generation_discards_old_result(monkeypatch):
+    svc, _ = make_services()
+    job = save_job(svc)
+    first = svc.request_prepare(UID, job_key=job["job_key"], apply_after_prepare=True)
+    newer = {}
+
+    def new_request_while_generating(*args, **kwargs):
+        newer.update(svc.request_prepare(UID, app_id=first["app_id"]))
+        return None
+
+    monkeypatch.setattr(applying, "draft_cover_note", new_request_while_generating)
+    app = svc.prepare(UID, first["app_id"], prepare_request_id=first["prepare_request_id"])
+    assert app["prepare_request_id"] == newer["prepare_request_id"]
+    assert app["action_state"] == "Preparing"
+    assert app["packet_version"] == 0
+    assert app["approved_hash"] is None
+
+
+def test_concurrent_prepare_click_returns_already_queued_request(monkeypatch):
+    svc, store = make_services()
+    job = save_job(svc)
+    app = svc.ensure_application(UID, job["job_key"])
+    transact = store.transact
+    interleaved = False
+
+    def concurrent_request(ops):
+        nonlocal interleaved
+        if not interleaved:
+            interleaved = True
+            store.update(Update(app["pk"], app["sk"], set={
+                "action_state": "Preparing", "version": app["version"] + 1,
+                "prepare_request_id": "already-queued", "apply_after_prepare": True,
+            }))
+            raise ConditionFailed("competing launch committed first")
+        return transact(ops)
+
+    monkeypatch.setattr(store, "transact", concurrent_request)
+    result = svc.request_prepare(UID, app_id=app["app_id"], apply_after_prepare=True)
+    assert result["prepare_request_id"] == "already-queued"
+
+
+def test_explicit_reprepare_clears_old_pause_flag(monkeypatch):
+    svc, store = make_services()
+    job = save_job(svc)
+    app = svc.ensure_application(UID, job["job_key"])
+    store.update(Update(app["pk"], app["sk"], set={"action_state": "Paused", "paused": True}))
+    monkeypatch.setattr(applying, "draft_cover_note", lambda *args, **kwargs: None)
+    requested = svc.request_prepare(UID, app_id=app["app_id"], apply_after_prepare=True)
+    app = svc.prepare(UID, app["app_id"], prepare_request_id=requested["prepare_request_id"])
+    assert app["paused"] is False
+    app = svc.wf.local_browser_start(helpers.P(UID), app["app_id"], app["packet_hash"])
+    assert app["action_state"] == "Submitting"
+
+
+def test_saved_answers_resume_matching_waiting_packets_but_do_not_touch_running_browser(monkeypatch):
+    svc, store = make_services()
+    job = save_job(svc)
+    app = svc.ensure_application(UID, job["job_key"])
+    store.update(Update(app["pk"], app["sk"], set={"action_state": "NeedsInformation",
+                       "unknown_required": ["Will you require sponsorship?*"]}))
+    result = svc.save_profile_answers(UID, {"Will you require sponsorship?": "No"})
+    assert result["reprepared_app_ids"] == [app["app_id"]]
+    assert svc.wf.get_app(UID, app["app_id"])["action_state"] == "Preparing"
+    again = svc.save_profile_answers(UID, {"Will you require sponsorship?": "No"})
+    assert again["profile"]["version"] == result["profile"]["version"]
+    assert again["reprepared_app_ids"] == []
+    store.update(Update(app["pk"], app["sk"], set={"action_state": "Submitting"}))
+    updated = svc.save_profile_answers(UID, {"Will you require sponsorship?": "Yes"}, reprepare_app_id=app["app_id"])
+    assert updated["reprepared_app_ids"] == []
+    assert svc.wf.get_app(UID, app["app_id"])["action_state"] == "Submitting"

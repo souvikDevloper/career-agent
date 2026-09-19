@@ -52,10 +52,18 @@ def compose(msg: dict, app: dict | None) -> tuple[str, str, bool]:
     env = " [TEST ENVIRONMENT]" if (app or {}).get("target_environment") == "test" else ""
     if kind == "approval_requested":
         return f"Approve application: {name}", f"Your application for {name}{env} is ready. Review the exact answers, then approve.", True
+    if kind == "preparing":
+        return f"Preparing application: {name}", f"Preparing your resume and verified answers for {name}{env}. Required missing answers will pause the application for you.", False
+    if kind == "browser_ready":
+        return f"Ready in your browser: {name}", f"Your packet for {name}{env} is ready. A connected signed-in browser can continue under your current application rules; login or unanswered questions may need your attention.", False
+    if kind == "browser_attention":
+        return f"Your answer is needed: {name}", f"The application for {name}{env} paused before submission: {msg.get('reason')}. Open the application to continue.", False
     if kind == "information_needed":
         qs = "; ".join(msg.get("questions", [])[:4])
         return f"We need an answer: {name}", f"{name}{env} has required questions we won't guess: {qs}", False
     if kind == "submitted":
+        if ((app or {}).get("receipt") or {}).get("user_reported"):
+            return f"Submission recorded: {name}", f"You reported submitting {name}{env}. Career Agent recorded your confirmation.", False
         return f"Submitted: {name}", f"Submitted {name}{env}. Receipt reference: {msg.get('reference')}.", False
     if kind == "failed":
         return f"Submission failed: {name}", f"{name}{env} was not submitted: {msg.get('reason')}.", False

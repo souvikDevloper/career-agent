@@ -7,12 +7,13 @@ achievements. Unknown required answers become questions for the user.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 from . import connectors, llm
-from .submission import submission_plan
 from .config import settings as cfg
 from .sources import greenhouse, portal
+from .submission import submission_plan
 from .util import sha256
 
 COVER_SYSTEM = """You write a short, truthful application note for a student.
@@ -77,10 +78,84 @@ def is_consent(field: dict) -> bool:
 def _current_role(facts: dict) -> dict:
     """The position the person holds now, or the most recent one on the resume."""
     ongoing = ("", "present", "current", "now", "ongoing")
-    for role in facts.get("experience") or []:
+    roles = [r for r in facts.get("experience") or [] if isinstance(r, dict) and r.get("verified") is not False]
+    for role in roles:
         if str(role.get("end") or "").strip().lower() in ongoing:
             return role
-    return (facts.get("experience") or [{}])[0]
+    return (roles or [{}])[0]
+
+
+def _record_field(field: dict, facts: dict) -> tuple[Any, str] | None:
+    """Map an explicit repeated form group to the corresponding resume record.
+
+    Labels such as Location and From are ambiguous outside a group. Never copy
+    the current employer into every row, or an employment location into an address.
+    """
+    context = field.get("context") or {}
+    section = context.get("section")
+    index = context.get("index", 0)
+    records = [r for r in facts.get(section) or [] if isinstance(r, dict) and r.get("verified") is not False]
+    if not isinstance(index, int) or index < 0 or index >= len(records):
+        return None
+    record = records[index]
+    if not isinstance(record, dict) or record.get("verified") is False:
+        return None
+    label = norm_label(field["label"])
+    if section == "experience" and label in ("i currently work here", "i currently work in this role", "currently work here"):
+        end = norm_label(str(record.get("end") or ""))
+        if end in ("present", "current", "ongoing", "now"):
+            return "Yes", f"resume:{section}:{index}"
+        return None
+    if context.get("date_field") in ("start", "end") and context.get("date_part") in ("month", "year"):
+        value = str(record.get(context["date_field"]) or "").strip()
+        year = re.search(r"\b((?:19|20)\d{2})\b", value)
+        if not year:
+            return None
+        if context["date_part"] == "year":
+            return year.group(1), f"resume:{section}:{index}"
+        month = None
+        for fmt in ("%Y-%m-%d", "%Y-%m", "%m/%Y", "%m-%Y", "%b %Y", "%B %Y", "%b, %Y", "%B, %Y"):
+            try:
+                month = datetime.strptime(value, fmt).month
+                break
+            except ValueError:
+                continue
+        if month:
+            return str(month), f"resume:{section}:{index}"
+        return None  # a year-only resume does not support inventing a month
+    keys = {
+        "experience": {
+            "job title": "title", "position title": "title", "role title": "title",
+            "company": "company", "company name": "company", "employer": "company",
+            "location": "location", "work location": "location", "job location": "location",
+            "from": "start", "start date": "start", "to": "end", "end date": "end",
+            "role description": "highlights", "job description": "highlights", "responsibilities": "highlights",
+        },
+        "education": {
+            "school": "school", "school or university": "school", "university": "school",
+            "college": "school", "degree": "degree", "field of study": "field", "major": "field",
+            "graduation year": "graduation_year", "overall result gpa": "gpa",
+        },
+    }.get(section, {})
+    key = keys.get(label)
+    value = record.get(key) if key else None
+    if isinstance(value, list):
+        value = "\n".join(str(v) for v in value)
+    if value in (None, ""):
+        return None
+    return str(value), f"resume:{section}:{index}"
+
+
+def profile_records(facts: dict) -> dict:
+    """Only supported resume fields become reviewable, hashed browser input."""
+    keys = {
+        "experience": ("title", "company", "location", "start", "end", "highlights"),
+        "education": ("school", "degree", "field", "graduation_year"),
+    }
+    return {section: [{key: record[key] for key in allowed if record.get(key) not in (None, "")}
+                      for record in (facts.get(section) or [])
+                      if isinstance(record, dict) and record.get("verified") is not False][:20]
+            for section, allowed in keys.items()}
 
 
 def map_field(field: dict, facts: dict, saved: dict, cover_note: str | None) -> tuple[Any, str] | None:
@@ -101,7 +176,11 @@ def map_field(field: dict, facts: dict, saved: dict, cover_note: str | None) -> 
             return declines[0]["value"], "policy:decline_to_self_identify"
         return None
     if label in saved_norm:
-        return saved_norm[label], "saved_answer:user"
+        if (field.get("context") or {}).get("section") not in ("experience", "education"):
+            return saved_norm[label], "saved_answer:user"
+    section = (field.get("context") or {}).get("section")
+    if section in ("experience", "education"):
+        return _record_field(field, facts)
     # Real employer forms ask for these constantly and the resume already answers
     # them; without this every Greenhouse application stopped to ask the user for
     # facts they had already uploaded.
@@ -119,10 +198,12 @@ def map_field(field: dict, facts: dict, saved: dict, cover_note: str | None) -> 
     if label in ("job title", "position title", "role title"):
         title = _current_role(facts).get("title") or facts.get("headline")
         return (title, "resume:experience") if title else None
-    if label in ("location", "work location", "job location"):
+    if label in ("work location", "job location"):
         location = _current_role(facts).get("location")
         return (location, "resume:experience") if location else None
-    if ftype == "file" or "resume" in label or "cv" == label:
+    if label in ("location", "current location") and facts.get("location"):
+        return facts["location"], "resume:location"
+    if (ftype == "file" and not re.search(r"cover|transcript|certificate|photo|portfolio", label)) or label in ("resume", "cv", "resume cv"):
         return "__RESUME__", "profile:resume"
     if "authoriz" in label and "sponsor" not in label:
         wa = facts.get("work_authorization") or {}
@@ -141,25 +222,33 @@ def map_field(field: dict, facts: dict, saved: dict, cover_note: str | None) -> 
                  for o in field.get("options", []))
     if yes_no and ("bachelor" in label or "bachelors" in label or "bachelor s" in label) and "degree" in label:
         education = facts.get("education") or []
-        degree_ok = False
-        field_ok = False
         for ed in education:
+            if not isinstance(ed, dict) or ed.get("verified") is False:
+                continue
             degree = norm_label(str(ed.get("degree") or ""))
             major = norm_label(str(ed.get("field") or ""))
-            if any(x in degree for x in ("bachelor", "b tech", "btech", "b e", "be ", "master", "m tech", "mtech", "m s", "ms ")):
-                degree_ok = True
-            if any(x in major for x in ("computer science", "computer engineering", "software engineering",
-                                        "information technology", "information science")):
-                field_ok = True
-        if degree_ok and (field_ok or "related field" not in label):
-            return "Yes", "resume:education"
+            degree_ok = bool(re.search(r"\b(bachelor|b tech|btech|b e|be|master|m tech|mtech|m s|ms)\b", degree))
+            field_ok = any(x in major + " " + degree for x in ("computer science", "computer engineering", "software engineering",
+                                                              "information technology", "information science"))
+            needs_cs = any(x in label for x in ("computer science", "computer engineering", "related field"))
+            # Enrolment is not an awarded degree. A future graduation year must
+            # not turn a student's answer to "Do you have a degree?" into Yes.
+            status = norm_label(str(ed.get("status") or ""))
+            year = str(ed.get("graduation_year") or "")
+            graduated = status in ("completed", "graduated", "awarded") or (
+                year.isdigit() and int(year) < datetime.now(timezone.utc).year
+                and status not in ("pursuing", "in progress", "expected"))
+            accepts_enrolment = any(x in label for x in ("pursuing", "enrolled", "working toward"))
+            if degree_ok and (field_ok or not needs_cs) and (graduated or accepts_enrolment):
+                return "Yes", "resume:education"
 
     if yes_no and "programming" in label and "language" in label:
         known = {
             "python", "java", "javascript", "typescript", "c", "c++", "cpp", "c#", "c sharp",
             "go", "golang", "rust", "kotlin", "swift", "ruby", "php", "scala",
         }
-        skills = {norm_label(str(s.get("name") or s)) for s in (facts.get("skills") or [])}
+        skills = {norm_label(str(s.get("name") or "") if isinstance(s, dict) else str(s))
+                  for s in (facts.get("skills") or []) if not isinstance(s, dict) or s.get("verified") is not False}
         for project in facts.get("projects") or []:
             skills.update(norm_label(str(s)) for s in (project.get("skills") or []))
         if skills & known:
@@ -173,6 +262,8 @@ def map_field(field: dict, facts: dict, saved: dict, cover_note: str | None) -> 
     if "email" in label and facts.get("email"):
         return facts["email"], "resume:email"
     if "phone" in label and facts.get("phone"):
+        if any(word in label for word in ("type", "device", "extension", "country", "code")):
+            return None
         return facts["phone"], "resume:phone"
     if "linkedin" in label:
         return (links["linkedin"], "resume:links") if links.get("linkedin") else None
@@ -337,6 +428,7 @@ def prepare_packet(wf, uid: str, app: dict, job: dict, profile: dict, *, is_judg
                    "submittable": plan["mode"] == "cloud_browser" and plan["can_submit"]},
         "job_snapshot_hash": job.get("content_hash"),
         "profile_version": profile["version"],
+        "profile_records": profile_records(facts),
         "resume_key": profile.get("resume_key"),
         "answers": answers,
         "attachments": ["resume"] if profile.get("resume_key") else [],
@@ -382,6 +474,7 @@ def resolve_live_questions(profile: dict, questions: list[dict], cover_note: str
             "type": "select" if options else "text",
             "required": bool(q.get("required", True)),
             "options": options,
+            "context": q.get("context") or {},
         }
         mapped = map_field(field, facts, saved, cover_note)
         if mapped is None:
@@ -392,5 +485,8 @@ def resolve_live_questions(profile: dict, questions: list[dict], cover_note: str
             if fitted is None:
                 continue
             value = fitted
-        out.append({"label": label, "value": value, "source": source})
+        answer = {"label": label, "value": value, "source": source}
+        if q.get("id"):
+            answer["id"] = str(q["id"])[:200]
+        out.append(answer)
     return out

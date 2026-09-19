@@ -9,20 +9,17 @@ from datetime import datetime, timezone
 from typing import Any
 
 from . import connectors, discovery, llm
-from .applying import prepare_packet
+from .applying import norm_label, prepare_packet
 from .config import settings as cfg
 from .matching import Matcher, get_job
 from .resume import Profiles, ResumeError, extract_facts, extract_text
 from .sources import portal
+from .store import And, C, ConditionFailed, Put, Store, Update
 from .submission import submission_plan
-from .store import C, Put, Store, Update
-from .util import Clock, get_logger, log, new_id
+from .util import Clock, get_logger, log, new_id, sha256
 from .workflow import Principal, Workflow, WorkflowError, packet_preview
 
 logger = get_logger("services")
-
-AUTO_PREPARE_MIN_SCORE = 60
-
 
 # Scoring a wider pool than was asked for is the right call: retrieval relevance
 # and resume fit are different rankings, and the best fit often sits below a
@@ -38,6 +35,7 @@ AUTO_PREPARE_MIN_SCORE = 60
 CANDIDATE_POOL_MULTIPLIER = 3
 CANDIDATE_POOL_CAP = 24
 SCORING_BUDGET_SECONDS = 150
+SCORING_CALL_TIMEOUT_SECONDS = 35
 
 
 def _candidate_pool_size(total: int, requested: int) -> int:
@@ -55,9 +53,9 @@ def _rank_match_cards(cards: list[dict]) -> list[dict]:
     ))
 
 
-def _same_employer(wanted: str, company: str | None) -> bool:
-    name = (company or "").lower()
-    return bool(name) and (wanted in name or name in wanted)
+def _same_employer(wanted: str, company: str | None, aliases: list[str] | None = None) -> bool:
+    return any(bool(name) and (wanted in name or name in wanted)
+               for name in [(company or "").lower(), *(str(a).lower() for a in aliases or [])])
 
 
 class Services:
@@ -111,6 +109,7 @@ class Services:
     def search(self, uid: str, op_id: str, keywords: str = "", *, limit: int = 6,
                correlation_id: str | None = None, refresh: bool = True, stats: dict | None = None,
                filters: dict | None = None, min_score: int = 0) -> list[dict]:
+        search_started = time.monotonic()
         if not self.profiles.current(uid):
             raise WorkflowError("no_profile", "Upload your resume first so I can explain fit.", 400)
         judge = self.is_judge(uid)
@@ -127,7 +126,9 @@ class Services:
             self.wf.op_progress(uid, op_id, status="running", message="Checking the test employer")
             discovery.poll(self.wf, portal.SOURCE, force=True)
         self.wf.op_progress(uid, op_id, status="running", message=f"Reading {len(sources)} feeds")
-        for src in sources:
+        # Direct-only employers are not scheduled mirrors, but their previously
+        # fetched snapshots should still be available to broader searches.
+        for src in dict.fromkeys([*sources, "google:direct", "microsoft:direct"]):
             jobs.extend(discovery.cached_jobs(self.wf, src))
         # Structured filters when the caller has them, free text when it only has a
         # string. One implementation either way.
@@ -147,6 +148,9 @@ class Services:
         # whole set inline is what made a question wait minutes and timed out the
         # smoke test.
         named = (active.get("company") or "").strip().lower()
+        cached_corpus = list(jobs)
+        live_status: dict = {}
+        live: list[dict] = []
         if refresh and named:
             # Boards big enough to run their own search get asked directly, because
             # a cache of the most recent few hundred postings answers "is there an
@@ -154,13 +158,16 @@ class Services:
             self.wf.op_progress(uid, op_id, message=f"Asking {named} directly")
             live = discovery.live_search(
                 self.wf, company=named, role=active.get("role", ""),
-                location=active.get("location", ""),
+                location=active.get("location", ""), stats=live_status,
             )
-            if live:
-                fresh = {j["job_key"] for j in live}
-                jobs = [j for j in jobs if j.get("job_key") not in fresh] + live
-            else:
-                feeds = {j["feed"] for j in jobs if j.get("feed") and _same_employer(named, j.get("company"))}
+            if live_status.get("successful_sources"):
+                # The employer answered this query, including its facets. Mixing
+                # old cache rows back in resurrects closed jobs and lets Staff
+                # jobs from an earlier query leak into an EARLY careers search.
+                # A successful empty response must also replace the old result.
+                jobs = [j for j in jobs if not _same_employer(named, j.get("company"), j.get("company_aliases"))] + live
+            elif not live_status.get("attempted_sources"):
+                feeds = {j["feed"] for j in jobs if j.get("feed") and _same_employer(named, j.get("company"), j.get("company_aliases"))}
                 for feed in sorted(feeds)[:2]:
                     self.wf.op_progress(uid, op_id, message=f"Refreshing {feed}")
                     try:
@@ -171,7 +178,7 @@ class Services:
                         jobs = [j for j in jobs if j.get("feed") != feed]
                         jobs.extend(discovery.cached_jobs(self.wf, feed))
         filter_active = dict(active)
-        if named and filter_active.get("role"):
+        if named and live_status.get("successful_sources") and filter_active.get("role"):
             filter_active["role"] = discovery.direct_post_filter_role(named, filter_active["role"])
         matched = (discovery.filter_jobs(jobs, prefs, **filter_active) if active
                    else discovery.keyword_filter(jobs, keywords, prefs))
@@ -186,7 +193,8 @@ class Services:
         if stats is not None:
             # What was actually looked at. An empty result is only credible if the
             # agent can say what it searched, so this travels back to the model.
-            employer_set = {j["company"] for j in jobs if j.get("company")}
+            employer_set = {j["company"] for j in [*cached_corpus, *live] if j.get("company")}
+            employer_set.update({"Google", "Microsoft"})
             wanted_raw = (active.get("company") or "").strip()
             wanted = wanted_raw.lower()
             # Direct-only employers (Google/Microsoft and large Workday tenants)
@@ -207,8 +215,14 @@ class Services:
                 or any(wanted in e.lower() or e.lower() in wanted for e in employers)
             )
             stats.update({
-                "live_boards": sorted({j.get("board") or j.get("source") for j in jobs if j.get("company")}),
-                "live_postings": len(jobs),
+                "live_boards": live_status.get("successful_sources", []),
+                "live_postings": len(live),
+                "cached_postings": len(cached_corpus),
+                "searched_postings": sum(1 for j in jobs if not named or _same_employer(named, j.get("company"), j.get("company_aliases"))),
+                "freshness": ("live" if live_status.get("status") == "succeeded" else
+                              "partial" if live_status.get("status") == "partial" else
+                              "stale_fallback" if live_status.get("status") == "failed" else "cached"),
+                "source_checks": live_status,
                 "matched": len(matched),
                 "filters": active or {"keywords": keywords},
                 "employers_covered": employers,
@@ -229,28 +243,29 @@ class Services:
             # made the results look poor. Three keeps the wall clock most of the
             # way down without any call waiting long enough to time out.
             with ThreadPoolExecutor(max_workers=min(3, len(candidates))) as pool:
-                futures = {
-                    pool.submit(self.matcher.match, uid, job, is_judge=judge, correlation_id=correlation_id): i
-                    for i, job in enumerate(candidates)
-                }
-                started = time.monotonic()
-                for future in as_completed(futures):
-                    i = futures[future]
-                    try:
-                        results[i] = self.match_card(future.result())
-                    except Exception as exc:  # one bad posting must not lose the rest
-                        log(logger, "search.score_failed", job=candidates[i].get("job_key"),
-                            error=type(exc).__name__, detail=str(exc)[:160], correlation_id=correlation_id)
-                    # Answer with what is scored rather than run the invocation out
-                    # of time. Only once there is enough to fill the request - a
-                    # short answer is acceptable, an empty one never is.
-                    scored = sum(1 for c in results if c)
-                    if scored >= requested and time.monotonic() - started > SCORING_BUDGET_SECONDS:
-                        log(logger, "search.budget_reached", scored=scored, pool=len(candidates),
-                            correlation_id=correlation_id)
-                        for pending in futures:
-                            pending.cancel()
+                deadline = search_started + SCORING_BUDGET_SECONDS
+                # Submit one bounded wave at a time. Queuing the entire pool
+                # started further calls while the first timeout was handled;
+                # exiting the executor then waited for those calls anyway.
+                for start in range(0, len(candidates), 3):
+                    remaining = deadline - time.monotonic()
+                    if remaining < 1:
+                        log(logger, "search.budget_reached", scored=sum(bool(c) for c in results),
+                            pool=len(candidates), correlation_id=correlation_id)
                         break
+                    futures = {
+                        pool.submit(self.matcher.match, uid, job, is_judge=judge,
+                                    correlation_id=correlation_id,
+                                    timeout_seconds=min(SCORING_CALL_TIMEOUT_SECONDS, remaining)): start + offset
+                        for offset, job in enumerate(candidates[start:start + 3])
+                    }
+                    for future in as_completed(futures):
+                        i = futures[future]
+                        try:
+                            results[i] = self.match_card(future.result())
+                        except Exception as exc:  # one bad posting must not lose the rest
+                            log(logger, "search.score_failed", job=candidates[i].get("job_key"),
+                                error=type(exc).__name__, detail=str(exc)[:160], correlation_id=correlation_id)
         ordered = [c for c in results if c]
         # A search result list is a ranking. Previously it preserved retrieval
         # order even after computing fit scores, so "best match" could literally
@@ -259,6 +274,9 @@ class Services:
         if min_score:
             ordered = [c for c in ordered if (c.get("score") or 0) >= min_score]
         ordered = ordered[:requested]
+        if stats is not None:
+            stats.update({"scored": sum(c is not None for c in results), "returned": len(ordered),
+                          "min_score": min_score})
         for card in ordered:
             self.wf.op_progress(uid, op_id, result=card)
         return ordered
@@ -311,7 +329,7 @@ class Services:
         user to start over.
         """
         app = self.wf.get_app(uid, app_id) if app_id else self.ensure_application(uid, job_key or "")
-        if app["action_state"] in ("Submitted", "Withdrawn"):
+        if app["action_state"] in ("Submitted", "Withdrawn", "Submitting", "OutcomeUnknown"):
             raise WorkflowError("invalid_state", f"cannot prepare an application in {app['action_state']}")
         request_id = new_id("prep_")
         ops: list[Any] = []
@@ -321,14 +339,17 @@ class Services:
                 "apply_after_prepare": desired_intent,
                 "prepare_request_id": request_id,
                 "last_error": None,
+                "paused": False,
             }))
         else:
             ops.append(Update(app["pk"], app["sk"], set={
                 "apply_after_prepare": desired_intent,
                 "prepare_request_id": request_id,
                 "last_error": None,
+                "paused": False,
                 "updated_at": self.wf.clock.iso(),
-            }))
+                "version": app["version"] + 1,
+            }, condition=And(C("version", "eq", app["version"]), C("action_state", "eq", "Preparing"))))
         ops.extend([
             self.wf.outbox_put(
                 "work",
@@ -337,18 +358,35 @@ class Services:
             ),
             self.wf.event_put(uid, "application.preparation_requested",
                               {"apply_after_prepare": desired_intent, "request_id": request_id}, app["app_id"]),
+            self.wf.outbox_put("notify", {"kind": "preparing", "user_id": uid, "app_id": app["app_id"]},
+                               f"notify:preparing:{app['app_id']}:{request_id}"),
         ])
-        self.store.transact(ops)
+        try:
+            self.store.transact(ops)
+        except ConditionFailed:
+            fresh = self.wf.get_app(uid, app["app_id"])
+            if fresh["action_state"] == "Preparing" and (not desired_intent or fresh.get("apply_after_prepare")):
+                return fresh  # a concurrent launch already queued the requested preparation
+            raise WorkflowError("conflict", "application changed during preparation; refresh and retry") from None
         return self.wf.get_app(uid, app["app_id"])
 
-    def prepare(self, uid: str, app_id: str, correlation_id: str | None = None) -> dict:
+    def prepare(self, uid: str, app_id: str, correlation_id: str | None = None,
+                prepare_request_id: str | None = None) -> dict:
         app = self.wf.get_app(uid, app_id)
+        request_id = prepare_request_id or app.get("prepare_request_id")
+        if request_id and (app.get("prepare_request_id") != request_id or app["action_state"] != "Preparing"):
+            return app
         job = get_job(self.wf, app["job_key"])
         profile = self.profiles.current(uid)
         if not job or not profile:
             raise WorkflowError("missing", "job or profile missing", 400)
         packet = prepare_packet(self.wf, uid, app, job, profile, is_judge=self.is_judge(uid), correlation_id=correlation_id)
-        prepared = self.wf.save_packet(uid, app_id, packet)
+        try:
+            prepared = self.wf.save_packet(uid, app_id, packet, expected_prepare_request_id=request_id)
+        except ConditionFailed:
+            return self.wf.get_app(uid, app_id)  # another worker/request won the version-fenced write
+        if request_id and prepared.get("prepare_request_id") != request_id:
+            return prepared
 
         # "Prepare & apply" is an explicit application action. If preparation
         # discovers questions, stop in NeedsInformation. Once those answers are
@@ -384,16 +422,69 @@ class Services:
                 "evidence_url": evidence_url, "tasks": [_public(t) for t in tasks],
                 "connector": connectors.CONNECTORS.get(app["connector"])}
 
+    def save_profile_answers(self, uid: str, answers: dict, reprepare_app_id: str | None = None) -> dict:
+        """Save one answer bank and resume affected waiting packets on the same path as chat."""
+        before = self.profiles.current(uid) or {}
+        profile = self.profiles.save_answers(uid, answers)
+        supplied = {norm_label(str(label)) for label, value in answers.items() if value not in (None, "")}
+        changed = profile.get("version") != before.get("version")
+        restarted = []
+        for app in self.wf.list_apps(uid):
+            explicit = app["app_id"] == reprepare_app_id
+            affected = (changed and app["action_state"] == "NeedsInformation"
+                        and any(norm_label(label) in supplied for label in app.get("unknown_required", [])))
+            if not explicit and not affected:
+                continue
+            if app["action_state"] not in ("NeedsInformation", "NeedsApproval", "NeedsUserPresence", "KnownFailure"):
+                continue
+            if not changed and not (explicit and app["action_state"] == "NeedsInformation"):
+                continue
+            try:
+                self.request_prepare(uid, app_id=app["app_id"])
+                restarted.append(app["app_id"])
+            except WorkflowError as exc:
+                if exc.code not in ("conflict", "invalid_state", "invalid_transition"):
+                    raise
+        return {"profile": profile, "reprepared_app_ids": restarted}
+
     # ---- watches & monitoring ---------------------------------------------------
 
-    def create_watch(self, uid: str, keywords: str, interval_minutes: int = 5) -> dict:
+    def create_watch(self, uid: str, keywords: str, interval_minutes: int = 5, *,
+                     company: str = "", role: str = "", location: str = "") -> dict:
         wid = new_id("w_")
+        interval = max(5, min(10080, int(interval_minutes)))
         item = {"pk": f"USER#{uid}", "sk": f"WATCH#{wid}", "entity": "watch", "watch_id": wid, "user_id": uid,
-                "keywords": keywords[:200], "sources": discovery.all_sources(), "interval_minutes": max(5, interval_minutes),
+                "keywords": keywords.strip()[:200], "sources": discovery.all_sources(), "interval_minutes": interval,
+                "filters": {"company": (company or "").strip()[:120], "role": (role or "").strip()[:160], "location": (location or "").strip()[:120]},
+                "next_check_at": self.wf.clock.now() + interval * 60, "revision": 1,
                 "enabled": True, "created_at": self.wf.clock.iso(), "gsi1pk": "WATCH#enabled", "gsi1sk": f"{uid}#{wid}"}
         self.store.transact([Put(item, C("pk", "not_exists")),
+                             self.wf.outbox_put("work", {"kind": "check_watch", "user_id": uid, "watch_id": wid},
+                                                f"work:watch:{wid}:created"),
                              self.wf.event_put(uid, "watch.created", {"keywords": item["keywords"]})])
         return item
+
+    def update_watch(self, uid: str, wid: str, *, interval_minutes: int | None = None,
+                     keywords: str | None = None, company: str | None = None, role: str | None = None,
+                     location: str | None = None, enabled: bool | None = None) -> dict:
+        row = self.store.get(f"USER#{uid}", f"WATCH#{wid}")
+        if not row:
+            raise WorkflowError("not_found", "watch not found", 404)
+        changes = {"revision": int(row.get("revision", 0)) + 1, "updated_at": self.wf.clock.iso(),
+                   "next_check_at": self.wf.clock.now()}
+        if interval_minutes is not None:
+            changes["interval_minutes"] = max(5, min(10080, int(interval_minutes)))
+        if keywords is not None:
+            changes["keywords"] = keywords.strip()[:200]
+        filters = dict(row.get("filters") or {})
+        for key, value in (("company", company), ("role", role), ("location", location)):
+            if value is not None:
+                filters[key] = value.strip()[:160]
+        changes["filters"] = filters
+        if enabled is not None:
+            changes.update({"enabled": enabled, "gsi1pk": "WATCH#enabled" if enabled else "WATCH#disabled"})
+        return self.store.update(Update(row["pk"], row["sk"], set=changes,
+                                       condition=C("revision", "eq", row["revision"]) if "revision" in row else C("revision", "not_exists")))
 
     def delete_watch(self, uid: str, wid: str) -> None:
         self.store.delete(f"USER#{uid}", f"WATCH#{wid}")
@@ -401,44 +492,138 @@ class Services:
     def run_monitor(self, only_source: str | None = None, force: bool = False) -> dict:
         """Invoked every 5 minutes by EventBridge Scheduler and by 'Check now'."""
         summary: dict[str, Any] = {"sources": [], "fanout": 0}
-        new_jobs: list[dict] = []
+        # Queue each user's due search independently of whether shared feeds
+        # changed. New watches must see cached openings, and slower watches must
+        # not miss jobs first fetched between their scheduled checks.
+        now = self.wf.clock.now()
+        watches = self.store.query("WATCH#enabled", "", index="gsi1", limit=1000)
+        for watch in watches:
+            if not watch.get("enabled", True) or (not force and float(watch.get("next_check_at", 0)) > now):
+                continue
+            interval = max(5, min(10080, int(watch.get("interval_minutes", 5))))
+            due = watch.get("next_check_at")
+            try:
+                self.store.transact([
+                    Update(watch["pk"], watch["sk"], set={"next_check_at": now + interval * 60, "last_queued_at": self.wf.clock.iso()},
+                           condition=And(C("enabled", "eq", True), C("next_check_at", "eq", due) if due is not None else C("next_check_at", "not_exists"))),
+                    self.wf.outbox_put("work", {"kind": "check_watch", "user_id": watch["user_id"], "watch_id": watch["watch_id"]},
+                                       f"work:watch:{watch['watch_id']}:{watch.get('revision', 0)}:{due}:{int(now // 60)}"),
+                ])
+                summary["fanout"] += 1
+            except ConditionFailed:
+                continue
         for src in discovery.all_sources():
             if only_source and src != only_source:
                 continue
             r = discovery.poll(self.wf, src, force=force)
             summary["sources"].append({k: (len(v) if isinstance(v, list) else v) for k, v in r.items()})
-            new_jobs.extend(r["new"] + r["changed"])
-        if not new_jobs:
-            return summary  # unchanged feeds: no model calls
-        watches = self.store.query("WATCH#enabled", "", index="gsi1", limit=1000)
-        for job in new_jobs:
-            for w in watches:
-                if job["source"] not in w.get("sources", []):
-                    continue
-                if not discovery.keyword_filter([job], w.get("keywords", ""), self.wf.settings(w["user_id"])["preferences"]):
-                    continue
-                self.store.transact([self.wf.outbox_put(
-                    "work", {"kind": "match_new_job", "user_id": w["user_id"], "job_key": job["job_key"], "watch_id": w["watch_id"]},
-                    f"work:watchmatch:{w['user_id']}:{job['job_key']}:{job.get('content_hash')}")])
-                summary["fanout"] += 1
         return summary
 
-    def match_new_job(self, uid: str, job_key: str, watch_id: str | None = None) -> dict | None:
+    def check_watch(self, uid: str, watch_id: str) -> dict:
+        watch = self.store.get(f"USER#{uid}", f"WATCH#{watch_id}")
+        profile = self.profiles.current(uid)
+        if not watch or not watch.get("enabled", True) or not profile:
+            return {"queued": 0, "status": "inactive"}
+        jobs = []
+        for source in dict.fromkeys([*(watch.get("sources") or discovery.all_sources()), "google:direct", "microsoft:direct"]):
+            jobs.extend(discovery.cached_jobs(self.wf, source))
+        filters = {key: value for key, value in (watch.get("filters") or {}).items() if value}
+        if not filters:
+            filters = {key: value for key, value in discovery.parse_query(jobs, watch.get("keywords", "")).items() if value}
+        source_checks: dict = {}
+        if filters.get("company"):
+            fresh = discovery.live_search(self.wf, company=filters["company"], role=filters.get("role", ""),
+                                          location=filters.get("location", ""), stats=source_checks)
+            if source_checks.get("successful_sources"):
+                jobs = fresh
+                filters["role"] = discovery.direct_post_filter_role(filters["company"], filters.get("role", ""))
+            elif source_checks.get("failed_sources"):
+                # A failed live check cannot authorize an unattended application
+                # against stale cached availability. The next interval retries.
+                self.store.update(Update(watch["pk"], watch["sk"], set={"last_checked_at": self.wf.clock.iso(),
+                                       "last_status": "source_unavailable", "last_queued_count": 0}))
+                return {"queued": 0, "status": "source_unavailable"}
+        prefs = self.wf.settings(uid)["preferences"]
+        matched = (discovery.filter_jobs(jobs, prefs, **filters) if filters
+                   else discovery.keyword_filter(jobs, watch.get("keywords", ""), prefs))
+        criteria_hash = sha256([watch_id, watch.get("revision", 0), watch.get("keywords"), watch.get("filters"), prefs])
+        queued = 0
+        for job in matched:
+            if queued >= 12:
+                break
+            key = f"work:watchmatch:{uid}:{job['job_key']}:{job.get('content_hash')}:{profile['version']}:{criteria_hash}"
+            try:
+                self.store.transact([
+                    Put({"pk": f"USER#{uid}", "sk": f"WATCHSEEN#{sha256(key)}", "entity": "watch_seen",
+                         "job_key": job["job_key"], "at": self.wf.clock.iso()}, C("pk", "not_exists")),
+                    self.wf.outbox_put("work", {
+                        "kind": "match_new_job", "user_id": uid, "job_key": job["job_key"], "watch_id": watch_id,
+                        "watch_revision": int(watch.get("revision", 0)),
+                    }, key),
+                ])
+                queued += 1
+            except ConditionFailed:
+                continue
+        self.store.update(Update(watch["pk"], watch["sk"], set={"last_checked_at": self.wf.clock.iso(),
+                               "last_status": "checked", "last_queued_count": queued}))
+        return {"queued": queued, "matched": len(matched), "status": "checked"}
+
+    def match_new_job(self, uid: str, job_key: str, watch_id: str | None = None,
+                      watch_revision: int | None = None) -> dict | None:
+        watch = None
+        prefs = self.wf.settings(uid)["preferences"]
+        if watch_id:
+            watch = self.store.get(f"USER#{uid}", f"WATCH#{watch_id}")
+            if not watch or not watch.get("enabled", True):
+                return None
+            if watch_revision is not None and int(watch.get("revision", 0)) != watch_revision:
+                return None
         job = get_job(self.wf, job_key)
         if not job or not self.profiles.current(uid):
             return None
+        if watch:
+            filters = {key: value for key, value in (watch.get("filters") or {}).items() if value}
+            if not filters:
+                filters = {key: value for key, value in discovery.parse_query([job], watch.get("keywords", "")).items() if value}
+            if filters.get("company"):
+                filters["role"] = discovery.direct_post_filter_role(filters["company"], filters.get("role", ""))
+            current_matches = (discovery.filter_jobs([job], prefs, **filters) if filters
+                               else discovery.keyword_filter([job], watch.get("keywords", ""), prefs))
+            if not current_matches:
+                return None
         m = self.matcher.match(uid, job, is_judge=self.is_judge(uid))
+        if watch:
+            latest = self.store.get(watch["pk"], watch["sk"])
+            if (not latest or not latest.get("enabled", True)
+                    or latest.get("revision", 0) != watch.get("revision", 0)
+                    or self.wf.settings(uid)["preferences"] != prefs):
+                return None  # settings changed while the model was evaluating the old request
         app = self.wf.create_application(uid, job, m, job.get("connector") or job["source"])
-        self.store.transact([
+        if app["action_state"] in ("Submitting", "Submitted", "OutcomeUnknown", "Withdrawn"):
+            return m
+        refreshed = {"score": int(m.get("score", 0)), "blocked": bool(m.get("blocked")),
+                     "auto_eligible": bool(m.get("auto_eligible"))}
+        if any(app.get(key) != value for key, value in refreshed.items()):
+            try:
+                self.store.update(Update(app["pk"], app["sk"],
+                                         set={**refreshed, "version": app["version"] + 1, "updated_at": self.wf.clock.iso()},
+                                         condition=And(C("version", "eq", app["version"]), C("action_state", "eq", app["action_state"]))))
+            except ConditionFailed:
+                return m  # an active transition owns the newer application state
+            app = self.wf.get_app(uid, app["app_id"])
+        try:
+            self.store.transact([
             self.wf.event_put(uid, "watch.new_match", {"job_key": job_key, "score": m["score"], "title": job.get("title"),
                                                        "company": job.get("company"), "published_at": job.get("published_at"),
                                                        "first_seen_at": job.get("first_seen_at"), "watch_id": watch_id}, app["app_id"]),
             self.wf.outbox_put("notify", {"kind": "new_match", "user_id": uid, "app_id": app["app_id"], "score": m["score"]},
                                f"notify:newmatch:{uid}:{job_key}"),
-        ])
-        settings = self.wf.settings(uid)
-        if (settings["mode"] != "review" and self.wf.mandate_active(settings, app["connector"]) and not m.get("blocked")
-                and m["score"] >= AUTO_PREPARE_MIN_SCORE and app["action_state"] == "Discovered"):
+            ])
+        except ConditionFailed:
+            pass  # a repeated match must still reach the idempotent preparation check
+        if not m.get("blocked") and app["action_state"] in ("Discovered", "Ineligible"):
+            # Preparation does not submit. Review and score<=80 packets wait for
+            # approval; valid automatic mandates are evaluated by save_packet.
             self.request_prepare(uid, app_id=app["app_id"])
         elif m.get("blocked") and app["action_state"] == "Discovered":
             self.store.transact([self.wf._transition(app, "Ineligible", {"ineligible_reasons": [f["detail"] for f in m["filters"] if f["status"] == "fail"]})])

@@ -40,8 +40,8 @@ def submission_plan(job: dict, connector: str | None = None) -> dict:
     host = ""
     try:
         host = (urlparse(url).hostname or "").lower()
-    except Exception:
-        pass
+    except (ValueError, TypeError, AttributeError):
+        host = ""
 
     if connector == "northwind-test-portal":
         return {

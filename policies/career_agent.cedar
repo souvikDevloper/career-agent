@@ -66,6 +66,10 @@ unless { context.connector_can_submit };
 forbid (principal, action == Action::"submit_application", resource)
 when { context.paused };
 
+@id("forbid-current-preferences")
+forbid (principal, action == Action::"submit_application", resource)
+unless { context.preferences_allow_submission };
+
 @id("judge-sessions-test-employers-only")
 forbid (principal, action == Action::"submit_application", resource is Application)
 when { principal.is_judge && resource.target_environment != "test" };
