@@ -8,7 +8,7 @@ from typing import Any
 
 from .config import settings as cfg
 from .matching import save_job_snapshot
-from .sources import adzuna, amazon, ashby, greenhouse, lever, oraclehcm, portal, workday
+from .sources import adzuna, amazon, ashby, google, greenhouse, lever, microsoft, oraclehcm, portal, workday
 from .sources.http import FetchError
 from .store import C, Update
 from .util import get_logger, log, sha256
@@ -54,7 +54,7 @@ def all_sources(extra: list[str] | None = None) -> list[str]:
 
 
 
-def live_search(wf, *, company: str, role: str = "", limit: int = 100) -> list[dict]:
+def live_search(wf, *, company: str, role: str = "", location: str = "", limit: int = 100) -> list[dict]:
     """Ask the employer's own search, for boards too large to mirror.
 
     Polling keeps a cache so the whole corpus can be browsed. But Amazon India
@@ -76,6 +76,12 @@ def live_search(wf, *, company: str, role: str = "", limit: int = 100) -> list[d
         for spec in s.amazon_boards:
             country, preset = amazon.parse_spec(spec)
             asks.append((f"amazon:{spec}", lambda c=country, p=preset: amazon.search(c, role or p or "", limit=limit)))
+    if _names_match(wanted, "microsoft"):
+        asks.append(("microsoft:direct",
+                     lambda: microsoft.search(role or "software engineer", location=location, limit=limit)))
+    if _names_match(wanted, "google"):
+        asks.append(("google:direct",
+                     lambda: google.search(role or "software engineer", location=location, limit=limit)))
     for spec in s.workday_boards:
         tenant = spec.split(":", 1)[0].lower()
         if _names_match(wanted, tenant):
@@ -455,6 +461,12 @@ def parse_query(jobs: list[dict], keywords: str) -> dict:
     levels = re.findall(r"(?<![a-z0-9])[1-4](?![a-z0-9])", (keywords or "").lower())
     words = words + levels
     companies = _field_tokens(jobs, "company")
+    # Direct-only employers may have no cached rows yet, but a typed company
+    # name still has to become the structured company filter or live_search is
+    # never reached.
+    companies.update({"amazon", "microsoft", "google"})
+    for spec in cfg().workday_boards:
+        companies.add(spec.split(":", 1)[0].lower())
     places = _field_tokens(jobs, "location") - companies
     return {
         # Every company word is kept, not just the first. Dropping one silently
