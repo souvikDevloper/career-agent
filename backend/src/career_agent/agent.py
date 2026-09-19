@@ -14,8 +14,6 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from . import connectors
-from .matching import get_job
-from .submission import submission_plan
 from .config import settings as cfg
 from .util import get_logger, log
 
@@ -208,8 +206,7 @@ def t_prepare_application(job_key: str) -> dict:
     ctx = CTX.get()
     app = ctx.services.request_prepare(ctx.user_id, job_key=job_key)
     ctx.actions.append({"type": "prepare_requested", "app_id": app["app_id"]})
-    job = get_job(ctx.services.wf, app["job_key"]) or {}
-    plan = submission_plan(job, app.get("connector"))
+    plan = ctx.services.submission_plan_for_application(app)
     mode = plan["mode"]
     ends = "NeedsApproval" if mode == "cloud_browser" else "NeedsUserPresence" if mode == "local_browser" else "ManualHandoff"
     note = (
