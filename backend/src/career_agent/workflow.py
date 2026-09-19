@@ -67,6 +67,17 @@ DEFAULT_SETTINGS = {
 }
 
 
+def _packet_submission_mode(packet: dict | None, connector: str) -> str:
+    """Resolve packet/2 submission strategy with packet/1 compatibility."""
+    target = (((packet or {}).get("body") or {}).get("target")
+              if "body" in (packet or {}) else (packet or {}).get("target")) or {}
+    plan = target.get("submission") or {}
+    if plan.get("mode"):
+        return str(plan["mode"])
+    legacy_can_submit = connectors.can(connector, "submit") and bool(target.get("submittable", True))
+    return "cloud_browser" if legacy_can_submit else "manual"
+
+
 class WorkflowError(Exception):
     def __init__(self, code: str, message: str, status: int = 409) -> None:
         super().__init__(message)
@@ -255,18 +266,8 @@ class Workflow:
         }
         target_info = packet.get("target") or {}
         plan = target_info.get("submission") or {}
-        mode = plan.get("mode")
-        if not mode:
-            # packet/1 compatibility for existing callers/tests and already-saved
-            # packets: before submission plans existed, connector capability plus
-            # target.submittable was the routing contract.
-            legacy_can_submit = (
-                connectors.can(app["connector"], "submit")
-                and bool(target_info.get("submittable", True))
-            )
-            mode = "cloud_browser" if legacy_can_submit else "manual"
-            plan = {"mode": mode, "can_submit": legacy_can_submit}
-        can_submit = mode == "cloud_browser" and bool(plan.get("can_submit"))
+        mode = _packet_submission_mode(packet, app["connector"])
+        can_submit = mode == "cloud_browser" and bool(plan.get("can_submit", True))
         if missing:
             target = "NeedsInformation"
         elif mode == "local_browser":
@@ -393,8 +394,8 @@ class Workflow:
             "required_answers_complete": not unknown,
             "daily_remaining": cap - used,
             "cooldown_ok": True if reserve_check else cooldown_ok,
-            "connector_can_submit": bool(
-                (((packet or {}).get("body") or {}).get("target") or {}).get("submission", {}).get("mode") == "cloud_browser"
+            "connector_can_submit": (
+                _packet_submission_mode(packet, app["connector"]) == "cloud_browser"
                 if packet else connectors.can(app["connector"], "submit")
             ),
             "paused": bool(app.get("paused")),
