@@ -43,6 +43,30 @@ List at most 8 required and 6 preferred skills. If the posting gives structured 
 Structured requirements (may be null): {structured}"""
 
 
+def _complete_skill_evidence(skills: list[dict], requirements: dict) -> list[dict]:
+    """Make the scoring denominator come from the job requirements, not model omissions.
+
+    If the extractor lists five required skills in requirements but emits only
+    the three it found evidence for, scoring just those three inflates the fit.
+    Every declared requirement must therefore have an evidence row; missing rows
+    are explicit misses rather than disappearing from the denominator.
+    """
+    out = [dict(s) for s in skills if isinstance(s, dict) and s.get("skill")]
+    by_name = {str(s["skill"]).strip().lower(): s for s in out}
+    for required, key in ((True, "required_skills"), (False, "preferred_skills")):
+        for name in requirements.get(key) or []:
+            norm = str(name).strip().lower()
+            if not norm:
+                continue
+            if norm in by_name:
+                by_name[norm]["required"] = required
+            else:
+                row = {"skill": str(name), "required": required, "evidence": None}
+                out.append(row)
+                by_name[norm] = row
+    return out[:20]
+
+
 class Matcher:
     def __init__(self, wf, profiles) -> None:
         self.wf = wf
@@ -76,8 +100,9 @@ class Matcher:
                     raise ValueError("match response was not a JSON object")
                 if not requirements:
                     requirements = data.get("requirements") or {}
+                skills = _complete_skill_evidence(data.get("skills", []), requirements or {})
                 ev = Evidence(
-                    skills=[s for s in data.get("skills", []) if isinstance(s, dict) and s.get("skill")][:14],
+                    skills=skills,
                     experience=float(data.get("experience") or 0),
                     experience_evidence=[q for q in data.get("experience_evidence", []) if isinstance(q, str)][:4],
                     responsibilities=float(data.get("responsibilities") or 0),
