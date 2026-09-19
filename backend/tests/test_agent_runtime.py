@@ -190,28 +190,34 @@ class TestPrepareSaysWhetherWeCanSubmit:
         assert self.run("something-new")["we_can_submit"] is False
 
 
-class TestDirectAmazonChatSearch:
-    """Explicit Amazon searches should not depend on the chat model choosing a tool."""
 
-    def test_extracts_company_role_and_bengaluru(self):
-        got = __import__("career_agent.handlers.worker", fromlist=["_direct_amazon_filters"])._direct_amazon_filters(
-            "Find Amazon SDE 1 jobs in Bengaluru."
-        )
-        assert got == {"company": "Amazon", "role": "sde 1", "location": "Bengaluru"}
+class TestAmazonSearchFallback:
+    """A narrow recovery path for simple Amazon searches."""
 
-    def test_bangalore_alias_is_normalized(self):
-        got = __import__("career_agent.handlers.worker", fromlist=["_direct_amazon_filters"])._direct_amazon_filters(
-            "show me amazon software engineer openings in Bangalore"
-        )
-        assert got == {"company": "Amazon", "role": "software engineer", "location": "Bengaluru"}
+    def parser(self, text):
+        from career_agent.handlers import worker
+        return worker._fallback_amazon_filters(text)
 
-    def test_plain_amazon_question_is_not_intercepted(self):
-        got = __import__("career_agent.handlers.worker", fromlist=["_direct_amazon_filters"])._direct_amazon_filters(
-            "What is Amazon's interview process?"
-        )
-        assert got is None
+    def test_extracts_company_role_and_bengaluru_with_punctuation(self):
+        assert self.parser("Find Amazon SDE 1 jobs in Bengaluru.") == {
+            "company": "Amazon", "role": "sde 1", "location": "bengaluru",
+        }
 
-    def test_direct_path_skips_agent_and_finishes_operation(self, monkeypatch):
+    def test_bangalore_alias_uses_existing_discovery_aliases(self):
+        assert self.parser("show me amazon software engineer openings in Bangalore") == {
+            "company": "Amazon", "role": "software engineer", "location": "bangalore",
+        }
+
+    def test_two_step_search_and_apply_is_not_intercepted(self):
+        assert self.parser("find amazon sde 1 jobs and apply to the best one") is None
+
+    def test_two_step_search_and_prepare_is_not_intercepted(self):
+        assert self.parser("search amazon roles then prepare an application for the top match") is None
+
+    def test_informational_question_is_not_intercepted(self):
+        assert self.parser("what does amazon look for in an sde 1?") is None
+
+    def test_direct_search_runs_only_after_agent_failure_with_no_actions(self, monkeypatch):
         from career_agent.handlers import worker
 
         class Clock:
@@ -223,6 +229,8 @@ class TestDirectAmazonChatSearch:
                 self.puts = []
             def put(self, item):
                 self.puts.append(item)
+            def query(self, *a, **k):
+                return []
 
         class WF:
             def __init__(self):
@@ -235,14 +243,61 @@ class TestDirectAmazonChatSearch:
             def __init__(self):
                 self.wf = WF()
                 self.store = Store()
+            def _reserve_model(self, uid):
+                pass
+            def is_judge(self, uid):
+                return False
             def search(self, uid, op_id, **kw):
-                assert kw["filters"] == {"company": "Amazon", "role": "sde 1", "location": "Bengaluru"}
+                assert kw["filters"] == {"company": "Amazon", "role": "sde 1", "location": "bengaluru"}
                 kw["stats"].update({"live_postings": 8})
                 return [{"score": 82, "job": {"title": "SDE-1 (FTC)", "location": "Bengaluru"}}]
 
-        monkeypatch.setattr(worker.agent, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("agent should not run")))
+        monkeypatch.setattr(worker.agent, "run", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("model failed")))
         svc = Svc()
         worker.run_chat(svc, "u1", "op1", "Find Amazon SDE 1 jobs in Bengaluru.", "chat", "cid")
         assert svc.wf.progress[-1][2]["status"] == "succeeded"
-        assert svc.wf.progress[-1][2]["final"]["runtime"] == "direct-search"
+        assert svc.wf.progress[-1][2]["final"]["runtime"] == "direct-search-fallback"
         assert "SDE-1 (FTC)" in svc.store.puts[-1]["text"]
+
+    def test_successful_agent_is_not_bypassed(self, monkeypatch):
+        from career_agent.handlers import worker
+
+        class Clock:
+            def iso(self):
+                return "2026-09-19T10:00:00+00:00"
+
+        class Store:
+            def __init__(self):
+                self.puts = []
+            def put(self, item):
+                self.puts.append(item)
+            def query(self, *a, **k):
+                return []
+
+        class WF:
+            def __init__(self):
+                self.clock = Clock()
+                self.progress = []
+            def op_progress(self, uid, op_id, **kw):
+                self.progress.append((uid, op_id, kw))
+
+        class Svc:
+            def __init__(self):
+                self.wf = WF()
+                self.store = Store()
+            def _reserve_model(self, uid):
+                pass
+            def is_judge(self, uid):
+                return False
+            def search(self, *a, **k):
+                raise AssertionError("fallback should not run when the agent searched")
+
+        def fake_run(ctx, history):
+            ctx.actions.append({"type": "search", "count": 1})
+            return "agent result", "strands-agents"
+
+        monkeypatch.setattr(worker.agent, "run", fake_run)
+        svc = Svc()
+        worker.run_chat(svc, "u1", "op1", "Find Amazon SDE 1 jobs in Bengaluru.", "chat", "cid")
+        assert svc.wf.progress[-1][2]["final"]["runtime"] == "strands-agents"
+        assert svc.store.puts[-1]["text"] == "agent result"
