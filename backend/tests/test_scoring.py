@@ -168,8 +168,9 @@ class TestAProvisionalScoreIsNotCached:
         return {"fingerprint": fingerprint, "score": 39, "extractor": extractor}
 
     def fingerprint_of(self, m, job):
+        from career_agent.scoring import RUBRIC_VERSION
         from career_agent.util import sha256
-        return sha256([job.get("content_hash"), 1, {}])
+        return sha256([job.get("content_hash"), 1, {}, RUBRIC_VERSION])
 
     def test_a_model_score_is_reused(self, monkeypatch):
         job = self.job()
