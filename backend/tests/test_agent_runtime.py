@@ -161,7 +161,8 @@ class TestPrepareSaysWhetherWeCanSubmit:
             self.connector = connector
             self.wf = type("WF", (), {"settings": staticmethod(lambda uid: {"mode": "review"})})()
 
-        def request_prepare(self, uid, job_key):
+        def request_prepare(self, uid, job_key, *, apply_after_prepare=False):
+            self.apply_after_prepare = apply_after_prepare
             return {"app_id": "app_1", "connector": self.connector, "job_key": job_key}
 
         def submission_plan_for_application(self, app):
@@ -197,6 +198,27 @@ class TestPrepareSaysWhetherWeCanSubmit:
         assert got["we_can_submit"] is False
         assert got["execution_mode"] == "manual"
         assert got["ends_in"] == "ManualHandoff"
+
+
+    def test_explicit_apply_language_is_carried_into_async_preparation(self):
+        svc = self.FakeServices("amazon-jobs")
+        agent.CTX.current = ctx(services=svc, user_text="find this role and apply to it")
+        try:
+            got = agent.t_prepare_application("amazon:123")
+        finally:
+            agent.CTX.current = None
+        assert svc.apply_after_prepare is True
+        assert got["apply_after_prepare"] is True
+
+    def test_plain_prepare_does_not_implicitly_apply(self):
+        svc = self.FakeServices("amazon-jobs")
+        agent.CTX.current = ctx(services=svc, user_text="prepare this application for me")
+        try:
+            got = agent.t_prepare_application("amazon:123")
+        finally:
+            agent.CTX.current = None
+        assert svc.apply_after_prepare is False
+        assert got["apply_after_prepare"] is False
 
 
 
