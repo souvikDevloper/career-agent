@@ -74,7 +74,19 @@ export function MatchExplain({ m }: { m: M }) {
           </div>
         </div>
       </div>
-      {m.explanation && <div className="card pad glass-stripe" style={{ background: "var(--grad-soft)" }}><p className="ink2">{m.explanation}</p></div>}
+      {m.explanation && (
+        <div className="card pad glass-stripe" style={{ background: "var(--grad-soft)" }}>
+          <p className="ink2">{m.explanation}</p>
+          {/* The full reasoning is the longest thing on this screen and the part
+              worth hearing while looking at the posting in another tab. */}
+          <div className="row" style={{ marginTop: 10 }}>
+            <SpeakButton
+              label="Read this explanation"
+              text={`${m.job.title} at ${m.job.company}. Fit ${m.score} out of 100. ${m.explanation}`}
+            />
+          </div>
+        </div>
+      )}
 
       <div>
         <div className="eyebrow" style={{ marginBottom: 10 }}>How the score adds up</div>

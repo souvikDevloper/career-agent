@@ -266,7 +266,16 @@ function Questions({ app, packet, onDone }: { app: Application; packet: NonNulla
   const toast = useToast();
   return (
     <div className="card pad glass-stripe" style={{ borderColor: "rgba(251,191,36,.45)" }}>
-      <div className="card-title"><h3><IAlert size={16} /> The employer asks something we won't guess</h3></div>
+      <div className="card-title">
+        <h3><IAlert size={16} /> The employer asks something we won't guess</h3>
+        {/* These are the employer's own words, and they are the questions you
+            have to answer honestly - worth hearing read out before typing. */}
+        <SpeakButton
+          label="Read the questions"
+          className="btn sm ghost"
+          text={packet.unknown_required.join(". ")}
+        />
+      </div>
       <p className="small muted">Answers are saved to your profile and reused for future applications. Nothing is inferred from your resume.</p>
       <form
         style={{ marginTop: 14 }}
