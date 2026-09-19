@@ -483,6 +483,19 @@ class TestMicrosoftCareersDirectSearch:
         assert jobs[0]["company"] == "Microsoft"
 
 
+class TestGoogleQueryNormalization:
+    def test_swe_early_career_becomes_google_supported_query_and_facet(self):
+        query, level = google.query_plan("SWE early career roles")
+        assert query == "software engineer"
+        assert level == "EARLY"
+        assert google.post_filter_role("SWE early career roles") == "software engineer"
+
+    def test_internship_becomes_intern_and_apprentice_facet(self):
+        query, level = google.query_plan("SWE internship openings")
+        assert query == "software engineer"
+        assert level == "INTERN_AND_APPRENTICE"
+
+
 class TestGoogleCareersDirectSearch:
     def test_embedded_results_are_extracted_and_normalized(self):
         data = [[
@@ -513,7 +526,7 @@ class TestGoogleCareersDirectSearch:
             return 200, html.encode(), {}
 
         monkeypatch.setattr(google, "fetch", fake)
-        jobs = google.search("software engineer early careers", location="India")
+        jobs = google.search("SWE early careers roles", location="India")
         assert "q=software+engineer" in seen["url"]
         assert "location=India" in seen["url"]
         assert "target_level=EARLY" in seen["url"]

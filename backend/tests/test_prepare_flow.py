@@ -1,6 +1,7 @@
 import helpers  # noqa: F401
 
 from career_agent import applying, policy
+from career_agent.sources import greenhouse
 from career_agent.matching import save_job_snapshot
 from career_agent.services import Services
 from career_agent.store import MemoryStore
@@ -76,6 +77,60 @@ def test_prepare_and_apply_approves_completed_local_browser_packet(monkeypatch):
     monkeypatch.setattr(applying, "draft_cover_note", lambda *a, **k: None)
 
     app = svc.request_prepare(UID, job_key=job["job_key"], apply_after_prepare=True)
+    app = svc.prepare(UID, app["app_id"])
+
+    assert app["action_state"] == "NeedsUserPresence"
+    assert app["approved_hash"] == app["packet_hash"]
+    assert app["apply_after_prepare"] is False
+
+
+def test_stripe_external_greenhouse_prepare_asks_once_then_continues(monkeypatch):
+    svc, _ = make_services()
+    key = "greenhouse:stripe:8172487"
+    job = {
+        "job_key": key,
+        "canonical_key": key,
+        "source": "greenhouse-public",
+        "feed": "greenhouse:stripe",
+        "connector": "greenhouse-public",
+        "board": "stripe",
+        "external_id": "8172487",
+        "company": "Stripe",
+        "title": "Software Engineer, Intern",
+        "location": "Bengaluru, India",
+        "url": "https://stripe.com/jobs/search?gh_jid=8172487",
+        "apply": {"kind": "external", "url": "https://stripe.com/jobs/search?gh_jid=8172487"},
+        "description": "Build production software.",
+        "content_hash": "stripehash",
+        "environment": "live",
+    }
+    save_job_snapshot(svc.wf, job)
+    svc.store.put({
+        "pk": f"USER#{UID}", "sk": f"MATCH#{key}", "entity": "match", "job_key": key,
+        "score": 76, "auto_eligible": True, "blocked": False,
+    })
+
+    monkeypatch.setattr(applying, "draft_cover_note", lambda *a, **k: None)
+    monkeypatch.setattr(greenhouse, "read_form", lambda board, job_id: {
+        "signature": "stripe-form-v1",
+        "action": None,
+        "fields": [
+            {"name": "email", "label": "Email", "type": "text", "required": True, "options": []},
+            {"name": "question_1", "label": "Will you now or in the future require visa sponsorship?",
+             "type": "select", "required": True,
+             "options": [{"label": "Yes", "value": "yes"}, {"label": "No", "value": "no"}]},
+        ],
+    })
+
+    app = svc.request_prepare(UID, job_key=key, apply_after_prepare=True)
+    assert app["action_state"] == "Preparing"
+
+    app = svc.prepare(UID, app["app_id"])
+    assert app["action_state"] == "NeedsInformation"
+    assert app["apply_after_prepare"] is True
+
+    svc.profiles.save_answers(UID, {"Will you now or in the future require visa sponsorship?": "No"})
+    app = svc.request_prepare(UID, app_id=app["app_id"])
     app = svc.prepare(UID, app["app_id"])
 
     assert app["action_state"] == "NeedsUserPresence"

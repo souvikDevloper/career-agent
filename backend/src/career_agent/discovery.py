@@ -125,6 +125,14 @@ def _names_match(wanted: str, name: str) -> bool:
     return len(wanted) >= 4 and len(name) >= 4 and (wanted in name or name in wanted)
 
 
+def direct_post_filter_role(company: str, role: str) -> str:
+    """Role text to use after a direct employer search already applied facets."""
+    wanted = (company or "").strip().lower()
+    if _names_match(wanted, "google"):
+        return google.post_filter_role(role)
+    return role
+
+
 def direct_company_supported(company: str) -> bool:
     """Whether we have a first-party/direct search path for this employer.
 

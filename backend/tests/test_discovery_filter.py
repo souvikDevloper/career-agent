@@ -681,3 +681,19 @@ class TestDirectOnlyEmployersParseWithoutCachedRows:
         got = parse_query(CORPUS, "Google software engineer")
         assert got["company"].lower() == "google"
         assert "software" in got["role"]
+
+
+class TestGoogleDirectPostFilter:
+    def test_server_side_early_facet_is_not_required_in_the_title_again(self):
+        role = discovery.direct_post_filter_role("Google", "SWE early career roles")
+        assert role == "software engineer"
+        jobs = [{
+            "job_key": "google:1",
+            "company": "Google",
+            "title": "Software Engineer, Search",
+            "location": "Bengaluru, Karnataka, India",
+            "description": "Build large-scale search systems.",
+            "departments": [],
+        }]
+        got = discovery.filter_jobs(jobs, {}, role=role, company="Google", location="India")
+        assert [j["job_key"] for j in got] == ["google:1"]
