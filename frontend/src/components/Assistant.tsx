@@ -307,7 +307,15 @@ export function Assistant({ compact = false }: { compact?: boolean }) {
 
   const thread = (
     <div className="thread-wrap">
-      <div ref={scroller} className={`thread ${compact ? "compact" : ""}`} onScroll={onScroll}>
+      <div
+        ref={scroller}
+        className={`thread ${compact ? "compact" : ""}`}
+        onScroll={onScroll}
+        data-lenis-prevent
+        tabIndex={0}
+        role="log"
+        aria-label="Conversation history"
+      >
         {hasEarlier && (
           <button
             className="btn ghost sm"
