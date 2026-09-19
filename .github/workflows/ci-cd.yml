@@ -48,6 +48,11 @@ jobs:
           npm install --no-audit --no-fund
           npx playwright-core install --with-deps chromium
           npm test
+      - name: Browser companion syntax
+        run: |
+          node --check browser-companion/background.js
+          node --check browser-companion/content.js
+          node -e "JSON.parse(require('fs').readFileSync('browser-companion/manifest.json','utf8')); console.log('browser companion manifest OK')"
 
   frontend:
     name: Frontend typecheck and build
