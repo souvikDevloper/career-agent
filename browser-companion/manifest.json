@@ -7,18 +7,7 @@
     "storage"
   ],
   "host_permissions": [
-    "https://*.execute-api.us-east-1.amazonaws.com/*",
-    "https://*.amazon.jobs/*",
-    "https://www.google.com/about/careers/*",
-    "https://careers.google.com/*",
-    "https://apply.careers.microsoft.com/*",
-    "https://*.myworkdayjobs.com/*",
-    "https://jobs.lever.co/*",
-    "https://jobs.ashbyhq.com/*",
-    "https://*.oraclecloud.com/*",
-    "https://*.oracle.com/*",
-    "https://*.s3.amazonaws.com/*",
-    "https://*.s3.us-east-1.amazonaws.com/*"
+    "https://*/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -26,20 +15,14 @@
   "content_scripts": [
     {
       "matches": [
-        "https://*.amazon.jobs/*",
-        "https://www.google.com/about/careers/*",
-        "https://careers.google.com/*",
-        "https://apply.careers.microsoft.com/*",
-        "https://*.myworkdayjobs.com/*",
-        "https://jobs.lever.co/*",
-        "https://jobs.ashbyhq.com/*",
-        "https://*.oraclecloud.com/*",
-        "https://*.oracle.com/*"
+        "https://*/*"
       ],
       "js": [
         "content.js"
       ],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true
     }
   ]
 }
