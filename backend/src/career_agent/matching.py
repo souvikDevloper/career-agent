@@ -6,7 +6,7 @@ from typing import Any
 
 from . import llm
 from .config import settings as cfg
-from .scoring import Evidence, heuristic_evidence, score_match, verify_quotes
+from .scoring import RUBRIC_VERSION, Evidence, heuristic_evidence, score_match, verify_quotes
 from .store import C, Put, Update
 from .util import sha256
 
@@ -128,7 +128,10 @@ class Matcher:
         settings = self.wf.settings(uid)
         prefs = settings["preferences"]
         key = f"MATCH#{job['job_key']}"
-        fingerprint = sha256([job.get("content_hash"), profile["version"], prefs])
+        # A scoring-rubric change must invalidate stored scores. Without the
+        # version here, deploying a better rubric changes only newly-seen jobs
+        # while old matches keep their previous number forever.
+        fingerprint = sha256([job.get("content_hash"), profile["version"], prefs, RUBRIC_VERSION])
         existing = self.store.get(f"USER#{uid}", key)
         # A keyword score is a stand-in for a real one, so it must never be cached
         # as though it were the answer. Otherwise one model timeout fixes that job
