@@ -183,8 +183,18 @@ class Services:
         if stats is not None:
             # What was actually looked at. An empty result is only credible if the
             # agent can say what it searched, so this travels back to the model.
-            employers = sorted({j["company"] for j in jobs if j.get("company")})
-            wanted = (active.get("company") or "").strip().lower()
+            employer_set = {j["company"] for j in jobs if j.get("company")}
+            wanted_raw = (active.get("company") or "").strip()
+            wanted = wanted_raw.lower()
+            # Direct-only employers (Google/Microsoft and large Workday tenants)
+            # may have no cached rows at all. Include the named employer in the
+            # coverage list when its direct connector exists, otherwise the
+            # agent sees company_covered=true but employers_covered missing the
+            # company and talks itself back into the false "we don't track it"
+            # answer.
+            if wanted and discovery.direct_company_supported(wanted):
+                employer_set.add(wanted_raw or wanted)
+            employers = sorted(employer_set)
             # "0 Google roles" and "Google is not a board we read" are different
             # answers, and only one of them is true. Without this the model saw an
             # empty list and reported that an employer we have never polled had no
