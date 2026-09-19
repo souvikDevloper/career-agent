@@ -119,9 +119,13 @@
     }
     const k = norm(key);
     const aliases = {
-      "full name": ["full name", "legal name", "name"],
+      "full name": ["full name", "legal name", "name", "given name", "given names"],
       "email": ["email", "email address"],
       "phone": ["phone", "phone number", "mobile"],
+      "current employer": ["current employer", "employer", "company"],
+      "current title": ["current title", "job title", "position title", "title"],
+      "university": ["university", "college", "school"],
+      "graduation year": ["graduation year", "graduation date", "year of graduation"],
       "why this role": ["why this role", "cover letter", "interest", "why are you interested"],
     };
     const wants = aliases[k] || [k];
@@ -134,7 +138,7 @@
         if (label === w) score = Math.max(score, 5);
         else if (label.includes(w)) score = Math.max(score, 3);
       }
-      if (k === "full name" && /first name|last name|surname/.test(label)) score = 4;
+      if (k === "full name" && /first name|given name|last name|family name|surname/.test(label)) score = 4;
       if (score > bestScore) { best = el; bestScore = score; }
     }
     return best;
@@ -248,8 +252,8 @@
       const field = fields.get(key);
       const label = field?.label || key;
       if (norm(key) === "full name") {
-        const first = controls().find((x) => /first name/.test(labelOf(x)));
-        const last = controls().find((x) => /last name|surname/.test(labelOf(x)));
+        const first = controls().find((x) => /first name|given name/.test(labelOf(x)));
+        const last = controls().find((x) => /last name|family name|surname/.test(labelOf(x)));
         const parts = String(raw).trim().split(/\s+/);
         if (first && await setValue(first, parts[0] || "")) filled++;
         if (last && await setValue(last, parts.slice(1).join(" ") || parts[0] || "")) filled++;
@@ -280,8 +284,12 @@
     if (el.tagName === "SELECT") {
       return String(el.selectedOptions?.[0]?.textContent || el.value || "").trim();
     }
+    if ("value" in el && typeof el.value === "string") {
+      const value = String(el.value || "").trim();
+      if (value) return value;
+    }
     return String(el.getAttribute("aria-valuetext") || el.getAttribute("data-value") ||
-                  el.textContent || el.getAttribute("aria-label") || "").trim();
+                  el.textContent || "").trim();
   }
 
   function choiceEmpty(el) {
@@ -363,14 +371,41 @@
   async function resolveVisibleQuestions() {
     const discovered = [];
     const byLabel = new Map();
+    const seenRadioGroups = new Set();
+
     for (const el of allControls()) {
-      if (!(el.tagName === "SELECT" || isCustomChoice(el)) || !choiceEmpty(el)) continue;
+      const type = (el.getAttribute("type") || "").toLowerCase();
+      const isChoice = el.tagName === "SELECT" || isCustomChoice(el);
+      const isBlankText = (el.tagName === "INPUT" || el.tagName === "TEXTAREA") &&
+        !["hidden", "file", "password", "button", "submit", "checkbox", "radio"].includes(type) &&
+        !String(el.value || "").trim();
+      const isBlankRadio = type === "radio" && el.name &&
+        !document.querySelector(`input[type="radio"][name="${CSS.escape(el.name)}"]:checked`);
+
+      if (isChoice && !choiceEmpty(el)) continue;
+      if (!isChoice && !isBlankText && !isBlankRadio) continue;
+      if (isBlankRadio && seenRadioGroups.has(el.name)) continue;
+
       const label = labelOf(el).slice(0, 600);
       if (!label || SENSITIVE_FIELD.test(label) || byLabel.has(label)) continue;
-      const options = await optionTexts(el).catch(() => []);
+
+      let options = [];
+      if (isChoice) {
+        options = await optionTexts(el).catch(() => []);
+      } else if (isBlankRadio) {
+        seenRadioGroups.add(el.name);
+        options = [...document.querySelectorAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`)]
+          .map((radio) => {
+            const lab = labelOf(radio);
+            return String(radio.value || lab || "").trim();
+          })
+          .filter(Boolean);
+      }
+
       discovered.push({ label, options, required: requiredLike(el) });
       byLabel.set(label, el);
     }
+
     if (!discovered.length) return 0;
 
     const response = await send({ type: "resolve_questions", questions: discovered }).catch(() => null);
@@ -378,10 +413,17 @@
     let filled = 0;
     for (const answer of answers) {
       const el = byLabel.get(answer.label) || findControl(answer.label);
-      if (el && choiceEmpty(el) && await setValue(el, answer.value)) filled++;
+      if (!el) continue;
+      const type = (el.getAttribute("type") || "").toLowerCase();
+      const stillBlank = el.tagName === "SELECT" || isCustomChoice(el)
+        ? choiceEmpty(el)
+        : type === "radio"
+          ? !document.querySelector(`input[type="radio"][name="${CSS.escape(el.name)}"]:checked`)
+          : !String(el.value || "").trim();
+      if (stillBlank && await setValue(el, answer.value)) filled++;
     }
     if (filled) {
-      banner(`Career Agent filled ${filled} screening answer${filled === 1 ? "" : "s"} from your verified profile.`, "good");
+      banner(`Career Agent filled ${filled} answer${filled === 1 ? "" : "s"} from your verified profile.`, "good");
       await rememberLearnedAnswers();
     }
     return filled;
