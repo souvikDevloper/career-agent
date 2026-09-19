@@ -880,6 +880,167 @@ def speak(event, p, cid):
     return respond(200, voice.synthesize(text, body.get("language", "en-IN")))
 
 
+
+# ---------------------------------------------------------------------------
+# Resume Builder
+# ---------------------------------------------------------------------------
+
+_RESUME_BUILDER_SYSTEM = """You are an expert technical resume writer and LaTeX typesetter.
+The user will send you their current LaTeX resume source (or a partial excerpt) and a request.
+
+Your job:
+1. Give concise, actionable feedback as plain text.
+2. If the user asks you to make changes OR you think the whole resume should be updated, include a
+   `latex_patch` field in your JSON response containing the **complete** updated LaTeX source.
+   Only omit `latex_patch` (null) when you are just answering a question or giving advice.
+
+Rules:
+- Never invent experience, qualifications, or metrics that are not already in the resume.
+- Suggest specific improvements with examples, not vague advice.
+- Keep LaTeX valid and compilable. Use only standard packages.
+- Format bullet points with strong action verbs and measurable outcomes.
+- Response JSON schema: {"reply": "<plain text reply>", "latex_patch": "<full LaTeX source or null>"}
+"""
+
+
+class ResumeBuilderChatIn(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
+    latex_context: str = Field(default="", max_length=6000)
+
+
+class ResumeBuilderCompileIn(BaseModel):
+    latex: str = Field(min_length=10, max_length=80_000)
+
+
+@route("POST", r"/api/resume/builder/chat")
+def resume_builder_chat(event, p, cid):
+    """AI chat endpoint: accepts a user message + LaTeX context, returns AI reply and optional LaTeX patch."""
+    import boto3
+
+    data = ResumeBuilderChatIn(**body_json(event))
+    svc = _svc()
+    s = cfg()
+
+    # Enforce the same per-user model quota as the main agent
+    cap = s.judge_daily_model_calls if p.is_judge else s.user_daily_model_calls
+    if not svc.wf.reserve_usage(p.user_id, "model_calls", 1, cap, 40000):
+        raise WorkflowError("quota", "Model call quota reached for today.", 429)
+
+    system_prompt = [{"text": _RESUME_BUILDER_SYSTEM}]
+    user_text = f"CURRENT LATEX:\n```latex\n{data.latex_context}\n```\n\nUSER REQUEST:\n{data.message}"
+
+    bedrock = boto3.client("bedrock-runtime", region_name=s.region)
+    response = bedrock.converse(
+        modelId=s.model_id,
+        system=system_prompt,
+        messages=[{"role": "user", "content": [{"text": user_text}]}],
+        inferenceConfig={"maxTokens": 4096, "temperature": 0.3},
+    )
+    raw = response["output"]["message"]["content"][0]["text"]
+
+    # Try to parse as JSON; fall back to plain text with no patch
+    try:
+        import json as _json
+        # Extract JSON block if wrapped in markdown code fences
+        clean = raw.strip()
+        if clean.startswith("```"):
+            lines = clean.split("\n")
+            clean = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+        parsed = _json.loads(clean)
+        reply = str(parsed.get("reply", raw))
+        latex_patch = parsed.get("latex_patch") or None
+    except Exception:
+        reply = raw
+        latex_patch = None
+
+    return respond(200, {"reply": reply, "latex_patch": latex_patch})
+
+
+@route("POST", r"/api/resume/builder/compile")
+def resume_builder_compile(event, p, cid):
+    """Compile LaTeX to PDF using Tectonic (or pdflatex). Returns base64-encoded PDF.
+
+    Falls back to a stub PDF when no TeX engine is available (local dev without Docker layer).
+    """
+    import base64
+    import subprocess
+    import tempfile
+    import os
+
+    data = ResumeBuilderCompileIn(**body_json(event))
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tex_path = os.path.join(tmpdir, "resume.tex")
+        pdf_path = os.path.join(tmpdir, "resume.pdf")
+
+        with open(tex_path, "w", encoding="utf-8") as f:
+            f.write(data.latex)
+
+        # Try tectonic first (preferred: self-contained, downloads packages)
+        for engine, args in [
+            ("tectonic", ["tectonic", "-o", tmpdir, tex_path]),
+            ("pdflatex", ["pdflatex", "-interaction=nonstopmode", "-output-directory", tmpdir, tex_path]),
+        ]:
+            try:
+                result = subprocess.run(
+                    args, capture_output=True, timeout=60, cwd=tmpdir
+                )
+                if result.returncode == 0 and os.path.exists(pdf_path):
+                    with open(pdf_path, "rb") as f:
+                        return respond(200, {"pdf_b64": base64.b64encode(f.read()).decode(), "engine": engine})
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                continue
+
+        # No TeX engine found — compile using the robust vector PDF generator
+        from ..demo import minimal_pdf
+        import re
+
+        def _clean_latex(s: str) -> str:
+            s = re.sub(r"\\documentclass[\s\S]*?\\begin\{document\}", "", s)
+            s = re.sub(r"\\end\{document\}[\s\S]*", "", s)
+            s = re.sub(r"\\section\*?\{([^}]+)\}", r"\n\n\1\n----------------------------------------\n", s)
+            s = re.sub(r"\\textbf\{([^}]+)\}", r"\1", s)
+            s = re.sub(r"\\textit\{([^}]+)\}", r"\1", s)
+            s = re.sub(r"\\href\{[^}]+\}\{([^}]+)\}", r"\1", s)
+            s = re.sub(r"\\item\s*", "• ", s)
+            s = re.sub(r"\\quad", " | ", s)
+            s = re.sub(r"\\hfill", "   ", s)
+            s = re.sub(r"\\(?:LARGE|Large|large|small|bfseries|selectfont)", "", s)
+            s = re.sub(r"\\(?:hrule|titlerule|vspace\{[^}]+\})", "", s)
+            s = re.sub(r"\\[$%&]", lambda m: m.group(0)[1], s)
+            s = re.sub(r"\\\\", "\n", s)
+            s = re.sub(r"\\(?:begin|end)\{[^}]+\}", "", s)
+            s = re.sub(r"[{}]", "", s)
+            s = re.sub(r"%[^\n]*", "", s)
+            return s.strip()
+
+        pdf_bytes = minimal_pdf(_clean_latex(data.latex))
+        return respond(200, {"pdf_b64": base64.b64encode(pdf_bytes).decode(), "engine": "vector-renderer"})
+
+
+class ResumeBuilderSyncProfileIn(BaseModel):
+    latex: str = Field(min_length=10, max_length=80_000)
+    facts: dict | None = None
+
+
+@route("POST", r"/api/resume/builder/sync-profile")
+def resume_builder_sync_profile(event, p, cid):
+    """Persist the optimized resume to the user's profile version history."""
+    data = ResumeBuilderSyncProfileIn(**body_json(event))
+    svc = _svc()
+    cur = svc.profiles.current(p.user_id)
+    facts = data.facts if data.facts is not None else (cur.get("facts", {}) if cur else {})
+    new_version = svc.profiles.save_version(
+        p.user_id,
+        facts=facts,
+        resume_key=cur.get("resume_key") if cur else None,
+        resume_text=data.latex,
+        source="resume_builder",
+        base=cur,
+    )
+    return respond(200, {"ok": True, "profile": _profile_public(new_version)})
+
+
 __all__ = ["handler", "Put"]
 
 

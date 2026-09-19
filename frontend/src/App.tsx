@@ -17,6 +17,7 @@ import { ConnectorsPage } from "./pages/Connectors";
 import { AuthorizePage } from "./pages/Authorize";
 import { ProfilePage } from "./pages/Profile";
 import { SettingsPage } from "./pages/Settings";
+import { ResumeBuilderPage } from "./pages/ResumeBuilder";
 
 function Routes() {
   const { path, navigate } = useRouter();
@@ -54,6 +55,7 @@ function Routes() {
         : path === "/app/connectors" ? <ConnectorsPage />
         : path === "/app/profile" ? <ProfilePage />
         : path === "/app/settings" ? <SettingsPage />
+        : path === "/app/resume-builder" ? <ResumeBuilderPage />
         : <Home />}
     </MeProvider>
   );
