@@ -1,12 +1,39 @@
 const KEY = (tabId) => `career-agent-tab-${tabId}`;
+const PENDING = "career-agent-pending-session";
 
-async function remember(tabId, token, api) {
-  await chrome.storage.session.set({ [KEY(tabId)]: { token, api, at: Date.now() } });
+function employerFamily(host) {
+  host = String(host || "").toLowerCase();
+  for (const suffix of [
+    "amazon.jobs", "google.com", "microsoft.com", "myworkdayjobs.com",
+    "lever.co", "ashbyhq.com", "oracle.com", "oraclecloud.com"
+  ]) {
+    if (host === suffix || host.endsWith("." + suffix)) return suffix;
+  }
+  return host;
 }
 
-async function recalled(tabId) {
-  const got = await chrome.storage.session.get(KEY(tabId));
-  return got[KEY(tabId)] || null;
+async function remember(tabId, token, api, host) {
+  const session = { token, api, at: Date.now(), family: employerFamily(host) };
+  await chrome.storage.session.set({
+    [KEY(tabId)]: session,
+    [PENDING]: session,
+  });
+}
+
+async function recalled(tabId, host) {
+  const got = await chrome.storage.session.get([KEY(tabId), PENDING]);
+  const own = got[KEY(tabId)];
+  if (own) return own;
+
+  // OAuth/login/application redirects can move the flow to another tab or
+  // document before our first content script had a chance to bind it. Keep one
+  // short-lived pending capability and allow only the same employer family to
+  // claim it.
+  const pending = got[PENDING];
+  if (!pending || Date.now() - Number(pending.at || 0) > 10 * 60 * 1000) return null;
+  if (pending.family && pending.family !== employerFamily(host)) return null;
+  await chrome.storage.session.set({ [KEY(tabId)]: pending });
+  return pending;
 }
 
 async function call(session, path, method = "GET", body) {
@@ -25,10 +52,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const tabId = sender.tab?.id;
     if (tabId == null) throw new Error("No browser tab");
     if (msg.type === "remember") {
-      await remember(tabId, msg.token, msg.api);
+      await remember(tabId, msg.token, msg.api, msg.host);
       return { ok: true };
     }
-    const session = await recalled(tabId);
+    const session = await recalled(tabId, msg.host);
     if (!session) return { ok: false, missing: true };
     if (msg.type === "session") return { ok: true, session };
     if (msg.type === "packet") return { ok: true, data: await call(session, "") };
