@@ -35,25 +35,84 @@
     return s.display !== "none" && s.visibility !== "hidden" && r.width > 0 && r.height > 0;
   }
 
-  function labelOf(el) {
-    const parts = [el.getAttribute("aria-label"), el.getAttribute("placeholder"), el.getAttribute("name"), el.id];
+  const PLACEHOLDER_CHOICE = /^(select|choose|please select)( an?)? (option|answer)|^select an option$/;
+
+  function questionContainer(el) {
+    let node = el.parentElement;
+    for (let depth = 0; node && depth < 6; depth++, node = node.parentElement) {
+      const text = String(node.textContent || "").trim();
+      if (text.length >= 12 && text.length <= 900 &&
+          (text.includes("?") || text.includes("*") || /required/i.test(text))) {
+        return node;
+      }
+    }
+    return el.parentElement;
+  }
+
+  function rawLabelOf(el) {
+    const parts = [];
+    const labelled = String(el.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean);
+    for (const id of labelled) {
+      const n = document.getElementById(id);
+      if (n) parts.push(n.textContent);
+    }
+    parts.push(el.getAttribute("aria-label"), el.getAttribute("placeholder"), el.getAttribute("name"), el.id);
     if (el.id) {
       const lab = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
       if (lab) parts.push(lab.textContent);
     }
     const parent = el.closest("label");
     if (parent) parts.push(parent.textContent);
-    const group = el.closest("[data-automation-id], .form-group, .field, [role='group']");
-    if (group) parts.push(group.textContent?.slice(0, 220));
-    return norm(parts.filter(Boolean).join(" "));
+    const group = el.closest("[data-automation-id], .form-group, .field, [role='group'], fieldset");
+    if (group) {
+      const lab = group.querySelector("legend, label, [class*='label'], [class*='question']");
+      if (lab) parts.push(lab.textContent);
+    }
+    const q = questionContainer(el);
+    if (q) parts.push(q.textContent?.slice(0, 700));
+    return parts.filter(Boolean).join(" ");
+  }
+
+  function labelOf(el) {
+    let text = norm(rawLabelOf(el));
+    text = text
+      .replace(/select an option/g, " ")
+      .replace(/please select an option/g, " ")
+      .replace(/required fields?/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return text;
   }
 
   function controls() {
     return [...document.querySelectorAll("input, textarea, select")].filter((el) => visible(el) && !el.disabled);
   }
 
+  function customChoiceControls() {
+    const nodes = [...document.querySelectorAll("[role='combobox'], [aria-haspopup='listbox'], button")];
+    return nodes.filter((el, index) => {
+      if (!visible(el) || el.disabled) return false;
+      const roleChoice = el.getAttribute("role") === "combobox" || el.getAttribute("aria-haspopup") === "listbox";
+      const placeholderButton = el.tagName === "BUTTON" && PLACEHOLDER_CHOICE.test(norm(el.textContent || el.getAttribute("aria-label") || ""));
+      if (!roleChoice && !placeholderButton) return false;
+      // Avoid returning both a wrapper and its nested real combobox.
+      return !nodes.some((other, j) => j !== index && other !== el && el.contains(other) &&
+        (other.getAttribute("role") === "combobox" || other.getAttribute("aria-haspopup") === "listbox"));
+    });
+  }
+
+  function allControls() {
+    return [...new Set([...controls(), ...customChoiceControls()])];
+  }
+
+  function isCustomChoice(el) {
+    return el.tagName !== "SELECT" &&
+      (el.getAttribute("role") === "combobox" || el.getAttribute("aria-haspopup") === "listbox" ||
+       (el.tagName === "BUTTON" && PLACEHOLDER_CHOICE.test(norm(el.textContent || ""))));
+  }
+
   function findControl(key, exactName) {
-    const all = controls();
+    const all = allControls();
     if (exactName) {
       const exact = all.find((el) => el.name === exactName || el.id === exactName);
       if (exact) return exact;
@@ -81,7 +140,41 @@
     return best;
   }
 
-  function setValue(el, value) {
+  function openOptionNodes() {
+    const selectors = [
+      "[role='option']", "[role='listbox'] li", "[role='listbox'] button",
+      "[data-testid*='option']", "[class*='option']"
+    ];
+    const seen = new Set();
+    const out = [];
+    for (const el of document.querySelectorAll(selectors.join(","))) {
+      if (!visible(el)) continue;
+      const text = String(el.textContent || el.getAttribute("aria-label") || "").trim();
+      const key = norm(text);
+      if (!key || key.length > 180 || seen.has(key)) continue;
+      seen.add(key);
+      out.push(el);
+    }
+    return out;
+  }
+
+  async function optionTexts(el) {
+    if (el.tagName === "SELECT") {
+      return [...el.options]
+        .map((o) => String(o.textContent || o.value || "").trim())
+        .filter((x) => x && !PLACEHOLDER_CHOICE.test(norm(x)));
+    }
+    if (!isCustomChoice(el)) return [];
+    if (el.getAttribute("aria-expanded") !== "true") el.click();
+    await sleep(180);
+    const values = openOptionNodes().map((o) => String(o.textContent || o.getAttribute("aria-label") || "").trim());
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    if (el.getAttribute("aria-expanded") === "true") el.click();
+    await sleep(60);
+    return [...new Set(values)];
+  }
+
+  async function setValue(el, value) {
     const tag = el.tagName.toLowerCase();
     const type = (el.getAttribute("type") || "").toLowerCase();
     if (tag === "select") {
@@ -89,7 +182,26 @@
       const opt = [...el.options].find((o) => norm(o.value) === wanted || norm(o.textContent) === wanted);
       if (!opt) return false;
       el.value = opt.value;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    }
+    if (isCustomChoice(el)) {
+      const wanted = norm(value);
+      if (el.getAttribute("aria-expanded") !== "true") el.click();
+      await sleep(180);
+      const options = openOptionNodes();
+      const hit = options.find((o) => {
+        const got = norm(o.textContent || o.getAttribute("aria-label") || "");
+        return got === wanted ||
+          ((wanted === "yes" || wanted === "no") && got.split(" ")[0] === wanted);
+      });
+      if (!hit) {
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        return false;
+      }
+      hit.click();
+      await sleep(120);
       return true;
     }
     if (type === "checkbox") {
@@ -139,12 +251,12 @@
         const first = controls().find((x) => /first name/.test(labelOf(x)));
         const last = controls().find((x) => /last name|surname/.test(labelOf(x)));
         const parts = String(raw).trim().split(/\s+/);
-        if (first) { setValue(first, parts[0] || ""); filled++; }
-        if (last) { setValue(last, parts.slice(1).join(" ") || parts[0] || ""); filled++; }
+        if (first && await setValue(first, parts[0] || "")) filled++;
+        if (last && await setValue(last, parts.slice(1).join(" ") || parts[0] || "")) filled++;
         if (first || last) continue;
       }
       const el = findControl(label, field?.name || key);
-      if (el && setValue(el, raw)) filled++;
+      if (el && await setValue(el, raw)) filled++;
     }
     if (await attachResume(packet.resume_url).catch(() => false)) filled++;
     return filled;
