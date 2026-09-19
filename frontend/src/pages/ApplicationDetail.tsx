@@ -13,7 +13,7 @@ import confetti from "canvas-confetti";
 
 type Detail = {
   application: Application;
-  packet: null | { version: number; hash: string; body: any; unknown_required: string[]; field_evidence: Record<string, string>; fields: { name: string; label: string; type: string; required: boolean }[]; created_at: string };
+  packet: null | { version: number; hash: string; body: any; unknown_required: string[]; field_evidence: Record<string, string>; fields: { name: string; label: string; type: string; required: boolean; options?: { label: string; value: string }[] }[]; created_at: string };
   timeline: TimelineEvent[];
   attempts: any[];
   match: MatchCard | null;
@@ -322,7 +322,7 @@ function Questions({ app, packet, onDone }: { app: Application; packet: NonNulla
           text={packet.unknown_required.join(". ")}
         />
       </div>
-      <p className="small muted">Answers are saved to your profile and reused for future applications. Nothing is inferred from your resume.</p>
+      <p className="small muted">Known facts are filled automatically. Answer anything genuinely missing once; your answer is saved and reused when the same employer question appears again.</p>
       <form
         style={{ marginTop: 14 }}
         onSubmit={async (e) => {
@@ -341,11 +341,22 @@ function Questions({ app, packet, onDone }: { app: Application; packet: NonNulla
       >
         {packet.unknown_required.map((q) => {
           const f = packet.fields.find((x) => x.label === q);
+          const options = f?.options || [];
           const type = f?.type === "date" ? "date" : f?.type === "checkbox" ? "checkbox" : "text";
           return (
             <div key={q} className="field">
               <label className="label">{q}</label>
-              {type === "checkbox" ? (
+              {options.length > 0 ? (
+                <select
+                  className="select"
+                  required
+                  value={values[q] || ""}
+                  onChange={(e) => setValues((v) => ({ ...v, [q]: e.target.value }))}
+                >
+                  <option value="">Select an answer</option>
+                  {options.map((o) => <option key={o.value + o.label} value={o.value}>{o.label || o.value}</option>)}
+                </select>
+              ) : type === "checkbox" ? (
                 <label className="row small"><input type="checkbox" onChange={(e) => setValues((v) => ({ ...v, [q]: e.target.checked ? "yes" : "" }))} /> Yes, I confirm</label>
               ) : (
                 <input className="input" type={type} required value={values[q] || ""} onChange={(e) => setValues((v) => ({ ...v, [q]: e.target.value }))} />
@@ -353,7 +364,7 @@ function Questions({ app, packet, onDone }: { app: Application; packet: NonNulla
             </div>
           );
         })}
-        <button className="btn primary" style={{ marginTop: 14 }} disabled={busy}>{busy && <Spinner />} Save answers & re-prepare</button>
+        <button className="btn primary" style={{ marginTop: 14 }} disabled={busy}>{busy && <Spinner />} Save answers & continue application</button>
       </form>
     </div>
   );

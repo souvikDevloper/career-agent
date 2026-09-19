@@ -638,7 +638,11 @@ def app_detail(event, p, cid, app_id):
 def app_from_job(event, p, cid):
     body = body_json(event)
     job_key = str(body.get("job_key", ""))[:200]
-    app = _svc().request_prepare(p.user_id, job_key=job_key)
+    app = _svc().request_prepare(
+        p.user_id,
+        job_key=job_key,
+        apply_after_prepare=bool(body.get("apply_after_prepare")),
+    )
     return respond(202, {"application": _strip(app)})
 
 

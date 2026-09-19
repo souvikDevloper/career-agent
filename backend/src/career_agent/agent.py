@@ -96,6 +96,7 @@ class _CtxHolder:
 CTX = _CtxHolder()
 
 APPROVAL_WORDS = re.compile(r"\b(approve|approved|submit|send it|go ahead|yes,? submit|apply now)\b", re.I)
+APPLY_INTENT_WORDS = re.compile(r"\b(apply|submit|send (?:the|this|that)?\s*application)\b", re.I)
 
 
 # ---------------------------------------------------------------------------
@@ -203,14 +204,28 @@ def t_create_watch(keywords: str) -> dict:
 
 
 def t_prepare_application(job_key: str) -> dict:
-    """Start preparing an application packet for a job: read the form, map verified facts, draft a truthful note. Does NOT submit.
+    """Prepare one job application from verified facts.
+
+    If the current user turn explicitly asks to apply/submit, that intent is
+    carried through the asynchronous preparation: missing factual questions
+    pause for the user once, then the exact completed packet continues. Without
+    explicit apply intent this only prepares and waits for approval.
 
     Args:
         job_key: The job_key from search results.
     """
     ctx = CTX.get()
-    app = ctx.services.request_prepare(ctx.user_id, job_key=job_key)
-    ctx.actions.append({"type": "prepare_requested", "app_id": app["app_id"]})
+    apply_after_prepare = bool(APPLY_INTENT_WORDS.search(ctx.user_text or ""))
+    app = ctx.services.request_prepare(
+        ctx.user_id,
+        job_key=job_key,
+        apply_after_prepare=apply_after_prepare,
+    )
+    ctx.actions.append({
+        "type": "prepare_requested",
+        "app_id": app["app_id"],
+        "apply_after_prepare": apply_after_prepare,
+    })
     plan = ctx.services.submission_plan_for_application(app)
     mode = plan["mode"]
     settings = ctx.services.wf.settings(ctx.user_id)
@@ -226,9 +241,14 @@ def t_prepare_application(job_key: str) -> dict:
     else:
         ends = "ManualHandoff"
         note = "Preparation runs in the background and produces a handoff packet; this target has no automated submission route."
+    if apply_after_prepare:
+        note += (
+            " The user explicitly asked to apply, so this exact preparation will continue automatically "
+            "after any missing factual answers are supplied."
+        )
     return {"app_id": app["app_id"], "state": "Preparing", "we_can_submit": bool(plan["can_submit"]),
             "execution_mode": mode, "requires_user_presence": bool(plan["requires_user_presence"]),
-            "ends_in": ends, "note": note}
+            "apply_after_prepare": apply_after_prepare, "ends_in": ends, "note": note}
 
 
 def t_list_applications(state: str | None = None) -> dict:

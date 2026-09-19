@@ -498,6 +498,35 @@ class TestGoogleCareersDirectSearch:
         assert job["connector"] == google.SOURCE
         assert job["apply"]["kind"] == "external"
 
+
+    def test_search_uses_browser_compatible_headers_and_early_career_filter(self, monkeypatch):
+        seen = {}
+        data = [[
+            ["g1", "Software Engineer, Early Career", None,
+             None, None, None, None, "Google", None, [["Bengaluru, Karnataka, India"]]]
+        ], None, 1, 20]
+        html = "AF_initDataCallback({key: 'ds:1', data:" + __import__("json").dumps(data) + "});"
+
+        def fake(url, hosts, **kw):
+            seen["url"] = url
+            seen["headers"] = kw.get("headers") or {}
+            return 200, html.encode(), {}
+
+        monkeypatch.setattr(google, "fetch", fake)
+        jobs = google.search("software engineer early careers", location="India")
+        assert "q=software+engineer" in seen["url"]
+        assert "location=India" in seen["url"]
+        assert "target_level=EARLY" in seen["url"]
+        assert "Mozilla/5.0" in seen["headers"]["User-Agent"]
+        assert jobs and jobs[0]["company"] == "Google"
+
+    def test_url_is_constructed_from_stable_job_id_when_payload_url_slot_is_empty(self):
+        raw = ["123456", "Software Engineer, Search", None,
+               None, None, None, None, "Google", None, [["Bengaluru, Karnataka, India"]]]
+        job = google.normalize(raw)
+        assert job["url"].endswith("/123456-software-engineer-search")
+        assert job["apply"]["url"] == job["url"]
+
     def test_search_uses_google_query_and_location(self, monkeypatch):
         seen = {}
         data = [[
