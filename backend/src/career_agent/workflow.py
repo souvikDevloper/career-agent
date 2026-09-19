@@ -16,7 +16,7 @@ from typing import Any
 
 from . import connectors, policy
 from .scoring import FAIL, UNKNOWN, hard_filters, work_mode_of
-from .store import And, C, ConditionFailed, Or, Put, Store, Update
+from .store import And, C, Check, ConditionFailed, Or, Put, Store, Update
 from .submission import LOCAL_BROWSER_CONNECTORS
 from .util import Clock, canonical_json, local_date, new_id, sha256
 
@@ -698,7 +698,8 @@ class Workflow:
         return True
 
     def decide_submission(self, p: Principal, app: dict, settings: dict, reserve_check: bool = False,
-                          packet: dict | None = None, local_reservation: bool = False) -> policy.Decision:
+                          packet: dict | None = None, local_reservation: bool = False,
+                          cloud_reservation: dict | None = None) -> policy.Decision:
         ledger_key = self.ledger_key(p.user_id, settings)
         ledger = self.store.get(U(p.user_id), ledger_key) or {}
         used = int(ledger.get("used", 0))
@@ -708,6 +709,13 @@ class Workflow:
                               and app.get("local_browser_ledger") == ledger_key
                               and not app.get("local_browser_dispatched_at")
                               and int(ledger.get("reserved", 0)) > 0)
+        if cloud_reservation:
+            own_reservation = int(app.get("action_state") == "Submitting"
+                                  and cloud_reservation.get("attempt_id") == app.get("current_attempt")
+                                  and cloud_reservation.get("packet_hash") == app.get("packet_hash")
+                                  and cloud_reservation.get("ledger") == ledger_key
+                                  and not cloud_reservation.get("dispatched_at") and not cloud_reservation.get("outcome")
+                                  and int(ledger.get("reserved", 0)) > 0)
         cap = int(settings.get("daily_cap", 5))
         last = float(ledger.get("last_submit_at", 0) or settings.get("last_submit_at", 0) or 0)
         cooldown_ok = (self.clock.now() - last) >= int(settings.get("cooldown_seconds", 120)) if last else True
@@ -781,6 +789,7 @@ class Workflow:
             "pk": U(p.user_id), "sk": f"ATTEMPT#{app_id}#{attempt_id}", "entity": "attempt", "app_id": app_id,
             "attempt_id": attempt_id, "packet_hash": packet_hash, "lease_until": lease_until, "fencing": fencing,
             "ledger": ledger_sk, "started_at": self._now_iso(), "decision": decision.to_dict(),
+            "is_judge": bool(p.is_judge),
         }
         cooldown = int(settings["cooldown_seconds"])
         try:
@@ -835,23 +844,52 @@ class Workflow:
     def gate_dispatch(self, uid: str, app_id: str, attempt_id: str, fencing: int, form_signature: str) -> dict:
         """Record the external-write boundary immediately before clicking Submit."""
         a = self._attempt(uid, app_id, attempt_id)
+        if (a.get("fencing") != fencing or a.get("dispatched_at") or a.get("outcome")
+                or float(a.get("lease_until", 0)) <= self.clock.now()):
+            return {"action": "abort", "reason": "lease lost or already dispatched"}
+        app = self.get_app(uid, app_id)
         packet = self.latest_packet(uid, app_id) or {}
+        if (app["action_state"] != "Submitting" or app.get("current_attempt") != attempt_id
+                or app.get("packet_hash") != a.get("packet_hash") or packet.get("hash") != a.get("packet_hash")):
+            return {"action": "abort", "reason": "application or packet changed"}
+        attempt_condition = And(C("fencing", "eq", fencing), C("dispatched_at", "not_exists"),
+                                C("outcome", "not_exists"), C("lease_until", "gt", self.clock.now()))
         expected = (packet.get("body") or {}).get("form_signature")
         if expected and form_signature != expected:
-            app = self.get_app(uid, app_id)
             self.store.transact([
                 Update(U(uid), a["sk"], set={"outcome": "form_changed", "finished_at": self._now_iso()}, add={},
-                       condition=C("fencing", "eq", fencing)),
+                       condition=attempt_condition),
                 Update(U(uid), a["ledger"], add={"used": -1, "reserved": -1}),
                 self._transition(app, "Preparing", {"invalidated_reason": "required form fields changed"}),
                 self.event_put(uid, "submission.form_changed", {"expected": expected[:12], "found": form_signature[:12]}, app_id),
                 self.outbox_put("work", {"kind": "prepare", "user_id": uid, "app_id": app_id}, f"work:reprepare:{app_id}:{attempt_id}"),
             ])
             return {"action": "abort", "reason": "form_changed"}
+        account = self.store.get(U(uid), "ACCOUNT") or {}
+        principal = Principal(uid, bool(a.get("is_judge") or account.get("is_judge")))
+        # gate_begin already reserved capacity and recorded its cooldown. Recheck
+        # current authorization without charging this same attempt a second slot
+        # or treating its own reservation timestamp as a different submission.
+        decision = self.decide_submission(principal, app, self.settings(uid), reserve_check=True,
+                                          packet=packet, cloud_reservation=a)
+        if not decision.allowed:
+            try:
+                self.store.transact([
+                    Update(U(uid), a["sk"], set={"outcome": "denied_before_dispatch", "finished_at": self._now_iso(),
+                                                 "decision": decision.to_dict()}, condition=attempt_condition),
+                    Update(U(uid), a["ledger"], add={"used": -1, "reserved": -1}),
+                    self._transition(app, "KnownFailure", {"last_decision": decision.to_dict(),
+                                     "last_error": "Submission permission changed before submit; review your rules and prepare again."}),
+                    self.event_put(uid, "submission.denied", decision.to_dict(), app_id),
+                ])
+            except ConditionFailed:
+                return {"action": "abort", "reason": "lease lost or already dispatched"}
+            return {"action": "abort", "reason": "submission_policy_changed", "decision": decision.to_dict()}
         try:
-            self.store.update(Update(U(uid), a["sk"], set={"dispatched_at": self._now_iso()},
-                                     condition=And(C("fencing", "eq", fencing), C("dispatched_at", "not_exists"),
-                                                   C("lease_until", "gt", self.clock.now()))))
+            self.store.transact([
+                Check(app["pk"], app["sk"], And(C("version", "eq", app["version"]), C("action_state", "eq", "Submitting"))),
+                Update(U(uid), a["sk"], set={"dispatched_at": self._now_iso()}, condition=attempt_condition),
+            ])
         except ConditionFailed:
             return {"action": "abort", "reason": "lease lost or already dispatched"}
         return {"action": "submit"}
