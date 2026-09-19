@@ -307,3 +307,37 @@ class TestGreenhousePublishesTheRealApplicationForm:
 
     def test_a_question_with_no_field_name_is_skipped_rather_than_crashing(self):
         assert greenhouse.parse_questions([{"label": "Broken", "required": True, "fields": [{"type": "input_text"}]}])["fields"] == []
+
+
+class TestGreenhouseSaysWhoHostsTheForm:
+    """Connector capability is not posting capability.
+
+    Twilio, Reddit and GitLab serve their application on job-boards.greenhouse.io.
+    Stripe, Databricks and Rubrik embed the same Greenhouse form in their own
+    careers site, behind their own bot protection. Reading which from the posting
+    keeps this out of a hand-curated list that would silently go stale.
+    """
+
+    def job(self, absolute_url):
+        return greenhouse.normalize("twilio", {
+            "id": 8177722, "title": "Software Engineer", "content": "", "absolute_url": absolute_url,
+            "location": {"name": "Remote - India"}, "updated_at": "2026-09-01T00:00:00Z",
+        })
+
+    def test_a_greenhouse_hosted_posting_is_marked_submittable(self):
+        apply = self.job("https://job-boards.greenhouse.io/twilio/jobs/8177722")["apply"]
+        assert apply["kind"] == "hosted_form"
+        assert apply["url"] == "https://job-boards.greenhouse.io/twilio/jobs/8177722"
+
+    def test_a_posting_embedded_on_the_employers_site_is_not(self):
+        apply = self.job("https://stripe.com/jobs/search?gh_jid=8172487")["apply"]
+        assert apply["kind"] == "external"
+        assert apply["url"] == "https://stripe.com/jobs/search?gh_jid=8172487"
+
+    def test_the_canonical_url_is_rebuilt_rather_than_trusted(self):
+        """The board's own link may carry tracking; the form is addressed directly."""
+        apply = self.job("https://job-boards.greenhouse.io/twilio/jobs/8177722?utm_source=x")["apply"]
+        assert apply["url"] == "https://job-boards.greenhouse.io/twilio/jobs/8177722"
+
+    def test_a_posting_with_no_url_does_not_claim_to_be_submittable(self):
+        assert self.job(None)["apply"] == {"kind": "external", "url": None}

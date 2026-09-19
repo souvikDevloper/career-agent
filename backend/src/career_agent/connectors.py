@@ -22,7 +22,7 @@ CONNECTORS: dict[str, dict] = {
         "label": "Greenhouse public job boards",
         "environment": "live",
         "status": "verified_live",
-        "capabilities": ["discover", "read_details", "read_form"],
+        "capabilities": ["discover", "read_details", "read_form", "fill", "submit"],
         "note": "Public GET endpoints need no key, and each job publishes its real application form - every field, type and required flag - so a packet is checked against the form the employer will actually receive. The submission API needs the employer's own Job Board key, so filing goes through the form itself.",
     },
     "lever-public": {"label": "Lever public job boards", "environment": "live", "status": "verified_live",

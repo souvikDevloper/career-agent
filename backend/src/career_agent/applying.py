@@ -249,7 +249,10 @@ def prepare_packet(wf, uid: str, app: dict, job: dict, profile: dict, *, is_judg
 
     return {
         "target": {"url": apply_url, "connector": app["connector"], "environment": app["target_environment"],
-                   "job_external_id": job.get("external_id")},
+                   "job_external_id": job.get("external_id"),
+                   # A connector that can submit in general still cannot submit to
+                   # a posting whose form lives on the employer's own site.
+                   "submittable": (job.get("apply") or {}).get("kind") in ("portal", "hosted_form")},
         "job_snapshot_hash": job.get("content_hash"),
         "profile_version": profile["version"],
         "resume_key": profile.get("resume_key"),

@@ -472,7 +472,14 @@ Resources:
       Environment:
         Variables:
           GATE_FUNCTION: !Ref GateFunction
-          ALLOWED_TARGET_HOSTS: !If [WithCloudFront, !GetAtt Distribution.DomainName, !Sub "${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"]
+          # The browser may only ever reach these hosts. job-boards.greenhouse.io is
+          # where employers who host their application on Greenhouse serve the real
+          # form; a posting embedded in the employer's own careers site resolves to
+          # a host that is not on this list and is handed to the person instead.
+          ALLOWED_TARGET_HOSTS: !If
+            - WithCloudFront
+            - !Sub "${Distribution.DomainName},job-boards.greenhouse.io"
+            - !Sub "${HttpApi}.execute-api.${AWS::Region}.amazonaws.com,job-boards.greenhouse.io"
           HOME: /tmp
       Policies:
         - LambdaInvokePolicy: { FunctionName: !Ref GateFunction }
