@@ -6,9 +6,10 @@ Delivery is at-least-once; every handler is idempotent (operations, outbox keys,
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
-from .. import agent
+from .. import agent, discovery
 from ..util import get_logger, log
 from ..workflow import WorkflowError
 from .common import services
@@ -106,9 +107,98 @@ def process(msg: dict) -> None:
         raise
 
 
+
+_AMAZON_SEARCH_VERBS = {"find", "search", "show", "get"}
+_AMAZON_JOB_NOUNS = {"job", "jobs", "role", "roles", "opening", "openings", "position", "positions"}
+_AMAZON_SECOND_STEPS = {
+    "apply", "applying", "application", "applications", "prepare", "preparing",
+    "submit", "submitting", "approve", "send",
+}
+
+
+def _known_place(text: str) -> str:
+    """Return a place spelling already known by discovery, or an empty string."""
+    lower = (text or "").lower()
+    known = set(discovery._PLACE_ALIASES)
+    for forms in discovery._PLACE_ALIASES.values():
+        known.update(forms)
+    for region, members in discovery._REGIONS.items():
+        known.add(region)
+        known.update(members)
+    for place in sorted(known, key=lambda p: (len(p.split()), len(p)), reverse=True):
+        if re.search(r"\b" + re.escape(place) + r"\b", lower):
+            return place
+    return ""
+
+
+def _fallback_amazon_filters(text: str) -> dict[str, str] | None:
+    """Parse only a simple, explicit Amazon job-search command.
+
+    This is a recovery path, not the normal chat path. Multi-step instructions
+    stay with the agent so a request such as "find ... and apply" cannot lose its
+    second action. Informational Amazon questions are not searches either.
+    """
+    tokens = re.findall(r"[a-z0-9+#]+", (text or "").lower())
+    if not tokens or "amazon" not in tokens:
+        return None
+
+    # The first meaningful word must be an imperative search verb. This rejects
+    # questions such as "what does Amazon look for in an SDE 1?"
+    first = next((t for t in tokens if t not in {"please", "can", "could", "you"}), "")
+    if first not in _AMAZON_SEARCH_VERBS:
+        return None
+    if not any(t in _AMAZON_JOB_NOUNS for t in tokens):
+        return None
+    if any(t in _AMAZON_SECOND_STEPS for t in tokens):
+        return None
+
+    location = _known_place(text)
+    location_tokens = set(re.findall(r"[a-z0-9]+", location))
+    role_tokens = [
+        token for token in tokens
+        if token != "amazon"
+        and token not in discovery.STOP
+        and token not in _AMAZON_JOB_NOUNS
+        and token not in location_tokens
+    ]
+    return {"company": "Amazon", "role": " ".join(role_tokens), "location": location}
+
+
+def _direct_search_reply(cards: list[dict], filters: dict[str, str], stats: dict) -> str:
+    role = filters.get("role") or "jobs"
+    location = filters.get("location")
+    target = f"Amazon {role}" + (f" in {location}" if location else "")
+    if not cards:
+        looked = stats.get("live_postings")
+        suffix = f" I checked {looked} live postings." if isinstance(looked, int) else ""
+        return f"I searched {target} directly and found no matches.{suffix}"
+
+    preview = []
+    for card in cards[:3]:
+        job = card.get("job") or {}
+        where = job.get("location") or "location not listed"
+        preview.append(f"{job.get('title') or 'Untitled role'} — {where} ({card.get('score', 0)}/100)")
+    more = f" +{len(cards) - 3} more." if len(cards) > 3 else ""
+    return f"Found {len(cards)} matches for {target}. " + "; ".join(preview) + more
+
+
+def _finish_direct_search(svc, uid: str, op_id: str, filters: dict[str, str], cid: str | None) -> None:
+    stats: dict = {}
+    svc.wf.op_progress(uid, op_id, status="running", message="Searching Amazon Jobs directly")
+    cards = svc.search(uid, op_id, correlation_id=cid, stats=stats, filters=filters)
+    reply = _direct_search_reply(cards, filters, stats)
+    actions = [{"type": "search", "count": len(cards), "filters": filters}]
+    ts = svc.wf.clock.iso()
+    svc.store.put({"pk": f"USER#{uid}", "sk": f"CHAT#{ts}#{op_id}#a", "entity": "chat", "role": "assistant",
+                   "text": reply, "op_id": op_id, "at": ts, "actions": actions, "runtime": "direct-search-fallback"})
+    svc.wf.op_progress(uid, op_id, status="succeeded",
+                       final={"reply": reply, "actions": actions, "runtime": "direct-search-fallback"})
+
+
 def run_chat(svc, uid: str, op_id: str, text: str, source: str, cid: str | None) -> None:
     from ..util import new_id
 
+    fallback = _fallback_amazon_filters(text)
     svc.wf.op_progress(uid, op_id, status="running", message="Thinking")
     rows = svc.store.query(f"USER#{uid}", "CHAT#", limit=13, newest_first=True)
     history = []
@@ -124,10 +214,30 @@ def run_chat(svc, uid: str, op_id: str, text: str, source: str, cid: str | None)
         history.pop(0)
     if history and history[-1]["role"] == "user":
         history.pop()
-    svc._reserve_model(uid)
     ctx = agent.ToolContext(user_id=uid, op_id=op_id, user_text=text, channel=source, correlation_id=cid or new_id(),
                             services=svc, is_judge=svc.is_judge(uid))
-    reply, runtime = agent.run(ctx, history)
+    try:
+        svc._reserve_model(uid)
+        reply, runtime = agent.run(ctx, history)
+    except Exception as exc:
+        # A simple Amazon search can still succeed when the chat model is down or
+        # its allowance is exhausted. Only recover when no action has happened;
+        # otherwise retrying the intent could duplicate a side effect.
+        if fallback and not ctx.actions:
+            log(logger, "chat.search_fallback", company="Amazon", error=type(exc).__name__,
+                detail=str(exc)[:160], correlation_id=cid)
+            _finish_direct_search(svc, uid, op_id, fallback, cid)
+            return
+        raise
+
+    # A model can also end the turn without calling search_jobs. For this one
+    # narrow, explicit search command, an action-free answer is not completion:
+    # run the deterministic search instead. Multi-step requests never qualify.
+    if fallback and not ctx.actions:
+        log(logger, "chat.search_fallback", company="Amazon", reason="no_search_action", correlation_id=cid)
+        _finish_direct_search(svc, uid, op_id, fallback, cid)
+        return
+
     ts = svc.wf.clock.iso()
     svc.store.put({"pk": f"USER#{uid}", "sk": f"CHAT#{ts}#{op_id}#a", "entity": "chat", "role": "assistant", "text": reply,
                    "op_id": op_id, "at": ts, "actions": ctx.actions, "runtime": runtime})
