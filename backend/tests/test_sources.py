@@ -7,7 +7,7 @@ depends on cannot quietly stop being populated.
 import unittest
 
 from career_agent.scoring import work_mode_of
-from career_agent.sources import amazon, ashby, greenhouse, lever, oraclehcm, workday
+from career_agent.sources import adzuna, amazon, ashby, greenhouse, lever, oraclehcm, workday
 
 
 class LeverNormalize(unittest.TestCase):
@@ -388,3 +388,65 @@ class TestAmazonIsSearchedNotMirrored:
         seen = self.captured(monkeypatch)
         amazon.search("IND", "SDE 1")
         assert "sort=relevant" in seen["url"]
+
+
+class TestAdzunaIsSecondClassOnPurpose:
+    """An aggregator holds a copy of someone else's posting.
+
+    It buys breadth - Indian employers with no public ATS feed at all - and pays
+    for it in fidelity: truncated descriptions, and an apply link that redirects
+    to whoever actually owns the posting. So it discovers and scores, and is never
+    something we could fill a form on.
+    """
+
+    RAW = {
+        "id": "4839201",
+        "title": "Software Engineer",
+        "company": {"display_name": "Zeta Suite"},
+        "location": {"display_name": "Bengaluru, Karnataka", "area": ["India", "Karnataka", "Bengaluru"]},
+        "description": "Build payment systems. Remote friendly.",
+        "redirect_url": "https://www.adzuna.in/land/ad/4839201",
+        "created": "2026-09-14T00:00:00Z",
+        "contract_time": "full_time",
+        "category": {"label": "IT Jobs"},
+    }
+
+    def job(self):
+        return adzuna.normalize("in", self.RAW)
+
+    def test_it_normalises_into_the_same_shape_as_every_other_board(self):
+        job = self.job()
+        assert job["company"] == "Zeta Suite"
+        assert job["location"] == "Bengaluru, Karnataka"
+        assert job["published_at"] == "2026-09-14T00:00:00Z"
+        assert job["connector"] == adzuna.SOURCE
+
+    def test_applying_is_always_a_handoff(self):
+        """A redirect is not a form, so it can never be marked submittable."""
+        assert self.job()["apply"]["kind"] == "external"
+
+    def test_the_spec_accepts_a_country_and_an_optional_query(self):
+        assert adzuna.parse_spec("in") == ("in", "")
+        assert adzuna.parse_spec("in:python") == ("in", "python")
+
+    def test_a_malformed_spec_is_rejected_rather_than_guessed(self):
+        """A country code, not a country name - guessing which was meant is how a
+        board silently polls the wrong index."""
+        for bad in ("india", "IN", "in:", "x"):
+            try:
+                adzuna.parse_spec(bad)
+            except ValueError:
+                continue
+            raise AssertionError(f"{bad!r} should not parse")
+
+    def test_without_a_key_it_says_so_instead_of_calling(self, monkeypatch):
+        """Registered but unconfigured is a state the UI can explain; a silent
+        failed call is not."""
+        monkeypatch.setenv("ADZUNA_APP_ID", "")
+        monkeypatch.setenv("ADZUNA_APP_KEY", "")
+        try:
+            adzuna.fetch_board("in")
+        except ValueError as exc:
+            assert "ADZUNA_APP_ID" in str(exc)
+        else:
+            raise AssertionError("a missing key should be reported, not called with")
