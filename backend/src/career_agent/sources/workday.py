@@ -127,3 +127,21 @@ def fetch_description(job: dict) -> str:
         return ""
     text = re.sub(r"<[^>]+>", " ", info.get("jobDescription") or "")
     return re.sub(r"\s{2,}", " ", text).strip()[:12000]
+
+
+def search(spec: str, query: str, *, limit: int = 20) -> list[dict]:
+    """Let the tenant run the search rather than mirroring the whole site.
+
+    Workday caps a page at 20, and a tenant like Mastercard or HPE publishes over
+    a thousand roles, so polling can only ever hold a slice of each one - the same
+    truncation that hid live Amazon postings behind the four hundred most recent.
+    The same endpoint takes a searchText, and answers the actual question.
+    """
+    tenant, pod, site = parse_spec(spec)
+    url = f"https://{tenant}.{pod}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs"
+    body = json.dumps({"appliedFacets": {}, "limit": max(1, min(20, limit)),
+                       "offset": 0, "searchText": query or ""}).encode()
+    data: Any = fetch_json(url, HOSTS, method="POST", body=body,
+                           headers={"Content-Type": "application/json", "Accept": "application/json"}, timeout=25)
+    postings = data.get("jobPostings") if isinstance(data, dict) else None
+    return [normalize(tenant, pod, site, p) for p in (postings or []) if isinstance(p, dict) and p.get("title")]

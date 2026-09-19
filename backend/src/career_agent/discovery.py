@@ -67,15 +67,22 @@ def live_search(wf, *, company: str, role: str = "", limit: int = 100) -> list[d
     wanted = (company or "").strip().lower()
     if not wanted:
         return []
-    out: list[dict] = []
-    for spec in cfg().amazon_boards:
-        if "amazon" not in wanted and wanted not in "amazon":
-            break
-        feed = f"amazon:{spec}"
-        try:
+    s = cfg()
+    asks: list[tuple[str, Any]] = []
+    if _names_match(wanted, "amazon"):
+        for spec in s.amazon_boards:
             country, preset = amazon.parse_spec(spec)
-            found = amazon.search(country, role or preset or "", limit=limit)
-        except (FetchError, ValueError) as exc:
+            asks.append((f"amazon:{spec}", lambda c=country, p=preset: amazon.search(c, role or p or "", limit=limit)))
+    for spec in s.workday_boards:
+        tenant = spec.split(":", 1)[0].lower()
+        if _names_match(wanted, tenant):
+            asks.append((f"workday:{spec}", lambda sp=spec: workday.search(sp, role)))
+
+    out: list[dict] = []
+    for feed, ask in asks:
+        try:
+            found = ask()
+        except (FetchError, ValueError, KeyError) as exc:
             log(logger, "warning", "live_search_failed", feed=feed, error=str(exc)[:200])
             continue
         for job in found:
@@ -87,6 +94,17 @@ def live_search(wf, *, company: str, role: str = "", limit: int = 100) -> list[d
         log(logger, "info", "live_search", feed=feed, role=role, found=len(found))
         out.extend(found)
     return out
+
+
+def _names_match(wanted: str, name: str) -> bool:
+    """Whether a typed employer name refers to this board.
+
+    Containment only once both names are long enough for it not to be a
+    coincidence: "hp" and the Workday tenant "hpe" are different companies.
+    """
+    if wanted == name:
+        return True
+    return len(wanted) >= 4 and len(name) >= 4 and (wanted in name or name in wanted)
 
 
 def poll(wf, source: str, force: bool = False) -> dict[str, Any]:
