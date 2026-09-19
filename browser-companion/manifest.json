@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "Career Agent Browser Companion",
+  "version": "1.0.0",
+  "description": "Fills and submits an explicitly approved Career Agent application in your signed-in browser session.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://*.execute-api.us-east-1.amazonaws.com/*",
+    "https://*.amazon.jobs/*",
+    "https://www.google.com/about/careers/*",
+    "https://careers.google.com/*",
+    "https://apply.careers.microsoft.com/*",
+    "https://*.myworkdayjobs.com/*",
+    "https://jobs.lever.co/*",
+    "https://jobs.ashbyhq.com/*",
+    "https://*.oraclecloud.com/*",
+    "https://*.oracle.com/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.amazon.jobs/*",
+        "https://www.google.com/about/careers/*",
+        "https://careers.google.com/*",
+        "https://apply.careers.microsoft.com/*",
+        "https://*.myworkdayjobs.com/*",
+        "https://jobs.lever.co/*",
+        "https://jobs.ashbyhq.com/*",
+        "https://*.oraclecloud.com/*",
+        "https://*.oracle.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
