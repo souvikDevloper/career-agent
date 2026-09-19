@@ -4,7 +4,7 @@ from career_agent.submission import submission_plan
 
 
 def test_amazon_uses_authenticated_local_browser():
-    job = {"connector": "amazon-jobs",
+    job = {"connector": "amazon-jobs", "external_id": "123",
            "url": "https://www.amazon.jobs/en/jobs/123/sde",
            "apply": {"kind": "external", "url": "https://www.amazon.jobs/en/jobs/123/sde"}}
     plan = submission_plan(job)
@@ -13,6 +13,7 @@ def test_amazon_uses_authenticated_local_browser():
     assert plan["can_submit"] is True
     assert plan["requires_user_presence"] is True
     assert plan["requires_login"] is True
+    assert plan["url"] == "https://account.amazon.jobs/en-US/applicant/jobs/123/apply"
 
 
 def test_workday_uses_authenticated_local_browser():
