@@ -276,22 +276,52 @@
     return null;
   }
 
+  function choiceText(el) {
+    if (el.tagName === "SELECT") {
+      return String(el.selectedOptions?.[0]?.textContent || el.value || "").trim();
+    }
+    return String(el.getAttribute("aria-valuetext") || el.getAttribute("data-value") ||
+                  el.textContent || el.getAttribute("aria-label") || "").trim();
+  }
+
+  function choiceEmpty(el) {
+    const value = norm(choiceText(el));
+    return !value || PLACEHOLDER_CHOICE.test(value) || value === "select" || value === "choose";
+  }
+
+  function requiredLike(el) {
+    if (el.required || el.getAttribute("aria-required") === "true") return true;
+    const q = questionContainer(el);
+    const text = String(q?.textContent || "");
+    return text.includes("*") || /\brequired\b/i.test(text);
+  }
+
   function unansweredRequired() {
     const out = [];
-    for (const el of controls()) {
-      if (!(el.required || el.getAttribute("aria-required") === "true")) continue;
-      const type = (el.type || "").toLowerCase();
+    for (const el of allControls()) {
+      const type = (el.getAttribute("type") || "").toLowerCase();
       let empty = false;
-      if (type === "checkbox" || type === "radio") {
+      let required = requiredLike(el);
+
+      if (el.tagName === "SELECT" || isCustomChoice(el)) {
+        empty = choiceEmpty(el);
+        // Authenticated screening pages often render required custom selects
+        // without aria-required. A placeholder choice directly under a
+        // question is still something we must not skip.
+        if (empty && /\?|\*/.test(String(questionContainer(el)?.textContent || ""))) required = true;
+      } else if (type === "checkbox" || type === "radio") {
         empty = el.name ? !document.querySelector(`[name="${CSS.escape(el.name)}"]:checked`) : !el.checked;
       } else if (type === "file") {
         empty = !(el.files && el.files.length);
       } else {
         empty = !String(el.value || "").trim();
       }
-      if (empty) out.push(labelOf(el).slice(0, 120) || el.name || el.id || "required field");
+      if (required && empty) {
+        const label = labelOf(el).slice(0, 180) || el.name || el.id || "required field";
+        if (label && !PLACEHOLDER_CHOICE.test(norm(label))) out.push(label);
+      }
     }
-    return [...new Set(out)].slice(0, 5);
+    return [...new Set(out)].slice(0, 6);
   }
 
   const SENSITIVE_FIELD = /password|passcode|verification|otp|captcha|social security|ssn|date of birth|dob|race|ethnicity|gender|sex|disability|veteran|marital|religion|sexual orientation|national id|aadhaar|pan number|passport/;
@@ -299,14 +329,17 @@
   function learnedAnswers() {
     const out = {};
     const seenRadio = new Set();
-    for (const el of controls()) {
-      const type = (el.type || "").toLowerCase();
-      if (["hidden", "password", "file", "submit", "button"].includes(type)) continue;
+    for (const el of allControls()) {
+      const type = (el.getAttribute("type") || "").toLowerCase();
+      if (["hidden", "password", "file", "submit"].includes(type)) continue;
       const label = labelOf(el).slice(0, 120);
       if (!label || SENSITIVE_FIELD.test(label)) continue;
 
       let value = "";
-      if (type === "radio") {
+      if (isCustomChoice(el)) {
+        value = choiceText(el);
+        if (choiceEmpty(el)) continue;
+      } else if (type === "radio") {
         if (!el.name || seenRadio.has(el.name)) continue;
         seenRadio.add(el.name);
         const checked = document.querySelector(`input[type="radio"][name="${CSS.escape(el.name)}"]:checked`);
@@ -315,14 +348,43 @@
       } else if (type === "checkbox") {
         value = el.checked ? "Yes" : "No";
       } else if (el.tagName === "SELECT") {
-        value = el.selectedOptions?.[0]?.textContent || el.value;
+        value = choiceText(el);
+        if (choiceEmpty(el)) continue;
       } else {
+        if (type === "button") continue;
         value = el.value;
       }
       value = String(value || "").trim();
       if (value) out[label] = value.slice(0, 1000);
     }
     return out;
+  }
+
+  async function resolveVisibleQuestions() {
+    const discovered = [];
+    const byLabel = new Map();
+    for (const el of allControls()) {
+      if (!(el.tagName === "SELECT" || isCustomChoice(el)) || !choiceEmpty(el)) continue;
+      const label = labelOf(el).slice(0, 600);
+      if (!label || SENSITIVE_FIELD.test(label) || byLabel.has(label)) continue;
+      const options = await optionTexts(el).catch(() => []);
+      discovered.push({ label, options, required: requiredLike(el) });
+      byLabel.set(label, el);
+    }
+    if (!discovered.length) return 0;
+
+    const response = await send({ type: "resolve_questions", questions: discovered }).catch(() => null);
+    const answers = response?.data?.answers || [];
+    let filled = 0;
+    for (const answer of answers) {
+      const el = byLabel.get(answer.label) || findControl(answer.label);
+      if (el && choiceEmpty(el) && await setValue(el, answer.value)) filled++;
+    }
+    if (filled) {
+      banner(`Career Agent filled ${filled} screening answer${filled === 1 ? "" : "s"} from your verified profile.`, "good");
+      await rememberLearnedAnswers();
+    }
+    return filled;
   }
 
   async function rememberLearnedAnswers() {
@@ -356,7 +418,7 @@
   }
 
   function actionButton(re) {
-    return [...document.querySelectorAll("button, input[type='submit'], input[type='button'], a[role='button'], a")]
+    return [...document.querySelectorAll("button, input[type='submit'], input[type='button'], [role='button'], a")]
       .filter(visible)
       .find((el) => re.test(norm(el.textContent || el.value || el.getAttribute("aria-label") || "")));
   }
@@ -409,6 +471,7 @@
         }
 
         await fill(packet);
+        await resolveVisibleQuestions();
         await sleep(450);
 
         if (confirmed()) {
