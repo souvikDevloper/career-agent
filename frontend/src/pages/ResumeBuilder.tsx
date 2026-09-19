@@ -21,20 +21,11 @@ import {
 } from "../components/Icons";
 import { api } from "../lib/api";
 import { useMe } from "../lib/me";
+import { buildJakeTemplate, escapeTex } from "../lib/resumeJake";
 
 // ---------------------------------------------------------------------------
 // Template Generators with Profile Integration
 // ---------------------------------------------------------------------------
-
-function escapeTex(str: string): string {
-  if (!str) return "";
-  return str
-    .replace(/\\/g, "\\textbackslash{}")
-    .replace(/[{}]/g, "\\$&")
-    .replace(/[$&#_%]/g, "\\$&")
-    .replace(/~/g, "\\textasciitilde{}")
-    .replace(/\^/g, "\\textasciicircum{}");
-}
 
 export function buildModernTemplate(facts: any): string {
   const name = escapeTex(facts?.name || "Aarav Mehta");
@@ -229,12 +220,14 @@ Bachelor of Technology in Computer Science \\hfill Deccan Institute of Technolog
 }
 
 const TEMPLATES = [
+  { id: "jake", label: "Jake's Resume", desc: "Single-page ATS-friendly classic, built from your profile" },
   { id: "modern", label: "Modern Clean", desc: "Single-column, clean indigo headers" },
   { id: "classic", label: "Classic Academic", desc: "11pt serif, publications and research" },
   { id: "executive", label: "Executive", desc: "Leadership-focused, achievement metrics" },
 ];
 
 function getTemplateSource(id: string, facts: any): string {
+  if (id === "jake") return buildJakeTemplate(facts);
   if (id === "classic") return buildClassicTemplate(facts);
   if (id === "executive") return buildExecutiveTemplate(facts);
   return buildModernTemplate(facts);
@@ -292,12 +285,15 @@ export function ResumeBuilderPage() {
   const toast = useToast();
 
   const facts = me?.profile?.facts;
-  const [activeTemplate, setActiveTemplate] = useState("modern");
+  const [activeTemplate, setActiveTemplate] = useState("jake");
 
   // LaTeX state — initialized from profile facts
   const [latex, setLatex] = useState(() => {
-    return getTemplateSource("modern", facts);
+    return getTemplateSource("jake", facts);
   });
+  // The last source generated from the profile. While the editor still holds exactly this,
+  // the user has not edited anything, so a profile change can safely rebuild it.
+  const generatedRef = useRef(latex);
 
   // Preview & compile state
   const [compiling, setCompiling] = useState(false);
@@ -384,10 +380,42 @@ export function ResumeBuilderPage() {
     compile(latex);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Keep the resume in step with the profile: when the facts change (profile finished loading, a
+  // new upload, a correction) rebuild it, unless the user has since edited it by hand or via the copilot.
+  const factsKey = JSON.stringify(facts ?? null);
+  useEffect(() => {
+    if (!facts || latex !== generatedRef.current) return;
+    const fresh = getTemplateSource(activeTemplate, facts);
+    if (fresh === latex) return;
+    generatedRef.current = fresh;
+    setLatex(fresh);
+    setDrawerDraft(fresh);
+    compile(fresh);
+  }, [factsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Explicit "fetch from profile": always rebuilds, asking first if that would discard edits.
+  function rebuildFromProfile() {
+    if (!facts) {
+      toast("No profile found yet. Upload a resume first.", "error");
+      return;
+    }
+    if (latex !== generatedRef.current && !window.confirm("Replace your current edits with a fresh resume built from your profile?")) {
+      return;
+    }
+    const fresh = getTemplateSource(activeTemplate, facts);
+    generatedRef.current = fresh;
+    setLatex(fresh);
+    setDrawerDraft(fresh);
+    compile(fresh);
+    syncToProfile(fresh);
+    toast("Resume rebuilt from your profile", "success");
+  }
+
   // Template switch handler
   function switchTemplate(tplId: string) {
     setActiveTemplate(tplId);
     const newTex = getTemplateSource(tplId, facts);
+    generatedRef.current = newTex;
     setLatex(newTex);
     setDrawerDraft(newTex);
     compile(newTex);
@@ -432,7 +460,7 @@ export function ResumeBuilderPage() {
       const res = await api("/api/resume/builder/chat", {
         body: {
           message: text,
-          latex_context: latex.slice(0, 4000),
+          latex_context: latex,
         },
       });
 
@@ -641,6 +669,15 @@ export function ResumeBuilderPage() {
                 ))}
               </select>
             </div>
+
+            <button
+              className="btn ghost sm"
+              onClick={rebuildFromProfile}
+              style={{ gap: 6, border: "1px solid rgba(255, 255, 255, 0.12)" }}
+              title="Rebuild the resume from your current profile details"
+            >
+              <IRefresh size={14} /> Rebuild from profile
+            </button>
 
             {/* View/Edit LaTeX Trigger */}
             <button
