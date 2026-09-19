@@ -37,7 +37,7 @@ TRANSITIONS: dict[str, set[str]] = {
     "Ineligible": {"Preparing", "Withdrawn"},
     "Preparing": {"NeedsInformation", "NeedsApproval", "NeedsUserPresence", "Authorized", "ManualHandoff", "Withdrawn"},
     "NeedsInformation": {"Preparing", "Withdrawn"},
-    "NeedsApproval": {"Authorized", "Preparing", "Withdrawn"},
+    "NeedsApproval": {"Authorized", "NeedsUserPresence", "Preparing", "Withdrawn"},
     "NeedsUserPresence": {"Submitting", "Preparing", "Withdrawn"},
     "ManualHandoff": {"Submitted", "Preparing", "Withdrawn"},
     "Authorized": {"Queued", "Preparing", "Paused", "Withdrawn"},
