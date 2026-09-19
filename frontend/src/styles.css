@@ -289,7 +289,7 @@ input[type="range"] { accent-color: var(--accent); }
 
 table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .table th { text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 600; padding: 10px 12px; border-bottom: 1px solid var(--line); }
-.table td { padding: 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.table td { padding: 12px; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
 .table tr:hover td { background: rgba(255, 255, 255, 0.02); }
 
 /* ---------- landing ---------- */
@@ -331,7 +331,23 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .auth h1 { font-size: 26px; margin: 18px 0 6px; }
 
 /* ---------- app shell ---------- */
-.shell { display: grid; grid-template-columns: 252px minmax(0, 1fr); min-height: 100vh; }
+.shell { display: grid; grid-template-columns: 252px minmax(0, 1fr); min-height: 100vh;
+  transition: grid-template-columns 0.26s cubic-bezier(0.22, 1, 0.36, 1); }
+/* The rail slides out rather than disappearing, so it is obvious where it went
+   and that it is coming back. The grid column closes at the same time, which is
+   what actually gives the content the width. */
+.shell.rail-closed { grid-template-columns: 0 minmax(0, 1fr); }
+.side { transition: transform 0.26s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.2s linear; }
+.shell.rail-closed .side { transform: translateX(-100%); opacity: 0; pointer-events: none; }
+.rail-toggle { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px;
+  margin-right: 4px; border-radius: 9px; border: 1px solid var(--line); background: var(--panel-2);
+  color: var(--ink-2); cursor: pointer; transition: color 0.15s, border-color 0.15s, background 0.15s; }
+.rail-toggle:hover { color: var(--ink); border-color: var(--line-strong); background: rgba(255,255,255,0.07); }
+.rail-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  .shell, .side { transition: none; }
+}
+@media (max-width: 900px) { .rail-toggle { display: none; } }
 .side { position: sticky; top: 0; height: 100vh; padding: 18px 14px; border-right: 1px solid var(--line); background: rgba(12, 12, 24, 0.88); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); display: flex; flex-direction: column; gap: 6px; }
 .side .brand { padding: 6px 10px 16px; }
 .nav-item { display: flex; align-items: center; gap: 12px; height: 42px; padding: 0 12px; border-radius: 12px; color: var(--ink-2); font-weight: 500; font-size: 14.5px; transition: background 0.15s, color 0.15s; position: relative; }
@@ -363,7 +379,13 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .command-input input { flex: 1; background: transparent; border: 0; color: var(--ink); font: inherit; font-size: 15.5px; min-width: 0; }
 .command-input input:focus { outline: none; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-.chip { height: 30px; padding: 0 12px; border-radius: 99px; border: 1px solid var(--line-strong); background: rgba(255, 255, 255, 0.03); font-size: 13px; color: var(--ink-2); cursor: pointer; transition: all 0.15s; }
+/* A fixed height with no centring pushed the text out of the pill, and a long
+   token (an MCP tool name, a capability like "read_messages") ran past its right
+   edge. Centre it, let it grow, and let it break rather than escape. */
+.chip { display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 30px; padding: 5px 12px; border-radius: 99px; border: 1px solid var(--line-strong);
+  background: rgba(255, 255, 255, 0.03); font-size: 13px; line-height: 1.35; color: var(--ink-2);
+  cursor: pointer; transition: all 0.15s; max-width: 100%; overflow-wrap: anywhere; text-align: center; }
 .chip:hover { color: var(--accent); border-color: rgba(123, 92, 255, 0.6); background: rgba(123, 92, 255, 0.12); }
 
 .orb-wrap { display: grid; place-items: center; }
@@ -672,7 +694,7 @@ html { scroll-behavior: smooth; }
 .scroll-x { overflow-x: auto; max-width: 100%; }
 /* A plain divided list. Not .check-row - that one reserves a 22px status
    icon column, and content placed in it lands in the narrow cell. */
-.list-row { padding: 12px 0; border-bottom: 1px dashed var(--line); }
+.list-row { padding: 12px 0; border-bottom: 1px dashed var(--line); min-width: 0; overflow-wrap: anywhere; }
 .list-row:last-child { border-bottom: 0; }
 .list-row .chips { margin-top: 8px; }
 .plain-list { list-style: none; padding-left: 0; margin: 0; }
@@ -698,6 +720,17 @@ html { scroll-behavior: smooth; }
   min-height: 420px; padding: 0; overflow: hidden;
   background: color-mix(in srgb, var(--bg-2) 82%, transparent);
   backdrop-filter: blur(18px) saturate(1.1); }
+/* A header strip the conversation hangs from, so starting a new one is where
+   you reach for it rather than tucked under the composer. */
+.chat-head { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 16px; border-bottom: 1px solid var(--line); background: rgba(255,255,255,0.02); }
+.new-chat { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 99px;
+  border: 1px solid var(--line-strong); background: var(--panel-2); color: var(--ink-2);
+  font: inherit; font-size: 13px; cursor: pointer; transition: all 0.15s; }
+.new-chat:hover:not(:disabled) { color: var(--ink); border-color: rgba(123, 92, 255, 0.6); background: rgba(123, 92, 255, 0.12); }
+.new-chat:disabled { opacity: 0.4; cursor: default; }
+.new-chat:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 .thread-wrap { position: relative; flex: 1; min-height: 0; display: flex; }
 
 /* No smooth scrolling here. The element also gets programmatic scrollTo calls

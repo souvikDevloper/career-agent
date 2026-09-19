@@ -45,3 +45,8 @@ export const IBrain = make(<><path d="M9 3a3 3 0 0 0-3 3 3 3 0 0 0-3 3c0 1.3.8 2
 export const IGlobe = make(<><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" /></>);
 export const ITrash = make(<><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14" /></>);
 export const IExternal = make(<><path d="M14 4h6v6M20 4l-9 9" /><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" /></>);
+
+// A panel with its rail highlighted: the sidebar itself, so the control looks
+// like the thing it toggles rather than a generic hamburger.
+export const IPanel = make(<><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16" /></>);
+export const IPlus = make(<><path d="M12 5v14" /><path d="M5 12h14" /></>);
