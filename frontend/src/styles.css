@@ -914,3 +914,14 @@ html { scroll-behavior: smooth; }
     }
   }
 }
+
+
+/* Scrollbars that belong to the site: thin, no arrow buttons, a quiet thumb that lifts on hover.
+   The browser default (a chunky track with up/down buttons) is the loudest thing in a dark panel.
+   scrollbar-width/color cover Firefox and current Chrome; the ::-webkit rules cover Safari. */
+* { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.22) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.18); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.34); background-clip: padding-box; }
+::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
