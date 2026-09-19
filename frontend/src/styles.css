@@ -361,9 +361,18 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .nav-item .count { margin-left: auto; min-width: 22px; height: 20px; padding: 0 6px; border-radius: 99px; background: var(--rose); color: #fff; font-size: 11.5px; font-weight: 700; display: grid; place-items: center; }
 .side-foot { margin-top: auto; padding: 12px; border-radius: 14px; border: 1px solid var(--line); background: var(--panel-2); font-size: 12.5px; overflow-wrap: anywhere; }
 .main { min-width: 0; }
-.topbar { position: sticky; top: 0; z-index: 20; height: 64px; display: flex; align-items: center; gap: 12px; padding: 0 28px; background: rgba(8, 8, 15, 0.86); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); border-bottom: 1px solid var(--line); }
+/* The bar stays full bleed so its blur and border still span the window, but its
+   contents sit on the same column as the page, so the title does not drift away
+   from the content it titles once the rail is collapsed. */
+.topbar { position: sticky; top: 0; z-index: 20; height: 64px; display: flex; align-items: center; gap: 12px;
+  padding-inline: max(28px, calc((100% - 1320px) / 2)); background: rgba(8, 8, 15, 0.86);
+  backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); border-bottom: 1px solid var(--line); }
 .topbar h2 { font-size: 18px; font-weight: 700; }
-.content { padding: 26px 28px 60px; max-width: 1320px; }
+/* Centred, not pinned left. With the rail open the margin is nearly zero and
+   nothing moves; with it collapsed the page would otherwise keep its 1320px
+   against the left edge and leave the reclaimed width as dead space on the
+   right, which is the opposite of what collapsing it was for. */
+.content { padding: 26px 28px 60px; max-width: 1320px; margin-inline: auto; }
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 22px; flex-wrap: wrap; }
 .page-head h1 { font-size: 28px; font-weight: 800; }
 .page-head p { color: var(--muted); margin-top: 6px; }
