@@ -106,16 +106,25 @@ class Services:
         # smoke test.
         named = (active.get("company") or "").strip().lower()
         if refresh and named:
-            feeds = {j["feed"] for j in jobs if j.get("feed") and _same_employer(named, j.get("company"))}
-            for feed in sorted(feeds)[:2]:
-                self.wf.op_progress(uid, op_id, message=f"Refreshing {feed}")
-                try:
-                    discovery.poll(self.wf, feed, force=True)
-                except Exception as exc:  # a stale answer beats no answer
-                    log(logger, "warning", "inline_refresh_failed", feed=feed, error=str(exc)[:200])
-                else:
-                    jobs = [j for j in jobs if j.get("feed") != feed]
-                    jobs.extend(discovery.cached_jobs(self.wf, feed))
+            # Boards big enough to run their own search get asked directly, because
+            # a cache of the most recent few hundred postings answers "is there an
+            # SDE 1 in Bengaluru" with a confident no while five are live.
+            self.wf.op_progress(uid, op_id, message=f"Asking {named} directly")
+            live = discovery.live_search(self.wf, company=named, role=active.get("role", ""))
+            if live:
+                fresh = {j["job_key"] for j in live}
+                jobs = [j for j in jobs if j.get("job_key") not in fresh] + live
+            else:
+                feeds = {j["feed"] for j in jobs if j.get("feed") and _same_employer(named, j.get("company"))}
+                for feed in sorted(feeds)[:2]:
+                    self.wf.op_progress(uid, op_id, message=f"Refreshing {feed}")
+                    try:
+                        discovery.poll(self.wf, feed, force=True)
+                    except Exception as exc:  # a stale answer beats no answer
+                        log(logger, "warning", "inline_refresh_failed", feed=feed, error=str(exc)[:200])
+                    else:
+                        jobs = [j for j in jobs if j.get("feed") != feed]
+                        jobs.extend(discovery.cached_jobs(self.wf, feed))
         matched = (discovery.filter_jobs(jobs, prefs, **active) if active
                    else discovery.keyword_filter(jobs, keywords, prefs))
         # Scoring costs a model call each, so never score more than asked for.

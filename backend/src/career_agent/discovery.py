@@ -50,6 +50,45 @@ def all_sources(extra: list[str] | None = None) -> list[str]:
     return list(dict.fromkeys([*first, *boards, *(extra or [])]))
 
 
+
+def live_search(wf, *, company: str, role: str = "", limit: int = 100) -> list[dict]:
+    """Ask the employer's own search, for boards too large to mirror.
+
+    Polling keeps a cache so the whole corpus can be browsed. But Amazon India
+    alone publishes 2,322 openings and paging all of them takes 98 seconds, so
+    the poller kept the 400 most recent - and someone searching for "SDE 1 in
+    Bengaluru" was told none existed while five were live, purely because they
+    were not among the newest 400.
+
+    Naming an employer is a question that employer can answer directly, and it
+    comes back complete in about a second. Results are snapshotted on the way
+    through so an application can be prepared from one immediately.
+    """
+    wanted = (company or "").strip().lower()
+    if not wanted:
+        return []
+    out: list[dict] = []
+    for spec in cfg().amazon_boards:
+        if "amazon" not in wanted and wanted not in "amazon":
+            break
+        feed = f"amazon:{spec}"
+        try:
+            country, preset = amazon.parse_spec(spec)
+            found = amazon.search(country, role or preset or "", limit=limit)
+        except (FetchError, ValueError) as exc:
+            log(logger, "warning", "live_search_failed", feed=feed, error=str(exc)[:200])
+            continue
+        for job in found:
+            job["feed"] = feed
+            try:
+                save_job_snapshot(wf, job)
+            except Exception as exc:  # a job we cannot store is still worth answering with
+                log(logger, "warning", "live_snapshot_failed", job=job.get("job_key"), error=str(exc)[:160])
+        log(logger, "info", "live_search", feed=feed, role=role, found=len(found))
+        out.extend(found)
+    return out
+
+
 def poll(wf, source: str, force: bool = False) -> dict[str, Any]:
     """Fetch a source, persist snapshots, record freshness. Returns new/changed jobs."""
     state_key = (f"SOURCE#{source}", "STATE")
@@ -412,4 +451,4 @@ def source_status(wf) -> list[dict]:
     return out
 
 
-__all__ = ["poll", "cached_jobs", "keyword_filter", "all_sources", "source_status", "C"]
+__all__ = ["poll", "cached_jobs", "keyword_filter", "live_search", "all_sources", "source_status", "C"]

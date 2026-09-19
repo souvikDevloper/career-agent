@@ -341,3 +341,50 @@ class TestGreenhouseSaysWhoHostsTheForm:
 
     def test_a_posting_with_no_url_does_not_claim_to_be_submittable(self):
         assert self.job(None)["apply"] == {"kind": "external", "url": None}
+
+
+class TestAmazonIsSearchedNotMirrored:
+    """Amazon India publishes 2,322 openings; paging all of them takes 98 seconds.
+
+    The poller therefore kept the 400 most recent, and a person searching for an
+    SDE 1 in Bengaluru was told none existed while five were live - they simply
+    were not among the newest 400. Asking amazon.jobs to run the search answers
+    the same question completely, in about a second.
+    """
+
+    def captured(self, monkeypatch):
+        seen = {}
+
+        def fake(url, hosts, **kw):
+            seen["url"] = url
+            return {"hits": 8, "jobs": [{"id_icims": "10525636", "title": "SDE-1 (FTC)",
+                                         "normalized_location": "Bengaluru, Karnataka, IND",
+                                         "job_path": "/en/jobs/10525636/sde-1-ftc"}]}
+
+        monkeypatch.setattr(amazon, "fetch_json", fake)
+        return seen
+
+    def test_the_query_is_handed_to_amazon_rather_than_filtered_here(self, monkeypatch):
+        seen = self.captured(monkeypatch)
+        jobs = amazon.search("IND", "SDE 1")
+        assert "base_query=SDE+1" in seen["url"]
+        assert "country=IND" in seen["url"]
+        assert len(jobs) == 1 and jobs[0]["external_id"] == "10525636"
+
+    def test_an_empty_query_still_asks_for_the_country(self, monkeypatch):
+        seen = self.captured(monkeypatch)
+        amazon.search("IND", "")
+        assert "base_query" not in seen["url"]
+        assert "country=IND" in seen["url"]
+
+    def test_the_page_size_is_bounded(self, monkeypatch):
+        """One request, never an unbounded page that times out the caller."""
+        seen = self.captured(monkeypatch)
+        amazon.search("IND", "x", limit=10_000)
+        assert "result_limit=100" in seen["url"]
+
+    def test_results_are_ranked_by_relevance_not_recency(self, monkeypatch):
+        """Recency is what hid the SDE 1 roles behind 400 newer postings."""
+        seen = self.captured(monkeypatch)
+        amazon.search("IND", "SDE 1")
+        assert "sort=relevant" in seen["url"]
