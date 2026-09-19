@@ -159,6 +159,7 @@ class TestPrepareSaysWhetherWeCanSubmit:
     class FakeServices:
         def __init__(self, connector):
             self.connector = connector
+            self.wf = type("WF", (), {"settings": staticmethod(lambda uid: {"mode": "review"})})()
 
         def request_prepare(self, uid, job_key):
             return {"app_id": "app_1", "connector": self.connector, "job_key": job_key}
@@ -182,7 +183,7 @@ class TestPrepareSaysWhetherWeCanSubmit:
         assert got["we_can_submit"] is True
         assert got["execution_mode"] == "local_browser"
         assert got["requires_user_presence"] is True
-        assert got["ends_in"] == "NeedsUserPresence"
+        assert got["ends_in"] == "NeedsApproval"
 
     def test_the_one_connector_that_can_submit_says_so(self):
         got = self.run("northwind-test-portal")
