@@ -36,6 +36,33 @@ export function ApplicationDetailPage({ id }: { id: string }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [showMatch, setShowMatch] = useState(false);
 
+  async function startBrowserCompanion() {
+    if (!p) return;
+    // Open synchronously from the click so popup blockers do not eat the real
+    // employer tab while the backend mints its short-lived capability.
+    const tab = window.open("about:blank", "_blank");
+    setBusy("browser");
+    try {
+      const session = await api<{ token: string; target_url: string }>(
+        `/api/applications/${a.app_id}/browser-session`,
+        { body: { packet_hash: p.hash } },
+      );
+      const target = new URL(session.target_url);
+      const hash = new URLSearchParams(target.hash.replace(/^#/, ""));
+      hash.set("career-agent-session", session.token);
+      hash.set("career-agent-api", window.location.origin);
+      target.hash = hash.toString();
+      if (tab) tab.location.href = target.toString();
+      else window.location.href = target.toString();
+      toast("Live application opened. The browser companion will use only the approved packet.", "success");
+    } catch (e) {
+      tab?.close();
+      toast((e as Error).message, "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function act(name: string, path: string, body: unknown = {}) {
     setBusy(name);
     try {
@@ -95,8 +122,10 @@ export function ApplicationDetailPage({ id }: { id: string }) {
             {["Discovered", "NeedsApproval", "KnownFailure", "NeedsReview", "Ineligible", "Paused", "NeedsUserPresence", "ManualHandoff"].includes(a.action_state) && (
               <button className="btn" disabled={!!busy} onClick={() => act("prepare", `/api/applications/${a.app_id}/prepare`)}>{busy === "prepare" ? <Spinner /> : <IRefresh size={16} />} {p ? "Re-prepare" : "Prepare"}</button>
             )}
-            {a.action_state === "NeedsUserPresence" && a.url && (
-              <a className="btn primary lg" href={a.url} target="_blank" rel="noreferrer"><IExternal size={16} /> Continue in signed-in browser</a>
+            {a.action_state === "NeedsUserPresence" && p && (
+              <button className="btn primary lg" disabled={!!busy} onClick={startBrowserCompanion}>
+                {busy === "browser" ? <Spinner /> : <IExternal size={16} />} Apply in signed-in browser
+              </button>
             )}
             {["ManualHandoff", "NeedsUserPresence"].includes(a.action_state) && (
               <button className="btn" disabled={!!busy} onClick={() => act("handoff", `/api/applications/${a.app_id}/handoff-complete`)}>
@@ -121,9 +150,9 @@ export function ApplicationDetailPage({ id }: { id: string }) {
       {userBrowser && (
         <div className="banner" style={{ marginBottom: 18 }}>
           <IShield size={18} />
-          This application is prepared, but the employer requires your authenticated browser session. Open the posting
-          while signed in; the packet below is the exact data the browser companion should fill. Login, MFA and CAPTCHA
-          stay with you rather than being stored or bypassed by the backend.
+          This approved packet is ready for a live application in your authenticated browser. The Browser Companion
+          fills the real employer form and can click the final submit button. Login, MFA, CAPTCHA and any unanswered
+          required question pause automation for you instead of being guessed or bypassed.
         </div>
       )}
       {handoff && (

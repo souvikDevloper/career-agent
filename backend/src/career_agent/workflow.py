@@ -37,13 +37,13 @@ TRANSITIONS: dict[str, set[str]] = {
     "Ineligible": {"Preparing", "Withdrawn"},
     "Preparing": {"NeedsInformation", "NeedsApproval", "NeedsUserPresence", "Authorized", "ManualHandoff", "Withdrawn"},
     "NeedsInformation": {"Preparing", "Withdrawn"},
-    "NeedsApproval": {"Authorized", "Preparing", "Withdrawn"},
-    "NeedsUserPresence": {"Submitted", "Preparing", "Withdrawn"},
+    "NeedsApproval": {"Authorized", "NeedsUserPresence", "Preparing", "Withdrawn"},
+    "NeedsUserPresence": {"Submitting", "Preparing", "Withdrawn"},
     "ManualHandoff": {"Submitted", "Preparing", "Withdrawn"},
     "Authorized": {"Queued", "Preparing", "Paused", "Withdrawn"},
     "Queued": {"Submitting", "Paused", "Preparing", "NeedsApproval", "Withdrawn"},
     "Paused": {"Queued", "Preparing", "Withdrawn"},
-    "Submitting": {"Submitted", "KnownFailure", "OutcomeUnknown", "Preparing", "Queued"},
+    "Submitting": {"Submitted", "KnownFailure", "OutcomeUnknown", "Preparing", "Queued", "NeedsUserPresence"},
     "OutcomeUnknown": {"Submitted", "NeedsReview"},
     "NeedsReview": {"Submitted", "Preparing", "Withdrawn"},
     "KnownFailure": {"Preparing", "Withdrawn"},
@@ -271,7 +271,16 @@ class Workflow:
         if missing:
             target = "NeedsInformation"
         elif mode == "local_browser":
-            target = "NeedsUserPresence"
+            # Authenticated portals are real submission targets, but the final
+            # write must still satisfy the same explicit-approval/mandate policy
+            # as the cloud browser. In review mode this therefore waits for
+            # approval; in an authorized auto mode it becomes ready for the
+            # local companion immediately.
+            decision = self.decide_submission(
+                Principal(uid), app | {"packet_hash": packet_hash, "approved_hash": None},
+                settings, reserve_check=True, packet={"body": packet, "unknown_required": missing},
+            )
+            target = "NeedsUserPresence" if decision.allowed else "NeedsApproval"
         elif not can_submit:
             target = "ManualHandoff"
         elif settings["mode"] == "review":
@@ -320,19 +329,139 @@ class Workflow:
         approval = {"pk": U(p.user_id), "sk": f"APPROVAL#{app_id}#{packet_hash[:24]}", "entity": "approval",
                     "app_id": app_id, "packet_hash": packet_hash, "channel": channel, "at": self._now_iso(),
                     "policy_version": policy.POLICY_VERSION}
+        packet = self.latest_packet(p.user_id, app_id)
+        mode = _packet_submission_mode(packet, app["connector"])
+        next_state = "NeedsUserPresence" if mode == "local_browser" else "Authorized"
+        ops = [
+            Put(approval, C("pk", "not_exists")),
+            self._transition(app, next_state, {"approved_hash": packet_hash}),
+            self.event_put(p.user_id, "application.approved",
+                           {"channel": channel, "hash": packet_hash[:12], "submission_mode": mode}, app_id),
+        ]
+        if mode == "cloud_browser":
+            ops += self._queue_ops(p.user_id, app_id, packet_hash)
         try:
-            self.store.transact([
-                Put(approval, C("pk", "not_exists")),
-                self._transition(app, "Authorized", {"approved_hash": packet_hash}),
-                self.event_put(p.user_id, "application.approved", {"channel": channel, "hash": packet_hash[:12]}, app_id),
-                *self._queue_ops(p.user_id, app_id, packet_hash),
-            ])
+            self.store.transact(ops)
         except ConditionFailed:
             app2 = self.get_app(p.user_id, app_id)
             if app2.get("approved_hash") == packet_hash:
                 return app2
             raise WorkflowError("conflict", "application changed while approving; refresh and retry") from None
-        self._mark_queued(p.user_id, app_id)
+        if mode == "cloud_browser":
+            self._mark_queued(p.user_id, app_id)
+        return self.get_app(p.user_id, app_id)
+
+    def local_browser_start(self, p: Principal, app_id: str, packet_hash: str) -> dict:
+        """Reserve policy capacity for one approved authenticated-browser run."""
+        app = self.get_app(p.user_id, app_id)
+        if app["action_state"] == "Submitting" and app.get("local_browser_packet_hash") == packet_hash:
+            return app
+        if app["action_state"] != "NeedsUserPresence":
+            raise WorkflowError("invalid_state", f"application is {app['action_state']}, not ready for the browser companion")
+        if app.get("packet_hash") != packet_hash:
+            raise WorkflowError("stale_packet", "application packet changed; refresh before submitting")
+        settings = self.settings(p.user_id)
+        packet = self.latest_packet(p.user_id, app_id)
+        decision = self.decide_submission(p, app, settings, packet=packet)
+        if not decision.allowed:
+            raise WorkflowError("forbidden", "submission policy no longer allows this application", 403)
+
+        ledger_sk = self.ledger_key(p.user_id, settings)
+        cap = int(settings.get("daily_cap", 5))
+        now = self.clock.now()
+        cooldown = int(settings.get("cooldown_seconds", 120))
+        attempt_id = new_id("local_")
+        try:
+            self.store.transact([
+                Update(U(p.user_id), ledger_sk,
+                       set={"cap": cap, "timezone": settings["timezone"], "last_submit_at": now},
+                       add={"used": 1, "reserved": 1},
+                       condition=And(Or(C("used", "not_exists"), C("used", "lt", cap)),
+                                     Or(C("last_submit_at", "not_exists"), C("last_submit_at", "le", now - cooldown)))),
+                self._transition(app, "Submitting", {
+                    "current_attempt": attempt_id,
+                    "local_browser_packet_hash": packet_hash,
+                    "local_browser_ledger": ledger_sk,
+                    "last_decision": decision.to_dict(),
+                }),
+                self.event_put(p.user_id, "submission.local_started",
+                               {"attempt_id": attempt_id, "packet_hash": packet_hash[:12]}, app_id),
+            ])
+        except ConditionFailed:
+            raise WorkflowError("rate_limited", "daily application cap or cooldown is currently blocking submission", 409) from None
+        return self.get_app(p.user_id, app_id)
+
+    def local_browser_dispatch(self, p: Principal, app_id: str, packet_hash: str) -> dict:
+        """Record the external-write boundary immediately before the companion clicks Submit."""
+        app = self.get_app(p.user_id, app_id)
+        if app["action_state"] != "Submitting" or app.get("local_browser_packet_hash") != packet_hash:
+            raise WorkflowError("invalid_state", "browser session is not the current submission")
+        if app.get("local_browser_dispatched_at"):
+            return app
+        now = self._now_iso()
+        self.store.transact([
+            Update(app["pk"], app["sk"],
+                   set={"local_browser_dispatched_at": now, "updated_at": now, "version": app["version"] + 1},
+                   condition=And(C("version", "eq", app["version"]), C("action_state", "eq", "Submitting"))),
+            self.event_put(p.user_id, "submission.local_dispatched", {"packet_hash": packet_hash[:12]}, app_id),
+        ])
+        return self.get_app(p.user_id, app_id)
+
+    def local_browser_complete(self, p: Principal, app_id: str, packet_hash: str, outcome: str,
+                               receipt: dict | None = None, reason: str | None = None) -> dict:
+        app = self.get_app(p.user_id, app_id)
+        if app["action_state"] == "Submitted":
+            return app
+        if app["action_state"] != "Submitting" or app.get("local_browser_packet_hash") != packet_hash:
+            raise WorkflowError("invalid_state", "this browser completion does not match the current submission")
+        now = self._now_iso()
+        ledger = app.get("local_browser_ledger") or self.ledger_key(p.user_id, self.settings(p.user_id))
+        dispatched = bool(app.get("local_browser_dispatched_at"))
+
+        if outcome == "submitted":
+            ref = (receipt or {}).get("reference") or f"browser-{sha256([app_id, packet_hash, now])[:14]}"
+            real_receipt = {**(receipt or {}), "reference": ref, "submitted_at": (receipt or {}).get("submitted_at") or now,
+                            "provider": (receipt or {}).get("provider") or "authenticated-browser"}
+            ops = [
+                Update(U(p.user_id), ledger, add={"reserved": -1, "submitted": 1}),
+                self._transition(app, "Submitted", {
+                    "receipt": real_receipt, "recruitment_stage": "applied", "submitted_at": now,
+                }),
+                self.event_put(p.user_id, "submission.succeeded",
+                               {"reference": ref, "via": "authenticated-browser"}, app_id),
+            ]
+        elif outcome == "needs_user":
+            # No write has happened yet. Release the reservation so login/MFA or
+            # an unanswered employer question never consumes the daily cap.
+            if dispatched:
+                raise WorkflowError("invalid_outcome", "user attention cannot be requested after submit was dispatched", 409)
+            ops = [
+                Update(U(p.user_id), ledger, add={"used": -1, "reserved": -1}),
+                self._transition(app, "NeedsUserPresence", {"last_error": (reason or "browser needs your attention")[:300]}),
+                self.event_put(p.user_id, "submission.user_presence_needed",
+                               {"reason": (reason or "")[:300]}, app_id),
+            ]
+        elif outcome == "known_failure":
+            ledger_delta = {"reserved": -1, "rejected": 1} if dispatched else {"used": -1, "reserved": -1}
+            ops = [
+                Update(U(p.user_id), ledger, add=ledger_delta),
+                self._transition(app, "KnownFailure", {"last_error": (reason or "submission failed")[:300]}),
+                self.event_put(p.user_id, "submission.failed", {"reason": (reason or "")[:300]}, app_id),
+            ]
+        else:
+            if not dispatched:
+                ops = [
+                    Update(U(p.user_id), ledger, add={"used": -1, "reserved": -1}),
+                    self._transition(app, "NeedsUserPresence", {"last_error": (reason or "browser stopped before submit")[:300]}),
+                    self.event_put(p.user_id, "submission.user_presence_needed", {"reason": (reason or "")[:300]}, app_id),
+                ]
+            else:
+                ops = [
+                    Update(U(p.user_id), ledger, add={"reserved": -1, "uncertain": 1}),
+                    self._transition(app, "OutcomeUnknown", {"last_error": (reason or "submission outcome unknown")[:300]}),
+                    self.event_put(p.user_id, "submission.outcome_unknown", {"reason": (reason or "")[:300]}, app_id),
+                ]
+        self.store.transact(ops)
         return self.get_app(p.user_id, app_id)
 
     def reject(self, p: Principal, app_id: str, reason: str = "") -> dict:
@@ -395,7 +524,7 @@ class Workflow:
             "daily_remaining": cap - used,
             "cooldown_ok": True if reserve_check else cooldown_ok,
             "connector_can_submit": (
-                _packet_submission_mode(packet, app["connector"]) == "cloud_browser"
+                _packet_submission_mode(packet, app["connector"]) in ("cloud_browser", "local_browser")
                 if packet else connectors.can(app["connector"], "submit")
             ),
             "paused": bool(app.get("paused")),

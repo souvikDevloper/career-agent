@@ -61,9 +61,9 @@ class ReviewMode(unittest.TestCase):
         self.assertEqual(app["action_state"], "NeedsInformation")
         self.assertEqual(len(outbox(store, "notify")), 1)
 
-    def test_authenticated_portal_requires_user_presence(self):
-        """Amazon needs the user's signed-in browser; that is not the same thing
-        as an unsupported/manual-only target."""
+    def test_authenticated_portal_requires_approval_then_user_presence(self):
+        """A live Amazon packet follows the same approval gate as cloud submit,
+        then hands execution to the user's signed-in browser."""
         wf, _, _ = make()
         app = new_app(wf, connector="amazon-jobs")
         local = packet(target={"url": "https://www.amazon.jobs/en/jobs/123/sde",
@@ -71,7 +71,45 @@ class ReviewMode(unittest.TestCase):
                                "submission": {"mode": "local_browser", "can_submit": True,
                                               "requires_user_presence": True}})
         app = wf.save_packet("u1", app["app_id"], local)
+        self.assertEqual(app["action_state"], "NeedsApproval")
+        app = wf.approve(P("u1"), app["app_id"], app["packet_hash"], "dashboard")
         self.assertEqual(app["action_state"], "NeedsUserPresence")
+        self.assertEqual(len(outbox(wf.store, "submit")), 0)
+
+    def test_local_browser_submission_is_fenced_and_recorded(self):
+        wf, store, _ = make()
+        app = new_app(wf, connector="amazon-jobs")
+        local = packet(target={"url": "https://www.amazon.jobs/en/jobs/123/sde",
+                               "connector": "amazon-jobs",
+                               "submission": {"mode": "local_browser", "can_submit": True,
+                                              "requires_user_presence": True}})
+        app = wf.save_packet("u1", app["app_id"], local)
+        app = wf.approve(P("u1"), app["app_id"], app["packet_hash"], "dashboard")
+        app = wf.local_browser_start(P("u1"), app["app_id"], app["packet_hash"])
+        self.assertEqual(app["action_state"], "Submitting")
+        app = wf.local_browser_dispatch(P("u1"), app["app_id"], app["packet_hash"])
+        self.assertTrue(app.get("local_browser_dispatched_at"))
+        app = wf.local_browser_complete(P("u1"), app["app_id"], app["packet_hash"], "submitted",
+                                        receipt={"reference": "amazon-confirmed"})
+        self.assertEqual(app["action_state"], "Submitted")
+        self.assertEqual(app["receipt"]["reference"], "amazon-confirmed")
+
+    def test_login_pause_releases_local_browser_capacity(self):
+        wf, store, _ = make()
+        app = new_app(wf, connector="amazon-jobs")
+        local = packet(target={"url": "https://www.amazon.jobs/en/jobs/123/sde",
+                               "connector": "amazon-jobs",
+                               "submission": {"mode": "local_browser", "can_submit": True,
+                                              "requires_user_presence": True}})
+        app = wf.save_packet("u1", app["app_id"], local)
+        app = wf.approve(P("u1"), app["app_id"], app["packet_hash"], "dashboard")
+        app = wf.local_browser_start(P("u1"), app["app_id"], app["packet_hash"])
+        app = wf.local_browser_complete(P("u1"), app["app_id"], app["packet_hash"], "needs_user",
+                                        reason="Please sign in")
+        self.assertEqual(app["action_state"], "NeedsUserPresence")
+        ledger = store.get("USER#u1", wf.ledger_key("u1", wf.settings("u1")))
+        self.assertEqual(ledger["used"], 0)
+        self.assertEqual(ledger["reserved"], 0)
 
     def test_manual_handoff_when_this_posting_is_hosted_off_the_board(self):
         """Greenhouse can submit - but only to forms Greenhouse actually hosts.

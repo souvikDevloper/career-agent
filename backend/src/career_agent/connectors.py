@@ -32,10 +32,23 @@ CONNECTORS: dict[str, dict] = {
         "label": "Amazon Jobs",
         "environment": "live", "status": "verified_live",
         "capabilities": ["discover", "read_details"],
-        "note": ("amazon.jobs serves its own search as public JSON. "
-                 "The only board here that publishes basic and preferred qualifications separately, "
-                 "enabling structured candidate matching. "
-                 "Submitting needs an Amazon candidate account, so applying is a prepared manual handoff."),
+        "note": ("amazon.jobs serves its own search as public JSON and publishes basic and preferred "
+                 "qualifications separately for structured matching. Submission uses the candidate's "
+                 "authenticated browser session after the exact packet is approved."),
+    },
+    "microsoft-careers": {
+        "label": "Microsoft Careers",
+        "environment": "live", "status": "verified_live",
+        "capabilities": ["discover", "read_details"],
+        "note": ("Microsoft Careers is searched directly from its public careers endpoint. Applications "
+                 "continue through the candidate's authenticated browser session after approval."),
+    },
+    "google-careers": {
+        "label": "Google Careers",
+        "environment": "live", "status": "verified_live",
+        "capabilities": ["discover", "read_details"],
+        "note": ("Google Careers is searched directly from its public careers results data. Applications "
+                 "continue through the candidate's authenticated browser session after approval."),
     },
     "adzuna-public": {
         "label": "Adzuna (job aggregator)",

@@ -61,6 +61,18 @@ class ApproveIn(BaseModel):
     packet_hash: str = Field(min_length=64, max_length=64)
 
 
+class BrowserSessionIn(BaseModel):
+    packet_hash: str = Field(min_length=64, max_length=64)
+
+
+class BrowserCompleteIn(BaseModel):
+    outcome: str = Field(pattern=r"^(submitted|needs_user|known_failure|unknown)$")
+    reference: str | None = Field(default=None, max_length=300)
+    provider: str | None = Field(default=None, max_length=120)
+    url: str | None = Field(default=None, max_length=2000)
+    reason: str | None = Field(default=None, max_length=500)
+
+
 class WatchIn(BaseModel):
     keywords: str = Field(min_length=1, max_length=200)
 
@@ -630,6 +642,123 @@ def app_prepare(event, p, cid, app_id):
 def app_approve(event, p, cid, app_id):
     data = ApproveIn(**body_json(event))
     app = _svc().wf.approve(p, app_id, data.packet_hash, "dashboard")
+    return respond(200, {"application": _strip(app)})
+
+
+@route("POST", r"/api/applications/(?P<app_id>app_[a-z0-9]+)/browser-session")
+def browser_session_create(event, p, cid, app_id):
+    """Mint a short-lived capability for the installed browser companion.
+
+    The capability contains no account password/cookie. It only grants access to
+    this exact approved packet for ten minutes, and is bound to its packet hash.
+    """
+    data = BrowserSessionIn(**body_json(event))
+    svc = _svc()
+    app = svc.wf.get_app(p.user_id, app_id)
+    packet = svc.wf.latest_packet(p.user_id, app_id)
+    if not packet or packet["hash"] != data.packet_hash or app.get("packet_hash") != data.packet_hash:
+        raise WorkflowError("stale_packet", "refresh: the application packet changed")
+    if app["action_state"] != "NeedsUserPresence":
+        raise WorkflowError("invalid_state", f"application is {app['action_state']}, not ready for the browser companion")
+    decision = svc.wf.decide_submission(p, app, svc.wf.settings(p.user_id), packet=packet)
+    if not decision.allowed:
+        raise WorkflowError("approval_required", "approve the current packet before opening the browser companion", 409)
+
+    token = secrets.token_urlsafe(32)
+    token_hash = __import__("hashlib").sha256(token.encode()).hexdigest()
+    expires = int(time.time()) + 600
+    svc.store.put({
+        "pk": f"BROWSERSESSION#{token_hash}", "sk": "SESSION", "entity": "browser_session",
+        "user_id": p.user_id, "app_id": app_id, "packet_hash": data.packet_hash,
+        "is_judge": bool(p.is_judge), "created_at": svc.wf.clock.iso(), "ttl": expires,
+    }, C("pk", "not_exists"))
+    target = ((packet.get("body") or {}).get("target") or {}).get("url") or app.get("url")
+    return respond(201, {"token": token, "target_url": target, "expires_in": 600})
+
+
+def _browser_capability(token: str):
+    svc = _svc()
+    token_hash = __import__("hashlib").sha256(token.encode()).hexdigest()
+    row = svc.store.get(f"BROWSERSESSION#{token_hash}", "SESSION")
+    if not row or int(row.get("ttl", 0)) <= int(time.time()):
+        raise WorkflowError("expired", "browser companion session expired; start again from Career Agent", 410)
+    return svc, row
+
+
+@route("GET", r"/api/public/browser-session/(?P<token>[A-Za-z0-9_-]{20,})", auth=False)
+def browser_session_get(event, p, cid, token):
+    svc, row = _browser_capability(token)
+    app = svc.wf.get_app(row["user_id"], row["app_id"])
+    packet = svc.wf.latest_packet(row["user_id"], row["app_id"])
+    if not packet or packet["hash"] != row["packet_hash"]:
+        raise WorkflowError("stale_packet", "application packet changed; start a new browser session", 409)
+    body = packet.get("body") or {}
+    resume_url = None
+    if body.get("resume_key") and cfg().bucket:
+        resume_url = svc.s3.generate_presigned_url(
+            "get_object", Params={"Bucket": cfg().bucket, "Key": body["resume_key"]}, ExpiresIn=600)
+    return respond(200, {
+        "app_id": row["app_id"], "packet_hash": row["packet_hash"],
+        "company": app.get("company"), "title": app.get("title"),
+        "target": body.get("target") or {}, "answers": body.get("answers") or {},
+        "fields": packet.get("fields") or [], "resume_url": resume_url,
+    })
+
+
+@route("PUT", r"/api/public/browser-session/(?P<token>[A-Za-z0-9_-]{20,})/answers", auth=False)
+def browser_session_answers(event, p, cid, token):
+    """Persist non-sensitive answers the user supplied in the live form.
+
+    The browser companion filters protected/sensitive fields before sending.
+    The backend still constrains count and size because this capability is public
+    and intentionally short lived.
+    """
+    body = body_json(event)
+    answers = body.get("answers") or {}
+    if not isinstance(answers, dict) or len(answers) > 30:
+        raise ValueError("answers must be an object with at most 30 entries")
+    cleaned = {}
+    for key, value in answers.items():
+        label = str(key).strip()[:120]
+        if not label or value in (None, ""):
+            continue
+        cleaned[label] = str(value)[:1000]
+    svc, row = _browser_capability(token)
+    if cleaned:
+        svc.profiles.save_answers(row["user_id"], cleaned)
+    return respond(200, {"saved": len(cleaned)})
+
+
+@route("POST", r"/api/public/browser-session/(?P<token>[A-Za-z0-9_-]{20,})/start", auth=False)
+def browser_session_start(event, p, cid, token):
+    svc, row = _browser_capability(token)
+    app = svc.wf.local_browser_start(
+        Principal(row["user_id"], bool(row.get("is_judge"))), row["app_id"], row["packet_hash"])
+    return respond(200, {"application": _strip(app)})
+
+
+@route("POST", r"/api/public/browser-session/(?P<token>[A-Za-z0-9_-]{20,})/dispatch", auth=False)
+def browser_session_dispatch(event, p, cid, token):
+    svc, row = _browser_capability(token)
+    app = svc.wf.local_browser_dispatch(
+        Principal(row["user_id"], bool(row.get("is_judge"))), row["app_id"], row["packet_hash"])
+    return respond(200, {"application": _strip(app)})
+
+
+@route("POST", r"/api/public/browser-session/(?P<token>[A-Za-z0-9_-]{20,})/complete", auth=False)
+def browser_session_complete(event, p, cid, token):
+    data = BrowserCompleteIn(**body_json(event))
+    svc, row = _browser_capability(token)
+    receipt = None
+    if data.outcome == "submitted":
+        receipt = {"reference": data.reference or "", "provider": data.provider or "authenticated-browser",
+                   "url": data.url}
+    app = svc.wf.local_browser_complete(
+        Principal(row["user_id"], bool(row.get("is_judge"))), row["app_id"], row["packet_hash"],
+        data.outcome, receipt=receipt, reason=data.reason)
+    if data.outcome in ("submitted", "known_failure"):
+        token_hash = __import__("hashlib").sha256(token.encode()).hexdigest()
+        svc.store.update(Update(f"BROWSERSESSION#{token_hash}", "SESSION", set={"completed_at": svc.wf.clock.iso()}))
     return respond(200, {"application": _strip(app)})
 
 
