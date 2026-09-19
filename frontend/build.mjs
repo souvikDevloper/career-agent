@@ -40,6 +40,9 @@ async function finish() {
   writeFileSync("dist/index.html", html);
   if (!watch) rmSync("dist/assets/app.js", { force: true });
   if (existsSync("public")) cpSync("public", "dist", { recursive: true });
+  // pdf.js runs page parsing in a worker; PdfPreview loads it from /assets/pdf.worker.min.js.
+  cpSync("node_modules/pdfjs-dist/build/pdf.worker.min.js", "dist/assets/pdf.worker.min.js");
+  cpSync("node_modules/pdfjs-dist/standard_fonts", "dist/assets/standard_fonts", { recursive: true });
 }
 
 if (watch) {
