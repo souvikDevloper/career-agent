@@ -36,6 +36,15 @@ CONNECTORS: dict[str, dict] = {
                  "basic and preferred qualifications separately, which is the shape the matcher wants. "
                  "Submitting needs an Amazon candidate account, so applying is a prepared manual handoff."),
     },
+    "adzuna-public": {
+        "label": "Adzuna (job aggregator)",
+        "environment": "live", "status": "needs_setup",
+        "capabilities": ["discover", "read_details"],
+        "note": ("Breadth beyond the boards we connect to directly, including Indian employers with no "
+                 "public ATS feed. Free tier, but it needs a registered key. An aggregator holds a copy "
+                 "of a posting - descriptions are often truncated and applying goes through a redirect - "
+                 "so these are discovered and scored, never submitted to."),
+    },
     "oraclehcm-public": {
         "label": "Oracle HCM careers sites (JPMorgan Chase)",
         "environment": "live", "status": "verified_live",

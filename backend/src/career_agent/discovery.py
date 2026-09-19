@@ -8,7 +8,7 @@ from typing import Any
 
 from .config import settings as cfg
 from .matching import save_job_snapshot
-from .sources import amazon, ashby, greenhouse, lever, oraclehcm, portal, workday
+from .sources import adzuna, amazon, ashby, greenhouse, lever, oraclehcm, portal, workday
 from .sources.http import FetchError
 from .store import C, Update
 from .util import get_logger, log, sha256
@@ -35,6 +35,8 @@ def fetch_source(source: str) -> list[dict]:
         return oraclehcm.fetch_board(source.split(":", 1)[1])
     if source.startswith("amazon:"):
         return amazon.fetch_board(source.split(":", 1)[1])
+    if source.startswith("adzuna:"):
+        return adzuna.fetch_board(source.split(":", 1)[1])
     raise ValueError(f"unknown source {source}")
 
 
@@ -46,6 +48,7 @@ def all_sources(extra: list[str] | None = None) -> list[str]:
     boards += [f"workday:{b}" for b in s.workday_boards]
     boards += [f"oracle:{b}" for b in s.oracle_boards]
     boards += [f"amazon:{b}" for b in s.amazon_boards]
+    boards += [f"adzuna:{b}" for b in s.adzuna_boards]
     first = [portal.SOURCE] if s.enable_test_employer else []
     return list(dict.fromkeys([*first, *boards, *(extra or [])]))
 

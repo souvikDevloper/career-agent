@@ -50,6 +50,14 @@ class Settings:
     oracle_boards: tuple[str, ...] = field(
         default_factory=lambda: tuple(b.strip() for b in _env("ORACLE_BOARDS", "").split(",") if b.strip())
     )
+    # Adzuna aggregator boards, each "COUNTRY" or "COUNTRY:query" - e.g. in or in:python.
+    # Inert without a key: the connector is registered either way so the UI can say
+    # it exists and is unconfigured, rather than pretending it is not there.
+    adzuna_boards: tuple[str, ...] = field(
+        default_factory=lambda: tuple(b.strip() for b in _env("ADZUNA_BOARDS", "").split(",") if b.strip())
+    )
+    adzuna_app_id: str = field(default_factory=lambda: _env("ADZUNA_APP_ID"))
+    adzuna_app_key: str = field(default_factory=lambda: _env("ADZUNA_APP_KEY"))
     # Amazon Jobs, each "COUNTRY" or "COUNTRY:query" - e.g. IND or IND:intern
     amazon_boards: tuple[str, ...] = field(
         default_factory=lambda: tuple(b.strip() for b in _env("AMAZON_BOARDS", "").split(",") if b.strip())
