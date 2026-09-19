@@ -230,3 +230,33 @@ class TestTestEmployerIsNotASearchResult:
         searched = [s for s in all_sources() if s != portal.SOURCE]
         assert portal.SOURCE not in searched
         assert portal.SOURCE in all_sources(), "the monitor must still poll it for the demo"
+
+
+class TestACompanyNameFiltersTheEmployer:
+    """Asking for NVIDIA returned Stripe roles, because a Stripe posting listed
+    "NVIDIA NeMo" among its requirements. True about the posting, useless as an
+    answer to the question."""
+
+    CORPUS = [
+        job("Stripe", "Technical Support Engineer, Metronome", location="Dublin",
+            description="PyTorch, NVIDIA NeMo and vLLM experience"),
+        job("Nvidia", "Senior Software Engineer, AI Inference", location="Bengaluru", source="workday-public"),
+        job("Amazon", "Software Development Engineer II", location="Bengaluru, IND", source="amazon-jobs"),
+    ]
+
+    def test_a_company_term_means_that_company(self):
+        assert [j["company"] for j in keyword_filter(self.CORPUS, "nvidia engineer", PREFS)] == ["Nvidia"]
+
+    def test_a_mention_in_a_description_is_not_a_match(self):
+        got = keyword_filter(self.CORPUS, "nvidia", PREFS)
+        assert "Stripe" not in [j["company"] for j in got]
+
+    def test_a_query_with_no_company_still_searches_everything(self):
+        assert len(keyword_filter(self.CORPUS, "engineer", PREFS)) == 3
+
+    def test_two_companies_at_once_match_nothing(self):
+        """No posting belongs to two employers, and pretending otherwise invents results."""
+        assert keyword_filter(self.CORPUS, "nvidia stripe", PREFS) == []
+
+    def test_a_company_plus_a_role_still_narrows(self):
+        assert keyword_filter(self.CORPUS, "amazon support", PREFS) == []

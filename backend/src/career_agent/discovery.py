@@ -203,15 +203,28 @@ def keyword_filter(jobs: list[dict], keywords: str, prefs: dict) -> list[dict]:
     words = [w for w in re.split(r"[^a-z0-9+#.]+", (keywords or "").lower()) if len(w) > 1 and w not in STOP]
     roles = [r.lower() for r in prefs.get("roles", [])]
     excluded = {c.lower() for c in prefs.get("excluded_companies", [])}
+
+    # A word that names an employer we carry is a filter on the employer, not a
+    # word to look for anywhere in the text. Asking for NVIDIA returned Stripe
+    # roles, because a Stripe posting mentioned "NVIDIA NeMo" in its
+    # requirements - which is a true statement about the posting and a useless
+    # answer to the question.
+    known = {tok for j in jobs for tok in re.split(r"[^a-z0-9]+", (j.get("company") or "").lower()) if len(tok) > 2}
+    wanted_companies = [w for w in words if w in known]
+    other_words = [w for w in words if w not in known]
+
     out = []
     for j in _dedupe(jobs):
-        if (j.get("company") or "").lower() in excluded:
+        company = (j.get("company") or "").lower()
+        if company in excluded:
             continue
         title = (j.get("title") or "").lower()
-        hay = f"{title} {j.get('location', '')} {j.get('company', '')} {(j.get('description') or '')[:1500]}".lower()
-        if words and not all(_matches(w, hay) for w in words):
+        hay = f"{title} {j.get('location', '')} {company} {(j.get('description') or '')[:1500]}".lower()
+        if wanted_companies and not all(w in company for w in wanted_companies):
             continue
-        score = sum(3 if _matches(w, title) else 1 for w in words)
+        if other_words and not all(_matches(w, hay) for w in other_words):
+            continue
+        score = sum(3 if _matches(w, title) else 1 for w in other_words) + 2 * len(wanted_companies)
         score += sum(4 for r in roles if r and r in title)
         if not words and not roles:
             score = 1
