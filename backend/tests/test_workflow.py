@@ -61,13 +61,17 @@ class ReviewMode(unittest.TestCase):
         self.assertEqual(app["action_state"], "NeedsInformation")
         self.assertEqual(len(outbox(store, "notify")), 1)
 
-    def test_manual_handoff_for_connector_without_submit(self):
-        """Amazon, Workday and Oracle file applications from inside an account we
-        have no way to reach, so the packet is handed to the person instead."""
+    def test_authenticated_portal_requires_user_presence(self):
+        """Amazon needs the user's signed-in browser; that is not the same thing
+        as an unsupported/manual-only target."""
         wf, _, _ = make()
         app = new_app(wf, connector="amazon-jobs")
-        app = wf.save_packet("u1", app["app_id"], packet())
-        self.assertEqual(app["action_state"], "ManualHandoff")
+        local = packet(target={"url": "https://www.amazon.jobs/en/jobs/123/sde",
+                               "connector": "amazon-jobs",
+                               "submission": {"mode": "local_browser", "can_submit": True,
+                                              "requires_user_presence": True}})
+        app = wf.save_packet("u1", app["app_id"], local)
+        self.assertEqual(app["action_state"], "NeedsUserPresence")
 
     def test_manual_handoff_when_this_posting_is_hosted_off_the_board(self):
         """Greenhouse can submit - but only to forms Greenhouse actually hosts.

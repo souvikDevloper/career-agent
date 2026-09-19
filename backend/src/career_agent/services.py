@@ -13,6 +13,7 @@ from .config import settings as cfg
 from .matching import Matcher, get_job
 from .resume import Profiles, ResumeError, extract_facts, extract_text
 from .sources import portal
+from .submission import submission_plan
 from .store import C, Put, Store, Update
 from .util import Clock, get_logger, log, new_id
 from .workflow import Principal, Workflow, WorkflowError, packet_preview
@@ -203,6 +204,14 @@ class Services:
             raise WorkflowError("not_found", "job not found", 404)
         m = self.store.get(f"USER#{uid}", f"MATCH#{job_key}") or self.matcher.match(uid, job, is_judge=self.is_judge(uid))
         return self.wf.create_application(uid, job, m, job.get("connector") or job["source"])
+
+    def submission_plan_for_application(self, app: dict) -> dict:
+        job = get_job(self.wf, app["job_key"]) or {
+            "connector": app.get("connector"),
+            "url": app.get("url"),
+            "apply": {"kind": "external", "url": app.get("url")} if app.get("url") else {},
+        }
+        return submission_plan(job, app.get("connector"))
 
     def request_prepare(self, uid: str, job_key: str | None = None, app_id: str | None = None) -> dict:
         app = self.wf.get_app(uid, app_id) if app_id else self.ensure_application(uid, job_key or "")
