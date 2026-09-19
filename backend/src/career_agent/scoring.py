@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import date as _date
 from typing import Any
 
 RUBRIC_VERSION = "fit-rubric/1.0"
@@ -93,10 +94,18 @@ def hard_filters(job: dict, prefs: dict, facts: dict) -> list[FilterResult]:
     min_years = req.get("min_years")
     if min_years is not None:
         have = facts.get("years_experience")
+        source = "stated on your profile"
         if have is None:
-            out.append(FilterResult("experience_years", UNKNOWN, f"job needs {min_years}y; profile has no verified total"))
+            # The dates are already on the resume; not stating a total is not the
+            # same as having nothing to state.
+            have = derived_years(facts)
+            source = "from the dates on your roles"
+        if have is None:
+            out.append(FilterResult("experience_years", UNKNOWN,
+                                    f"job needs {min_years}y; no dated roles on the resume to work it out from"))
         else:
-            out.append(FilterResult("experience_years", PASS if have >= min_years else FAIL, f"needs {min_years}y, have {have}y"))
+            out.append(FilterResult("experience_years", PASS if have >= min_years else FAIL,
+                                    f"needs {min_years}y, have {have}y ({source})"))
 
     grad_years = req.get("graduation_years") or []
     if grad_years:
@@ -262,3 +271,72 @@ def verify_quotes(evidence: Evidence, resume_text: str) -> Evidence:
     if not evidence.responsibilities_evidence:
         evidence.responsibilities = min(evidence.responsibilities, 0.2)
     return evidence
+
+
+# ---------------------------------------------------------------------------
+# Experience the resume already proves
+# ---------------------------------------------------------------------------
+
+_MONTHS = {m: i for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], start=1)}
+_ONGOING = ("present", "current", "now", "ongoing", "till date", "to date")
+
+
+def _month_index(text: str | None, *, default_month: int) -> int | None:
+    """Months since year zero, from the shapes resumes actually write dates in."""
+    t = (text or "").strip().lower()
+    if not t:
+        return None
+    if any(word in t for word in _ONGOING):
+        today = _date.today()
+        return today.year * 12 + today.month
+    iso = re.match(r"(\d{4})[-/](\d{1,2})", t)
+    if iso:
+        return int(iso.group(1)) * 12 + min(12, max(1, int(iso.group(2))))
+    slashed = re.match(r"(\d{1,2})[-/](\d{4})", t)
+    if slashed:
+        return int(slashed.group(2)) * 12 + min(12, max(1, int(slashed.group(1))))
+    named = re.search(r"([a-z]{3,9})\.?\s+(\d{4})", t)
+    if named and named.group(1)[:3] in _MONTHS:
+        return int(named.group(2)) * 12 + _MONTHS[named.group(1)[:3]]
+    year = re.search(r"(?:19|20)\d{2}", t)
+    if year:
+        return int(year.group(0)) * 12 + default_month
+    return None
+
+
+def derived_years(facts: dict) -> float | None:
+    """Total experience, worked out from the roles the resume already lists.
+
+    A profile with no stated total is not a person with no experience, but the
+    scorer treated it as one: every posting with a minimum-years requirement came
+    back "profile has no verified total", which reads as "it does not know my
+    experience" while the dates sit in the roles it had already extracted.
+
+    Overlapping roles count once. Two jobs held in the same year is one year of
+    experience, not two, and a resume listing a long-running open source role
+    alongside an internship should not be credited twice for the same months.
+    """
+    spans: list[tuple[int, int]] = []
+    for role in facts.get("experience") or []:
+        # A bare "2021 - 2022" is read as mid-year to mid-year. Stretching it to
+        # January-to-December would credit two years for what is usually one, and
+        # overstating someone's experience on an application is the one direction
+        # this must not be wrong in.
+        start = _month_index(role.get("start"), default_month=6)
+        if start is None:
+            continue
+        end = _month_index(role.get("end") or "present", default_month=6)
+        spans.append((start, max(start, end if end is not None else start)))
+    if not spans:
+        return None
+    spans.sort()
+    total, cur_start, cur_end = 0, *spans[0]
+    for start, end in spans[1:]:
+        if start <= cur_end:
+            cur_end = max(cur_end, end)
+        else:
+            total += cur_end - cur_start
+            cur_start, cur_end = start, end
+    total += cur_end - cur_start
+    return round(total / 12, 1)

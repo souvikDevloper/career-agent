@@ -23,7 +23,13 @@ export function MatchRow({ m, onOpen }: { m: M; onOpen: () => void }) {
         <div className="co row wrap" style={{ gap: 14 }}>
           <span className="row" style={{ gap: 5 }}><IBuilding size={14} /> {m.job.company}</span>
           {m.job.location && <span className="row" style={{ gap: 5 }}><IPin size={14} /> {m.job.location}</span>}
-          <span className="row" style={{ gap: 5 }}><IClock size={14} /> seen {timeAgo(m.job.first_seen_at || m.created_at)}</span>
+          {/* When the employer posted it is what decides whether it is worth
+              applying to; when we first saw it is our bookkeeping. Show theirs
+              when the board gives us one, and fall back to ours when it does not. */}
+          <span className="row" style={{ gap: 5 }}>
+            <IClock size={14} />
+            {m.job.published_at ? `posted ${timeAgo(m.job.published_at)}` : `seen ${timeAgo(m.job.first_seen_at || m.created_at)}`}
+          </span>
         </div>
         {m.explanation && <p className="small ink2" style={{ marginTop: 8, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{m.explanation}</p>}
       </div>
