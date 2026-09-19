@@ -332,6 +332,43 @@ zeroes SageMaker hosting quota as well as Bedrock runtime.
 
 ---
 
+## Strongest single piece of evidence: AgentCore is zeroed against non-zero defaults
+
+Measured 2026-09-19 in us-east-1. Every Bedrock AgentCore quota on this account is set to
+zero, while the service's published defaults are not:
+
+    Total concurrent active browser sessions   default 1000   applied 0
+    Total Browser profiles per account         default  100   applied 0
+    Total Browser tool configurations          default 1000   applied 0
+    Total concurrent code interpreter sessions default 1000   applied 0
+    Active session workloads per account       default 5000   applied 0
+
+This matters more than the Bedrock runtime denials, because it cannot be explained as a
+model-access or region question:
+
+- The control plane answers normally. `bedrock-agentcore-control list-browsers` returns
+  `{"browserSummaries": []}` - no AccessDenied, so the account is entitled to the service.
+- The data plane refuses. `bedrock-agentcore start-browser-session` returns
+  `ServiceQuotaExceededException: maxBrowserSessions limit exceeded`.
+- Service Quotas will not accept an increase request, because there is nothing to increase:
+  it answers "You must provide a quota value greater than the default quota value of 1000.0".
+  The account is below default, not asking to exceed it.
+
+So this is not a quota the customer can request. A service whose default is 1000 reading 0
+on a single account is an account-level suppression, which is the same hold that produces
+the Bedrock runtime denials and the CloudFront block. Asking support to raise a quota is the
+wrong ask and will be closed; the ask is to lift the account restriction.
+
+Suggested wording:
+
+> Every Bedrock AgentCore quota on account 686090305719 reads 0 while the service defaults
+> are 1000/100/5000. The control plane (`list-browsers`) succeeds, so the account is
+> entitled to the service, but `StartBrowserSession` fails with ServiceQuotaExceeded and
+> Service Quotas refuses an increase request because 0 is below the default. This is not a
+> quota request - please lift the account-level restriction that is zeroing these.
+
+---
+
 ## What is not worth asking for
 
 **The Cognito signup code going missing is not an AWS fault and not worth a case.**
