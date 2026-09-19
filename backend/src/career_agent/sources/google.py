@@ -138,7 +138,7 @@ def normalize(raw: list) -> dict | None:
 
 def search(query: str, *, location: str = "", limit: int = 50) -> list[dict]:
     raw_query = (query or "software engineer").strip()
-    early = bool(re.search(r"\b(early career|new grad|new graduate|university graduate|entry level)\b", raw_query, re.I))
+    early = bool(re.search(r"\b(early careers?|new grad(?:uate)?|university graduate|entry level)\b", raw_query, re.I))
     cleaned_query = re.sub(
         r"\b(early career(?:s)?|new grad(?:uate)?|university graduate|entry level)\b",
         " ",
