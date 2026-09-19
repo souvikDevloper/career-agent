@@ -146,7 +146,10 @@ class Services:
             # a cache of the most recent few hundred postings answers "is there an
             # SDE 1 in Bengaluru" with a confident no while five are live.
             self.wf.op_progress(uid, op_id, message=f"Asking {named} directly")
-            live = discovery.live_search(self.wf, company=named, role=active.get("role", ""))
+            live = discovery.live_search(
+                self.wf, company=named, role=active.get("role", ""),
+                location=active.get("location", ""),
+            )
             if live:
                 fresh = {j["job_key"] for j in live}
                 jobs = [j for j in jobs if j.get("job_key") not in fresh] + live
