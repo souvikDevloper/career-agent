@@ -213,15 +213,19 @@ def t_prepare_application(job_key: str) -> dict:
     ctx.actions.append({"type": "prepare_requested", "app_id": app["app_id"]})
     plan = ctx.services.submission_plan_for_application(app)
     mode = plan["mode"]
-    ends = "NeedsApproval" if mode == "cloud_browser" else "NeedsUserPresence" if mode == "local_browser" else "ManualHandoff"
-    note = (
-        "Preparation runs in the background; after required answers are complete the cloud browser can submit it."
-        if mode == "cloud_browser" else
-        "Preparation runs in the background. This employer requires your authenticated browser session, so the next "
-        "state is NeedsUserPresence rather than a failed or unsupported application."
-        if mode == "local_browser" else
-        "Preparation runs in the background and produces a handoff packet; this target has no automated submission route."
-    )
+    settings = ctx.services.wf.settings(ctx.user_id)
+    if mode == "cloud_browser":
+        ends = "NeedsApproval" if settings.get("mode") == "review" else "Authorized"
+        note = "Preparation runs in the background; after required answers are complete the cloud browser can submit it."
+    elif mode == "local_browser":
+        ends = "NeedsApproval" if settings.get("mode") == "review" else "NeedsUserPresence"
+        note = (
+            "Preparation runs in the background. After the packet is approved, the signed-in Browser Companion "
+            "fills and submits the live employer form. Login, MFA, CAPTCHA or unknown required answers pause for the user."
+        )
+    else:
+        ends = "ManualHandoff"
+        note = "Preparation runs in the background and produces a handoff packet; this target has no automated submission route."
     return {"app_id": app["app_id"], "state": "Preparing", "we_can_submit": bool(plan["can_submit"]),
             "execution_mode": mode, "requires_user_presence": bool(plan["requires_user_presence"]),
             "ends_in": ends, "note": note}
@@ -264,7 +268,9 @@ def t_approve_application(app_id: str | None = None) -> dict:
     except WorkflowError as exc:
         return {"approved": False, "reason": str(exc)}
     ctx.actions.append({"type": "approved", "app_id": app["app_id"]})
-    return {"approved": True, "app_id": app["app_id"], "state": res["action_state"], "packet_hash": app["packet_hash"][:12]}
+    ctx.actions.append({"type": "browser_ready", "app_id": app["app_id"]}) if res["action_state"] == "NeedsUserPresence" else None
+    return {"approved": True, "app_id": app["app_id"], "state": res["action_state"], "packet_hash": app["packet_hash"][:12],
+            "browser_ready": res["action_state"] == "NeedsUserPresence"}
 
 
 def t_application_status(app_id: str) -> dict:
