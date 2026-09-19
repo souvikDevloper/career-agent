@@ -80,6 +80,15 @@ def live_search(wf, *, company: str, role: str = "", limit: int = 100) -> list[d
         tenant = spec.split(":", 1)[0].lower()
         if _names_match(wanted, tenant):
             asks.append((f"workday:{spec}", lambda sp=spec: workday.search(sp, role)))
+    if not asks:
+        # No dedicated board carries this employer, so fall back to the aggregator
+        # rather than answering "nothing". eBay, Morningstar and Moody's all hire
+        # in Bengaluru and none of them publish a feed we connect to. A connector
+        # that reads the employer's own ATS is always preferred when there is one;
+        # this only fills the gap where there is not.
+        for spec in s.adzuna_boards:
+            asks.append((f"adzuna:{spec}",
+                         lambda sp=spec: adzuna.search(sp, " ".join(x for x in (company, role) if x))))
 
     out: list[dict] = []
     for feed, ask in asks:

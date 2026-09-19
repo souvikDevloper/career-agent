@@ -540,7 +540,8 @@ class TestLiveSearchRuns:
     @pytest.fixture(autouse=True)
     def boards(self, monkeypatch):
         monkeypatch.setattr(discovery, "cfg", lambda: type("S", (), {
-            "amazon_boards": ("IND",), "workday_boards": ("intel:wd1:External",)})())
+            "amazon_boards": ("IND",), "workday_boards": ("intel:wd1:External",),
+            "adzuna_boards": ("in",)})())
         monkeypatch.setattr(discovery, "save_job_snapshot", lambda wf, job: (True, False))
 
     def test_it_returns_what_the_employer_answered(self, monkeypatch):
@@ -562,12 +563,29 @@ class TestLiveSearchRuns:
         got = discovery.live_search(self.wf(), company="intel", role="engineer")
         assert [j["feed"] for j in got] == ["workday:intel:wd1:External"]
 
-    def test_an_employer_we_do_not_read_asks_nobody(self, monkeypatch):
+    def test_an_employer_with_no_board_falls_back_to_the_aggregator(self, monkeypatch):
+        """eBay and Morningstar hire in Bengaluru and publish no feed we connect
+        to. Answering "nothing" would have been wrong; asking a board that does
+        not carry them would have been worse."""
         called = []
         monkeypatch.setattr(discovery.amazon, "search", lambda *a, **k: called.append("amazon") or [])
         monkeypatch.setattr(discovery.workday, "search", lambda *a, **k: called.append("workday") or [])
-        assert discovery.live_search(self.wf(), company="google", role="engineer") == []
-        assert called == []
+        monkeypatch.setattr(discovery.adzuna, "search",
+                            lambda spec, query, limit=50: called.append(f"adzuna:{query}") or
+                            [{"job_key": "z1", "title": "Software Engineer"}])
+        got = discovery.live_search(self.wf(), company="ebay", role="engineer")
+        assert called == ["adzuna:ebay engineer"], "the employer name has to reach the aggregator's query"
+        assert [j["feed"] for j in got] == ["adzuna:in"]
+
+    def test_a_dedicated_board_is_preferred_over_the_aggregator(self, monkeypatch):
+        """An employer's own ATS is the accurate copy; the aggregator holds a
+        second-hand one, so it is never asked when a real board carries them."""
+        called = []
+        monkeypatch.setattr(discovery.amazon, "search",
+                            lambda *a, **k: called.append("amazon") or [{"job_key": "a1", "title": "SDE"}])
+        monkeypatch.setattr(discovery.adzuna, "search", lambda *a, **k: called.append("adzuna") or [])
+        discovery.live_search(self.wf(), company="amazon", role="sde")
+        assert called == ["amazon"]
 
     def test_one_board_failing_does_not_lose_the_other(self, monkeypatch):
         def boom(*a, **k):
