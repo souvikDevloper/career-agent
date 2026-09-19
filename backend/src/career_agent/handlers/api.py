@@ -481,8 +481,19 @@ def get_operation(event, p, cid, op_id):
 
 @route("GET", r"/api/chat")
 def chat_history(event, p, cid):
-    rows = _svc().store.query(f"USER#{p.user_id}", "CHAT#", limit=60, newest_first=True)
-    return respond(200, {"messages": [_strip(r) for r in reversed(rows)]})
+    """The conversation, oldest first.
+
+    The window is a query parameter because sixty was a guess that the client
+    then cut to forty, so scrolling up simply ran out of conversation - there was
+    nothing above, which reads as broken scrolling rather than a missing page.
+    """
+    raw = (event.get("queryStringParameters") or {}).get("limit")
+    try:
+        limit = max(10, min(400, int(raw)))
+    except (TypeError, ValueError):
+        limit = 60
+    rows = _svc().store.query(f"USER#{p.user_id}", "CHAT#", limit=limit, newest_first=True)
+    return respond(200, {"messages": [_strip(r) for r in reversed(rows)], "complete": len(rows) < limit})
 
 
 @route("DELETE", r"/api/chat")
