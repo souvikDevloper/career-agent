@@ -697,3 +697,49 @@ class TestGoogleDirectPostFilter:
         }]
         got = discovery.filter_jobs(jobs, {}, role=role, company="Google", location="India")
         assert [j["job_key"] for j in got] == ["google:1"]
+
+
+class TestWordsAboutTheRequestDoNotConstrainTheAnswer:
+    """"google swe early career roles in india" returned nothing while ten real
+    Google openings sat in Bengaluru.
+
+    Every role word has to match - that is what stops "backend intern" returning
+    every internship - but "early" and "career" describe a level in the way a
+    person speaks, and appear in almost no posting's own text. One such adjective
+    annihilated the entire result set.
+    """
+
+    CORPUS = [
+        job("Google", "Software Engineer, Search", location="Bengaluru, Karnataka, India"),
+        job("Google", "Software Engineer II, Google Cloud", location="Bengaluru, Karnataka, India"),
+        job("Google", "Staff Software Engineer, Geo", location="Hyderabad, Telangana, India"),
+        job("Stripe", "Backend Engineer", location="Bengaluru, India", description="Go and Postgres."),
+    ]
+
+    def found(self, role, **kw):
+        return [j["title"] for j in filter_jobs(self.CORPUS, PREFS, role=role, **kw)]
+
+    def test_the_query_that_was_reported(self):
+        got = self.found("swe early career", company="google", location="india")
+        assert len(got) == 3, got
+
+    def test_more_request_words_do_not_narrow_it_further(self):
+        """Saying "roles" or "openings" is not adding a requirement."""
+        assert self.found("swe early career roles", company="google") == self.found("swe", company="google")
+        assert self.found("engineer openings", company="google") == self.found("engineer", company="google")
+
+    def test_a_real_term_we_do_not_have_still_answers_empty(self):
+        """The dangerous fix was dropping any word the corpus lacks: that cannot
+        tell "early" from "kubernetes", and would answer a Kubernetes search with
+        plain backend jobs."""
+        assert self.found("backend kubernetes") == []
+        assert self.found("backend rust") == []
+
+    def test_an_employer_we_do_not_carry_still_answers_empty(self):
+        """"netflix backend" must not come back with somebody else's backend role."""
+        assert keyword_filter(self.CORPUS, "netflix backend", PREFS) == []
+
+    def test_a_request_made_only_of_request_words_does_not_match_everything(self):
+        """"open roles" names no work, so it filters on nothing and returns the
+        corpus - which is the honest reading of a request that asked for nothing."""
+        assert len(self.found("roles openings")) == len(self.CORPUS)
