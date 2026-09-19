@@ -3,7 +3,9 @@
   "name": "Career Agent Browser Companion",
   "version": "1.0.0",
   "description": "Fills and submits an explicitly approved Career Agent application in your signed-in browser session.",
-  "permissions": ["storage"],
+  "permissions": [
+    "storage"
+  ],
   "host_permissions": [
     "https://*.execute-api.us-east-1.amazonaws.com/*",
     "https://*.amazon.jobs/*",
@@ -14,9 +16,13 @@
     "https://jobs.lever.co/*",
     "https://jobs.ashbyhq.com/*",
     "https://*.oraclecloud.com/*",
-    "https://*.oracle.com/*"
+    "https://*.oracle.com/*",
+    "https://*.s3.amazonaws.com/*",
+    "https://*.s3.us-east-1.amazonaws.com/*"
   ],
-  "background": { "service_worker": "background.js" },
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
       "matches": [
@@ -30,7 +36,9 @@
         "https://*.oraclecloud.com/*",
         "https://*.oracle.com/*"
       ],
-      "js": ["content.js"],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ]
