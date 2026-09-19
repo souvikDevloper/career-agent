@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from helpers import T0  # noqa: F401  (adds src/ to sys.path)
 
-from career_agent.discovery import filter_jobs, keyword_filter
+from career_agent.discovery import _names_match, filter_jobs, keyword_filter
 
 PREFS: dict = {"roles": [], "excluded_companies": []}
 
@@ -468,3 +468,28 @@ class TestSeniorityLevel:
 
     def test_a_bare_numeral_is_not_a_seniority_filter(self):
         assert len(filter_jobs(self.CORPUS, PREFS, role="2")) == 4
+
+
+class TestLiveSearchAsksOnlyTheEmployerNamed:
+    """Boards too large to mirror get asked directly, and only the right one.
+
+    Workday caps a page at 20 while a tenant like HPE publishes over 1,200 roles,
+    so polling holds a slice of each - the same truncation that hid live Amazon
+    postings behind the four hundred most recent.
+    """
+
+    def test_a_short_name_does_not_match_a_different_company(self):
+        """"hp" and the Workday tenant "hpe" are different companies."""
+        assert _names_match("hp", "hpe") is False
+        assert _names_match("hpe", "hpe") is True
+
+    def test_an_exact_name_always_matches(self):
+        for name in ("amazon", "intel", "nvidia", "mastercard"):
+            assert _names_match(name, name) is True
+
+    def test_unrelated_employers_never_match(self):
+        assert _names_match("google", "amazon") is False
+        assert _names_match("stripe", "intel") is False
+
+    def test_a_longer_name_may_contain_the_board_name(self):
+        assert _names_match("mastercard inc", "mastercard") is True
