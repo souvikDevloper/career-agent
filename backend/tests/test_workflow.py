@@ -110,6 +110,42 @@ class ReviewMode(unittest.TestCase):
         ledger = store.get("USER#u1", wf.ledger_key("u1", wf.settings("u1")))
         self.assertEqual(ledger["used"], 0)
         self.assertEqual(ledger["reserved"], 0)
+        # Login/MFA/question pauses are not submissions. Retrying immediately
+        # must not trip the submit cooldown.
+        again = wf.local_browser_start(P("u1"), app["app_id"], app["packet_hash"])
+        self.assertEqual(again["action_state"], "Submitting")
+
+    def test_local_browser_cooldown_is_checked_only_at_submit_dispatch(self):
+        wf, store, _ = make()
+
+        def local_app(key):
+            job = dict(__import__("helpers").JOB, job_key=key, canonical_key=key)
+            app = wf.create_application("u1", job, {"score": 85, "auto_eligible": True, "blocked": False}, "amazon-jobs")
+            local = packet(target={"url": "https://account.amazon.jobs/en-US/applicant/jobs/123/apply",
+                                   "connector": "amazon-jobs",
+                                   "submission": {"mode": "local_browser", "can_submit": True,
+                                                  "requires_user_presence": True}})
+            app = wf.save_packet("u1", app["app_id"], local)
+            return wf.approve(P("u1"), app["app_id"], app["packet_hash"], "dashboard")
+
+        first = local_app("amazon:first")
+        first = wf.local_browser_start(P("u1"), first["app_id"], first["packet_hash"])
+        first = wf.local_browser_dispatch(P("u1"), first["app_id"], first["packet_hash"])
+        wf.local_browser_complete(P("u1"), first["app_id"], first["packet_hash"], "submitted",
+                                  receipt={"reference": "amazon-1"})
+
+        second = local_app("amazon:second")
+        # Preparing/filling another application is allowed immediately.
+        second = wf.local_browser_start(P("u1"), second["app_id"], second["packet_hash"])
+        self.assertEqual(second["action_state"], "Submitting")
+
+        # Only the real final write is rate limited.
+        with self.assertRaises(WorkflowError) as ctx:
+            wf.local_browser_dispatch(P("u1"), second["app_id"], second["packet_hash"])
+        self.assertEqual(ctx.exception.code, "rate_limited")
+        self.assertEqual(wf.get_app("u1", second["app_id"])["action_state"], "NeedsUserPresence")
+        ledger = store.get("USER#u1", wf.ledger_key("u1", wf.settings("u1")))
+        self.assertEqual(ledger["reserved"], 0)
 
     def test_manual_handoff_when_this_posting_is_hosted_off_the_board(self):
         """Greenhouse can submit - but only to forms Greenhouse actually hosts.
