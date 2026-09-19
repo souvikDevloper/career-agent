@@ -37,6 +37,26 @@ def _clean(text: str | None) -> str:
     return re.sub(r"\s{2,}", " ", re.sub(r"<[^>]+>", " ", text or "")).strip()
 
 
+_MONTH_NAMES = {m: i for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], start=1)}
+_POSTED = re.compile(r"([A-Za-z]{3,9})\s+(\d{1,2}),\s*(\d{4})")
+
+
+def posted_iso(text: str | None) -> str | None:
+    """Amazon prints "September  2, 2026" and an updated_time of "10 days".
+
+    Neither sorts, subtracts or renders as an age, so a posting's real date was
+    carried around as prose and the UI could only ever say when we first saw it.
+    """
+    hit = _POSTED.search(text or "")
+    if not hit:
+        return None
+    month = _MONTH_NAMES.get(hit.group(1)[:3].lower())
+    if not month:
+        return None
+    return f"{int(hit.group(3)):04d}-{month:02d}-{int(hit.group(2)):02d}"
+
+
 def normalize(raw: dict) -> dict:
     external_id = str(raw.get("id_icims") or raw.get("id") or "")
     path = raw.get("job_path") or ""
@@ -72,8 +92,10 @@ def normalize(raw: dict) -> dict:
         "url": url,
         # Submitting needs an Amazon candidate account, so this is a handoff.
         "apply": {"kind": "external", "url": url},
-        "published_at": raw.get("posted_date"),
-        "updated_at": raw.get("updated_time") or raw.get("posted_date"),
+        "published_at": posted_iso(raw.get("posted_date")),
+        # updated_time is a phrase like "10 days", which is an age rather than a
+        # date; the posting date is the only thing here that can be compared.
+        "updated_at": posted_iso(raw.get("posted_date")),
         "departments": [d for d in (raw.get("job_category"), raw.get("business_category")) if d],
         "requirements": None,
         "connector": SOURCE,

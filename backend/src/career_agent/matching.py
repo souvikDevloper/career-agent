@@ -55,7 +55,9 @@ class Matcher:
         cap = s.judge_daily_model_calls if is_judge else s.user_daily_model_calls
         explanation = ""
         requirements = job.get("requirements")
-        if self.wf.reserve_usage(uid, "model_calls", 1, cap, s.global_daily_model_calls):
+        within_budget = self.wf.reserve_usage(uid, "model_calls", 1, cap, s.global_daily_model_calls)
+        why = "your daily model allowance is used up" if not within_budget else "the model did not answer in time"
+        if within_budget:
             try:
                 data = llm.json_call(MATCH_SYSTEM, MATCH_PROMPT.format(
                     title=job.get("title"), company=job.get("company"), location=job.get("location"),
@@ -77,11 +79,14 @@ class Matcher:
                 )
                 explanation = str(data.get("explanation") or "")[:600]
                 return verify_quotes(ev, resume_text), requirements or {}, explanation
-            except (llm.ModelUnavailable, ValueError, TypeError):
-                pass
+            except (llm.ModelUnavailable, ValueError, TypeError) as exc:
+                # Which of the two it was matters: one is a budget the user can
+                # wait out, the other is us failing. Saying "unavailable or
+                # allowance reached" told them neither.
+                why = f"the model did not answer ({type(exc).__name__})"
         job2 = dict(job, requirements=requirements or {})
         ev = heuristic_evidence(job2, resume_text)
-        return ev, requirements or {}, "Scored with the basic keyword extractor because the model was unavailable or the usage allowance was reached."
+        return ev, requirements or {}, f"Scored by keyword match only, because {why}. This is a weaker read than usual - re-run it to get a full explanation."
 
     def match(self, uid: str, job: dict, *, is_judge: bool = False, correlation_id: str | None = None,
               force: bool = False) -> dict:

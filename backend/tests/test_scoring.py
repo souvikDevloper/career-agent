@@ -2,7 +2,8 @@ import unittest
 
 import helpers  # noqa: F401
 
-from career_agent.scoring import Evidence, hard_filters, heuristic_evidence, score_match, verify_quotes
+from career_agent.scoring import (FAIL, PASS, UNKNOWN, Evidence, derived_years, hard_filters,
+                                  heuristic_evidence, score_match, verify_quotes)
 
 RESUME = """Asha Rao — B.Tech Computer Science, graduating 2027.
 Built a FastAPI service on AWS Lambda with DynamoDB handling 2k requests/day.
@@ -54,3 +55,69 @@ class Scoring(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestExperienceIsWorkedOutFromTheResume:
+    """"It does not know my experience" was a real complaint about real data.
+
+    A profile with no stated total is not a person with no experience. The dates
+    are already on the roles the extractor pulled out, so every posting with a
+    minimum-years requirement was reporting "no verified total" while the answer
+    sat one subtraction away.
+    """
+
+    def test_an_ongoing_role_counts_up_to_today(self):
+        years = derived_years({"experience": [{"start": "Jan 2024", "end": "Present"}]})
+        assert years is not None and years > 2
+
+    def test_overlapping_roles_are_counted_once(self):
+        """Two jobs held in the same year is one year of experience."""
+        overlapping = derived_years({"experience": [
+            {"start": "Jan 2023", "end": "Dec 2024"},
+            {"start": "Jun 2023", "end": "Jun 2024"}]})
+        assert overlapping == 1.9
+
+    def test_separate_roles_are_added(self):
+        assert derived_years({"experience": [
+            {"start": "2021", "end": "2022"}, {"start": "2024", "end": "2025"}]}) == 2.0
+
+    def test_a_bare_year_range_is_not_stretched_to_its_maximum(self):
+        """"2021 - 2022" is one year, not two. Overstating is the one direction
+        this must not be wrong in - it goes onto an application."""
+        assert derived_years({"experience": [{"start": "2021", "end": "2022"}]}) == 1.0
+
+    def test_a_short_internship_is_a_fraction_of_a_year(self):
+        assert derived_years({"experience": [{"start": "May 2025", "end": "Aug 2025"}]}) == 0.2
+
+    def test_iso_and_slashed_dates_both_parse(self):
+        assert derived_years({"experience": [{"start": "2023-06", "end": "2025-06"}]}) == 2.0
+        assert derived_years({"experience": [{"start": "06/2023", "end": "06/2025"}]}) == 2.0
+
+    def test_an_undated_role_is_still_unknown_rather_than_invented(self):
+        assert derived_years({"experience": [{"title": "Intern"}]}) is None
+        assert derived_years({"experience": []}) is None
+
+
+class TestTheExperienceFilterUsesIt:
+    JOB = {"title": "Backend Engineer", "requirements": {"min_years": 2}}
+
+    def result(self, facts):
+        return next(f for f in hard_filters(self.JOB, {}, facts) if f.check == "experience_years")
+
+    def test_dated_roles_answer_the_requirement_instead_of_shrugging(self):
+        got = self.result({"experience": [{"start": "Jan 2023", "end": "Present"}]})
+        assert got.status == PASS
+        assert "from the dates on your roles" in got.detail
+
+    def test_a_stated_total_is_preferred_over_the_derived_one(self):
+        got = self.result({"years_experience": 5, "experience": [{"start": "2025", "end": "Present"}]})
+        assert got.status == PASS and "stated on your profile" in got.detail
+
+    def test_too_little_experience_is_a_fail_not_an_unknown(self):
+        got = self.result({"experience": [{"start": "May 2026", "end": "Present"}]})
+        assert got.status == FAIL
+
+    def test_only_a_resume_with_no_dates_at_all_is_unknown(self):
+        got = self.result({"experience": [{"title": "Intern"}]})
+        assert got.status == UNKNOWN
+        assert "no dated roles" in got.detail

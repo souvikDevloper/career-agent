@@ -157,7 +157,13 @@ class Services:
         # Order is preserved so the best match still arrives first.
         results: list[dict] = [None] * len(candidates)  # type: ignore[list-item]
         if candidates:
-            with ThreadPoolExecutor(max_workers=min(6, len(candidates))) as pool:
+            # Three, not six. Six in flight against this endpoint queued server
+            # side: each request's clock started immediately, the last ones waited
+            # behind the rest, and they crossed the 170s client timeout. Every
+            # scored match then fell back to the keyword extractor, which is what
+            # made the results look poor. Three keeps the wall clock most of the
+            # way down without any call waiting long enough to time out.
+            with ThreadPoolExecutor(max_workers=min(3, len(candidates))) as pool:
                 futures = {
                     pool.submit(self.matcher.match, uid, job, is_judge=judge, correlation_id=correlation_id): i
                     for i, job in enumerate(candidates)
