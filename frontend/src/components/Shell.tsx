@@ -33,7 +33,16 @@ export function BrandMark() {
   );
 }
 
-export function Shell({ title, actions, children }: { title: string; actions?: ReactNode; children: ReactNode }) {
+export function Shell({ title, actions, children, fills }: {
+  title: string;
+  actions?: ReactNode;
+  children: ReactNode;
+  /** The page is a fixed-height app view that scrolls internally (the chat),
+   *  rather than a document that scrolls as a whole. Without this the page and
+   *  the thread are both scrollable and the wheel moves whichever one the
+   *  cursor happens to be over. */
+  fills?: boolean;
+}) {
   const { path, navigate } = useRouter();
   const { me } = useMe();
   const [inboxOpen, setInboxOpen] = useState(false);
@@ -64,7 +73,7 @@ export function Shell({ title, actions, children }: { title: string; actions?: R
   return (
     <>
       <AuroraField className="app-aurora" />
-    <div className={`shell ${railOpen ? "" : "rail-closed"}`}>
+    <div className={`shell ${railOpen ? "" : "rail-closed"} ${fills ? "shell-fills" : ""}`}>
       <nav className="side glass-stripe" aria-label="Main">
         <Link to="/app" className="brand"><BrandMark /> Career Agent</Link>
         {NAV.map((n) => (
@@ -154,7 +163,7 @@ export function Shell({ title, actions, children }: { title: string; actions?: R
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
             transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-            className="content"
+            className={`content ${fills ? "content-fills" : ""}`}
           >
             {children}
           </motion.main>
