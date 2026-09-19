@@ -448,6 +448,22 @@
       if (!remembered?.ok) return;
 
       const packet = (await send({ type: "packet" })).data;
+
+      // If the employer shell embeds the actual ATS form, the same companion
+      // script is injected into that HTTPS child frame. Let that frame own the
+      // application instead of having the top document race it and mark the
+      // workflow paused while the form is still being filled.
+      if (window.top === window) {
+        const embeddedApplication = [...document.querySelectorAll("iframe[src]")].some((frame) => {
+          const src = String(frame.getAttribute("src") || "").toLowerCase();
+          return /greenhouse|workday|lever|ashby|application|apply/.test(src);
+        });
+        if (embeddedApplication) {
+          banner("Career Agent: continuing inside the embedded employer application…");
+          return;
+        }
+      }
+
       let started = false;
       banner(`Career Agent: ready to apply to ${packet.title || "this role"}…`);
 
@@ -520,7 +536,7 @@
           continue;
         }
 
-        const apply = actionButton(/^(apply|apply now|start application|continue application)$/);
+        const apply = actionButton(/^(apply|apply now|apply for this role|apply to this job|start application|continue application)$/);
         if (apply && controls().length < 3) {
           continueInSameTab(apply);
           await sleep(1500);

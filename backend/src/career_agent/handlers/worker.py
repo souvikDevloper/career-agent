@@ -88,6 +88,29 @@ def process(msg: dict) -> None:
                 if exc.code in ("invalid_state", "invalid_transition", "not_found"):
                     log(logger, "work.prepare_skipped", reason=str(exc))
                     return
+                app = svc.wf.get_app(uid, msg["app_id"])
+                if app["action_state"] == "Preparing":
+                    svc.store.transact([
+                        svc.wf._transition(app, "KnownFailure", {"last_error": str(exc)[:300]}),
+                        svc.wf.event_put(uid, "application.preparation_failed",
+                                         {"reason": str(exc)[:300]}, app["app_id"]),
+                    ])
+                return
+            except Exception as exc:
+                # Preparation used to fail only in the queue, leaving the UI on
+                # "Preparing" forever. Record the failure before allowing SQS to
+                # retry so the user sees a recoverable state and can press retry.
+                try:
+                    app = svc.wf.get_app(uid, msg["app_id"])
+                    if app["action_state"] == "Preparing":
+                        svc.store.transact([
+                            svc.wf._transition(app, "KnownFailure",
+                                               {"last_error": "Could not prepare this employer form. Retry preparation."}),
+                            svc.wf.event_put(uid, "application.preparation_failed",
+                                             {"reason": type(exc).__name__}, app["app_id"]),
+                        ])
+                except Exception:
+                    pass
                 raise
         elif kind == "match_new_job":
             svc.match_new_job(uid, msg["job_key"], msg.get("watch_id"))
