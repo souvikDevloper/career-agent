@@ -195,3 +195,38 @@ class TestSnapshotIndexing:
                       "gsi1pk": "SOURCE#greenhouse:stripe", "gsi1sk": "2026-01-01"})
         save_job_snapshot(wf, self._job(company="Amazon"))  # same content hash
         assert wf.store.get("JOB#greenhouse:stripe:1", "SNAPSHOT")["company"] == "Amazon"
+
+
+class TestAbbreviations:
+    """Amazon titles every engineering role "Software Dev Engineer". A person
+    types "sde", which is what Amazon itself calls the job everywhere else."""
+
+    CORPUS = [
+        job("Amazon", "Software Dev Engineer II", location="Bengaluru, IND", source="amazon-jobs"),
+        job("Stripe", "Site Reliability Engineer", location="Bengaluru"),
+        job("Nvidia", "Machine Learning Engineer", location="Pune", source="workday-public"),
+    ]
+
+    def test_sde_finds_software_dev_engineer(self):
+        got = keyword_filter(self.CORPUS, "amazon sde", PREFS)
+        assert [j["company"] for j in got] == ["Amazon"]
+
+    def test_sre_and_ml_resolve_too(self):
+        assert [j["company"] for j in keyword_filter(self.CORPUS, "sre", PREFS)] == ["Stripe"]
+        assert [j["company"] for j in keyword_filter(self.CORPUS, "ml engineer", PREFS)] == ["Nvidia"]
+
+    def test_an_alias_does_not_match_everything(self):
+        assert keyword_filter(self.CORPUS, "amazon sre", PREFS) == []
+        assert keyword_filter(self.CORPUS, "microsoft sde", PREFS) == []
+
+
+class TestTestEmployerIsNotASearchResult:
+    """A fictional company competing with real openings is what made results
+    look made up. It belongs to the pipeline demo, not to a job search."""
+
+    def test_the_portal_is_excluded_from_the_searched_sources(self):
+        from career_agent.discovery import all_sources
+        from career_agent.sources import portal
+        searched = [s for s in all_sources() if s != portal.SOURCE]
+        assert portal.SOURCE not in searched
+        assert portal.SOURCE in all_sources(), "the monitor must still poll it for the demo"

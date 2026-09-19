@@ -307,7 +307,7 @@ def _openai_chat(system: str, messages: list[dict], tools: list[dict] | None,
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=90) as response:  # noqa: S310 - fixed https base from config
+        with urllib.request.urlopen(request, timeout=170) as response:  # noqa: S310 - fixed https base from config
             return _to_bedrock_response(json.loads(response.read().decode()))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf8", "ignore")[:300]
@@ -446,7 +446,7 @@ def _anthropic_chat(system: str, messages: list[dict], tools: list[dict] | None,
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=90) as response:  # noqa: S310 - fixed https base from config
+        with urllib.request.urlopen(request, timeout=170) as response:  # noqa: S310 - fixed https base from config
             return _from_anthropic(json.loads(response.read().decode()))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf8", "ignore")[:300]
