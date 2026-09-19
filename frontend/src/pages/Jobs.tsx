@@ -22,10 +22,13 @@ export function JobsPage() {
   const [watchKw, setWatchKw] = useState("");
   const open = new URLSearchParams(window.location.search).get("job");
   const [selected, setSelected] = useState<string | null>(open);
+  const [searchKeys, setSearchKeys] = useState<string[] | null>(null);
 
   const list = useMemo(() => (data?.matches || []).filter((m) =>
-    m.score >= minScore && (env === "all" || (m.job.environment || "live") === env) &&
-    (!q || `${m.job.title} ${m.job.company} ${m.job.location}`.toLowerCase().includes(q.toLowerCase()))), [data, q, minScore, env]);
+    m.score >= minScore &&
+    (env === "all" || (m.job.environment || "live") === env) &&
+    (!searchKeys || searchKeys.includes(m.job_key))
+  ), [data, searchKeys, minScore, env]);
   const current = data?.matches.find((m) => m.job_key === selected) || null;
 
   async function search() {
@@ -34,8 +37,12 @@ export function JobsPage() {
       const { operation } = await api("/api/search", { body: { keywords: q, client_request_id: requestId("search") } });
       const done = await waitForOperation(operation.op_id, (op) => {
         setSearching(op.progress?.[op.progress.length - 1]?.message || "Working…");
-        if (op.results?.length) reload();
+        if (op.results?.length) {
+          setSearchKeys(op.results.map((r: MatchCard) => r.job_key));
+          reload();
+        }
       });
+      setSearchKeys((done.results || []).map((r: MatchCard) => r.job_key));
       if (done.status === "failed") toast(done.final?.error || "Search failed", "error");
       reload();
     } catch (e) {
@@ -68,7 +75,7 @@ export function JobsPage() {
         <div className="stack">
           <div className="card pad">
             <form className="row wrap" onSubmit={(e) => { e.preventDefault(); search(); }}>
-              <input className="input" style={{ flex: 1, minWidth: 220 }} placeholder="Search roles, e.g. “backend intern python”" value={q} onChange={(e) => setQ(e.target.value)} />
+              <input className="input" style={{ flex: 1, minWidth: 220 }} placeholder="Search roles, e.g. “backend intern python”" value={q} onChange={(e) => { setQ(e.target.value); setSearchKeys(null); }} />
               <select className="select" style={{ width: 150 }} value={env} onChange={(e) => setEnv(e.target.value as typeof env)} aria-label="Environment">
                 <option value="all">All sources</option><option value="test">Test employer</option><option value="live">Live sources</option>
               </select>
