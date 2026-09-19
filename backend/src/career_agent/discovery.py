@@ -249,6 +249,26 @@ def _build_place_aliases() -> dict[str, tuple[str, ...]]:
 _PLACE_ALIASES = _build_place_aliases()
 
 
+# Words that describe the request rather than the job.
+#
+# Every role word has to match, which is what keeps "backend intern" from
+# returning every internship. But "swe early career roles in india" arrives as
+# words too, and "early" and "career" appear in almost no posting's own text, so
+# requiring them annihilated ten real Google openings in Bengaluru. These are
+# meta-words about searching, in the same way STOP holds meta-words about asking.
+#
+# Deliberately narrow. Dropping any word the corpus happens not to contain was
+# tried and is worse: it cannot tell "early" from "kubernetes", so "backend
+# kubernetes" would quietly answer with plain backend jobs, and "netflix backend"
+# would answer with somebody else's. A word naming a real thing we do not have
+# must still produce an empty answer.
+REQUEST_WORDS = frozenset({
+    "early", "career", "careers", "entry", "level",
+    "role", "roles", "position", "positions", "opening", "openings",
+    "opportunity", "opportunities", "vacancy", "vacancies", "listing", "listings",
+})
+
+
 def _field_tokens(jobs: list[dict], field: str) -> set:
     """The distinct words that appear in one field across the corpus.
 
@@ -432,7 +452,7 @@ def filter_jobs(jobs: list[dict], prefs: dict, *, role: str = "", company: str =
     the field it names. Only `role` is a text search, and only across the parts
     of a posting that describe the work.
     """
-    role_words = _words(role)
+    role_words = [w for w in _words(role) if w not in REQUEST_WORDS]
     company_words = _words(company)
     excluded = {c.lower() for c in prefs.get("excluded_companies", [])}
     preferred_roles = [r.lower() for r in prefs.get("roles", [])]
@@ -440,7 +460,7 @@ def filter_jobs(jobs: list[dict], prefs: dict, *, role: str = "", company: str =
     mode = (work_mode or "").strip().lower()
     kind = (employment_type or "").strip().lower()
 
-    out = []
+    survivors = []
     for job in _dedupe(jobs):
         employer = (job.get("company") or "").lower()
         if employer in excluded:
@@ -463,10 +483,13 @@ def filter_jobs(jobs: list[dict], prefs: dict, *, role: str = "", company: str =
         if level is not None and _title_level(title) != level:
             continue
         hay = f"{title} {(job.get('description') or '')[:1500]} {' '.join(job.get('departments') or [])}".lower()
+        survivors.append((job, title, hay))
+
+    out = []
+    for job, title, hay in survivors:
         if role_words and not all(_matches(w, hay) for w in role_words):
             continue
-
-        score = sum(3 if _matches(w, title) else 1 for w in role_words)
+        score = sum(3 if _matches(w, title) else 1 for w in role_words if _matches(w, hay))
         score += sum(4 for r in preferred_roles if r and r in title)
         score += 2 * bool(company_words) + 2 * bool(location)
         out.append((score or 1, job))
