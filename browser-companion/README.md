@@ -15,3 +15,13 @@ It deliberately stops for login, MFA, CAPTCHA, unknown required fields, or an un
 5. In Career Agent, prepare and approve a live application, then click **Apply in signed-in browser**.
 
 The backend records a write boundary immediately before the extension clicks the final submit control. A confirmed employer page is recorded as `Submitted`; an ambiguous post-click result becomes `OutcomeUnknown` so the agent will not blindly retry.
+
+
+## Why the extension requests access to HTTPS employer pages
+
+Career Agent discovers jobs across different ATS products and many employers wrap
+the same ATS in their own careers domain (for example a Greenhouse form embedded
+inside an employer site). The extension therefore has HTTPS host access broadly,
+but `content.js` exits unless the tab carries a current Career Agent browser
+session. It does not crawl ordinary browsing tabs. The short-lived session is
+bound to one approved application packet and expires after ten minutes.
