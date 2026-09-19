@@ -1,9 +1,10 @@
 // Local UI preview with realistic fixtures (no AWS). Usage: node build.mjs && node dev/mock-server.mjs
 import http from "node:http";
 import { execFileSync } from "node:child_process";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { extname, join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import os from "node:os";
 import zlib from "node:zlib";
 
 // Resolve the built UI relative to this file so the server runs from any cwd.
@@ -72,7 +73,56 @@ const DETAIL = (id) => {
     tasks: a.app_id === "app_1" ? [{ task_id: "t1", title: "Complete online assessment", due: new Date(now + 2.5 * 864e5).toISOString(), kind: "assessment_invite", status: "open", note: "60-minute online assessment on the Northwind test platform." }] : [] };
 };
 
-// Dynamic vector PDF compiler: transforms LaTeX markup into a clean, complete typeset PDF.
+// Production-grade LaTeX compiler: uses Tectonic headless TeX engine (same engine used by Overleaf)
+function compileWithTectonic(latex) {
+  if (!latex || typeof latex !== "string") {
+    latex = "\\textbf{Aarav Mehta}\n\\section*{Summary}\nSoftware Engineer building scalable cloud systems.";
+  }
+
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const candidatePaths = [
+    process.env.TECTONIC_BIN,
+    resolve(repoRoot, "bin", "tectonic.exe"),
+    resolve(repoRoot, "bin", "tectonic"),
+    "tectonic",
+  ].filter(Boolean);
+
+  let tectonicBin = null;
+  for (const p of candidatePaths) {
+    if (p === "tectonic" || existsSync(p)) {
+      tectonicBin = p;
+      break;
+    }
+  }
+
+  if (!tectonicBin) return null;
+
+  const tempDir = mkdtempSync(join(os.tmpdir(), "tectonic-"));
+  const texPath = join(tempDir, "resume.tex");
+  const pdfPath = join(tempDir, "resume.pdf");
+
+  try {
+    writeFileSync(texPath, latex, "utf8");
+    execFileSync(tectonicBin, ["-o", tempDir, texPath], {
+      timeout: 60000,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (existsSync(pdfPath)) {
+      const pdf_b64 = readFileSync(pdfPath).toString("base64");
+      return { pdf_b64, engine: "tectonic" };
+    }
+  } catch (err) {
+    console.warn("[Tectonic] Compilation warning/error, falling back:", err.message);
+  } finally {
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  }
+  return null;
+}
+
+// Fallback vector PDF compiler: transforms LaTeX markup into a clean typeset PDF when no TeX engine is present.
 function compileLatexToPdf(latex) {
   if (!latex || typeof latex !== "string") {
     latex = "\\textbf{Aarav Mehta}\n\\section*{Summary}\nSoftware Engineer building scalable cloud systems.";
@@ -311,6 +361,11 @@ http.createServer(async (req, res) => {
       const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       latex = payload.latex || "";
     } catch {}
+    const tectonicResult = compileWithTectonic(latex);
+    if (tectonicResult) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify(tectonicResult));
+    }
     const pdf_b64 = compileLatexToPdf(latex);
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ pdf_b64, engine: "vector-renderer" }));

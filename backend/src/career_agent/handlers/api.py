@@ -976,9 +976,18 @@ def resume_builder_compile(event, p, cid):
         with open(tex_path, "w", encoding="utf-8") as f:
             f.write(data.latex)
 
+        # Locate tectonic binary (environment variable, local repo bin directory, or system PATH)
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+        local_tectonic = os.path.join(repo_root, "bin", "tectonic.exe" if os.name == "nt" else "tectonic")
+        tectonic_bin = (
+            os.environ.get("TECTONIC_BIN")
+            or (local_tectonic if os.path.exists(local_tectonic) else None)
+            or "tectonic"
+        )
+
         # Try tectonic first (preferred: self-contained, downloads packages)
         for engine, args in [
-            ("tectonic", ["tectonic", "-o", tmpdir, tex_path]),
+            ("tectonic", [tectonic_bin, "-o", tmpdir, tex_path]),
             ("pdflatex", ["pdflatex", "-interaction=nonstopmode", "-output-directory", tmpdir, tex_path]),
         ]:
             try:

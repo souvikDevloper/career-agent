@@ -36,6 +36,159 @@ function escapeTex(str: string): string {
     .replace(/\^/g, "\\textasciicircum{}");
 }
 
+export function buildJakesTemplate(facts: any): string {
+  const name = escapeTex(facts?.name || "Aarav Mehta");
+  const email = escapeTex(facts?.email || "aarav.mehta@example.com");
+  const phone = escapeTex(facts?.phone || "+91 90000 00000");
+  const location = escapeTex(facts?.location || "Pune, India");
+
+  const eduItems = (facts?.education || []).map((edu: any) => {
+    const school = escapeTex(edu.school || "Deccan Institute of Technology");
+    const degree = escapeTex(edu.degree || "Bachelor of Technology");
+    const field = escapeTex(edu.field || "Computer Science");
+    const year = escapeTex(String(edu.graduation_year || "2027"));
+    return `    \\resumeSubheading
+      {${school}}{${location}}
+      {${degree} in ${field}}{Expected ${year}}`;
+  }).join("\n");
+
+  const expItems = (facts?.experience || []).map((exp: any) => {
+    const title = escapeTex(exp.title || "Software Engineering Intern");
+    const company = escapeTex(exp.company || "Lotus Fintech");
+    const dates = escapeTex(`${exp.start || "May 2026"} -- ${exp.end || "Present"}`);
+    const ev = escapeTex(exp.evidence || "Engineered scalable cloud backend services.");
+    return `    \\resumeSubheading
+      {${company}}{${location}}
+      {${title}}{${dates}}
+      \\resumeItemListStart
+        \\resumeItem{Core Impact}
+          {${ev}}
+        \\resumeItem{Automation}
+          {Implemented automated CI/CD pipelines reducing testing and deployment cycles by 60\\%.}
+      \\resumeItemListEnd`;
+  }).join("\n");
+
+  const projItems = (facts?.projects || []).map((proj: any) => {
+    const pName = escapeTex(proj.name || "Project");
+    const desc = escapeTex(proj.description || "Web application");
+    const ev = escapeTex(proj.evidence || "Designed and built full-stack software application.");
+    return `    \\resumeSubheading
+      {${pName}}{}
+      {${desc}}{}
+      \\resumeItemListStart
+        \\resumeItem{Architecture}
+          {${ev}}
+      \\resumeItemListEnd`;
+  }).join("\n");
+
+  const skillList = (facts?.skills || [])
+    .map((s: any) => escapeTex(typeof s === "string" ? s : s.name))
+    .join(", ") || "Python, TypeScript, React, AWS Lambda, DynamoDB, Docker, Git";
+
+  return `\\documentclass[letterpaper,11pt]{article}
+
+\\usepackage{latexsym}
+\\usepackage[empty]{fullpage}
+\\usepackage{titlesec}
+\\usepackage{marvosym}
+\\usepackage[usenames,dvipsnames]{color}
+\\usepackage{verbatim}
+\\usepackage{enumitem}
+\\usepackage[hidelinks]{hyperref}
+\\usepackage{fancyhdr}
+\\usepackage[english]{babel}
+\\usepackage{tabularx}
+
+\\pagestyle{fancy}
+\\fancyhf{}
+\\fancyfoot{}
+\\renewcommand{\\headrulewidth}{0pt}
+\\renewcommand{\\footrulewidth}{0pt}
+
+\\addtolength{\\oddsidemargin}{-0.5in}
+\\addtolength{\\evensidemargin}{-0.5in}
+\\addtolength{\\textwidth}{1in}
+\\addtolength{\\topmargin}{-.5in}
+\\addtolength{\\textheight}{1.0in}
+
+\\urlstyle{same}
+\\raggedbottom
+\\raggedright
+\\setlength{\\tabcolsep}{0in}
+
+\\titleformat{\\section}{
+  \\vspace{-4pt}\\scshape\\raggedright\\large
+}{}{0em}{}[\\color{black}\\titlerule \\vspace{-5pt}]
+
+\\newcommand{\\resumeItem}[2]{
+  \\item\\small{
+    \\textbf{#1}{: #2 \\vspace{-2pt}}
+  }
+}
+
+\\newcommand{\\resumeSubheading}[4]{
+  \\vspace{-1pt}\\item
+    \\begin{tabular*}{0.97\\textwidth}[t]{l@{\\extracolsep{\\fill}}r}
+      \\textbf{#1} & #2 \\\\
+      \\textit{\\small#3} & \\textit{\\small #4} \\\\
+    \\end{tabular*}\\vspace{-5pt}
+}
+
+\\newcommand{\\resumeSubHeadingListStart}{\\begin{itemize}[leftmargin=*]}
+\\newcommand{\\resumeSubHeadingListEnd}{\\end{itemize}}
+\\newcommand{\\resumeItemListStart}{\\begin{itemize}}
+\\newcommand{\\resumeItemListEnd}{\\end{itemize}\\vspace{-5pt}}
+
+\\begin{document}
+
+\\begin{center}
+    \\textbf{\\Huge \\scshape ${name}} \\\\ \\vspace{1pt}
+    \\small ${phone} $|$ \\href{mailto:${email}}{\\underline{${email}}} $|$ 
+    \\href{https://linkedin.com}{\\underline{LinkedIn}} $|$
+    \\href{https://github.com}{\\underline{GitHub}}
+\\end{center}
+
+\\section{Education}
+  \\resumeSubHeadingListStart
+${eduItems || `    \\resumeSubheading
+      {Deccan Institute of Technology}{Pune, India}
+      {Bachelor of Technology in Computer Science}{Expected 2027}`}
+  \\resumeSubHeadingListEnd
+
+\\section{Experience}
+  \\resumeSubHeadingListStart
+${expItems || `    \\resumeSubheading
+      {Lotus Fintech}{Pune, India}
+      {Software Engineering Intern}{May 2026 -- Present}
+      \\resumeItemListStart
+        \\resumeItem{FastAPI Backend}
+          {Architected a high-throughput Python FastAPI service on AWS Lambda with DynamoDB, processing 1M+ daily transactions.}
+        \\resumeItem{Performance Optimization}
+          {Reduced p95 latency from 900ms to 350ms by implementing multi-tiered caching strategies.}
+      \\resumeItemListEnd`}
+  \\resumeSubHeadingListEnd
+
+\\section{Projects}
+  \\resumeSubHeadingListStart
+${projItems || `    \\resumeSubheading
+      {CampusRide}{Pune, India}
+      {React + TypeScript ride sharing platform}{}
+      \\resumeItemListStart
+        \\resumeItem{Dispatch Engine}
+          {Engineered real-time ride coordination platform with automated vehicle telemetry.}
+      \\resumeItemListEnd`}
+  \\resumeSubHeadingListEnd
+
+\\section{Technical Skills}
+ \\begin{itemize}[leftmargin=0.15in, label={}]
+    \\small{\\item{
+     \\textbf{Technologies}{: ${skillList}}
+    }}
+ \\end{itemize}
+
+\\end{document}`;
+}
+
 export function buildModernTemplate(facts: any): string {
   const name = escapeTex(facts?.name || "Aarav Mehta");
   const email = escapeTex(facts?.email || "aarav.mehta@example.com");
@@ -191,7 +344,7 @@ export function buildExecutiveTemplate(facts: any): string {
 
   return `\\documentclass[11pt,a4paper]{article}
 \\usepackage[top=1.8cm,bottom=1.8cm,left=2cm,right=2cm]{geometry}
-\\usepackage{hyperref,microtype,xcolor}
+\\usepackage{enumitem,hyperref,microtype,xcolor}
 \\definecolor{rule}{HTML}{1E293B}
 \\setlength{\\parindent}{0pt}
 \\begin{document}
@@ -229,6 +382,7 @@ Bachelor of Technology in Computer Science \\hfill Deccan Institute of Technolog
 }
 
 const TEMPLATES = [
+  { id: "jakes", label: "Jake's Resume (Overleaf)", desc: "The #1 classic tech resume format on Overleaf" },
   { id: "modern", label: "Modern Clean", desc: "Single-column, clean indigo headers" },
   { id: "classic", label: "Classic Academic", desc: "11pt serif, publications and research" },
   { id: "executive", label: "Executive", desc: "Leadership-focused, achievement metrics" },
@@ -237,7 +391,8 @@ const TEMPLATES = [
 function getTemplateSource(id: string, facts: any): string {
   if (id === "classic") return buildClassicTemplate(facts);
   if (id === "executive") return buildExecutiveTemplate(facts);
-  return buildModernTemplate(facts);
+  if (id === "modern") return buildModernTemplate(facts);
+  return buildJakesTemplate(facts);
 }
 
 // ---------------------------------------------------------------------------
@@ -292,11 +447,11 @@ export function ResumeBuilderPage() {
   const toast = useToast();
 
   const facts = me?.profile?.facts;
-  const [activeTemplate, setActiveTemplate] = useState("modern");
+  const [activeTemplate, setActiveTemplate] = useState("jakes");
 
   // LaTeX state — initialized from profile facts
   const [latex, setLatex] = useState(() => {
-    return getTemplateSource("modern", facts);
+    return getTemplateSource("jakes", facts);
   });
 
   // Preview & compile state
@@ -1129,24 +1284,34 @@ export function ResumeBuilderPage() {
                     width: "100%",
                     height: "100%",
                     position: "relative",
-                    overflow: "hidden",
+                    overflow: zoom > 100 ? "auto" : "hidden",
                     background: "#08090d",
+                    display: "flex",
+                    justifyContent: "center",
                   }}
                 >
                   {pdfUrl ? (
-                    <iframe
-                      src={`${pdfUrl}#navpanes=0&scrollbar=1&toolbar=0&view=FitH`}
+                    <div
                       style={{
-                        width: "100%",
+                        width: zoom > 100 ? `${zoom}%` : "100%",
                         height: "100%",
-                        border: "none",
-                        display: "block",
-                        transform: `scale(${zoom / 100})`,
+                        minHeight: "100%",
+                        transform: zoom < 100 ? `scale(${zoom / 100})` : undefined,
                         transformOrigin: "top center",
-                        transition: "transform 0.15s ease",
+                        transition: "all 0.15s ease",
                       }}
-                      title="Resume Preview"
-                    />
+                    >
+                      <iframe
+                        src={`${pdfUrl}#navpanes=0&scrollbar=1&toolbar=0&statusbar=0&view=FitH`}
+                        style={{
+                          width: "100%",
+                          height: "100%",
+                          border: "none",
+                          display: "block",
+                        }}
+                        title="Resume Preview"
+                      />
+                    </div>
                   ) : (
                     <div
                       style={{
