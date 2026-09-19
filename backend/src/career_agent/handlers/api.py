@@ -485,6 +485,23 @@ def chat_history(event, p, cid):
     return respond(200, {"messages": [_strip(r) for r in reversed(rows)]})
 
 
+@route("DELETE", r"/api/chat")
+def clear_chat(event, p, cid):
+    """Start a fresh conversation.
+
+    The worker replays the last thirteen turns, so a failure the agent hit an
+    hour ago stays in front of it and it keeps answering from that belief - it
+    reported "a technical error" for searches that had already been fixed,
+    without calling the tool at all. Clearing is the user's own history and
+    nothing else: applications, matches and profile are untouched.
+    """
+    store = _svc().store
+    rows = store.query(f"USER#{p.user_id}", "CHAT#", limit=500, newest_first=True)
+    for row in rows:
+        store.delete(row["pk"], row["sk"])
+    return respond(200, {"cleared": len(rows)})
+
+
 @route("POST", r"/api/search")
 def search(event, p, cid):
     data = SearchIn(**body_json(event))

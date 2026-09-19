@@ -395,7 +395,31 @@ export function Assistant({ compact = false }: { compact?: boolean }) {
               )}
             </div>
           </form>
-          <p className="composer-hint tiny muted">Enter sends · Shift + Enter for a new line</p>
+          <div className="row between" style={{ gap: 12, flexWrap: "wrap" }}>
+            <p className="composer-hint tiny muted">Enter sends · Shift + Enter for a new line</p>
+            {messages.length > 0 && (
+              /* The agent is shown the last thirteen turns, so a failure it hit an
+                 hour ago stays in front of it and it answers from that rather than
+                 from the tool. Starting fresh is the cure, and it needs to be one
+                 click. This clears the conversation only - applications, matches
+                 and profile are untouched. */
+              <button
+                className="btn ghost sm"
+                disabled={busy}
+                onClick={async () => {
+                  if (!confirm("Start a new conversation? Your applications, matches and profile are not affected.")) return;
+                  try {
+                    await api("/api/chat", { method: "DELETE" });
+                    setMessages([]);
+                  } catch (e) {
+                    toast((e as Error).message, "error");
+                  }
+                }}
+              >
+                New conversation
+              </button>
+            )}
+          </div>
           {messages.length === 0 && (
             <div className="chips">
               {SUGGESTIONS.map((s) => (
