@@ -520,7 +520,7 @@
           continue;
         }
 
-        const apply = actionButton(/^(apply|apply now|start application|continue application)$/);
+        const apply = actionButton(/^(apply|apply now|apply for this role|apply to this job|start application|continue application)$/);
         if (apply && controls().length < 3) {
           continueInSameTab(apply);
           await sleep(1500);
@@ -540,6 +540,20 @@
             await sleep(1200);
             continue;
           }
+        }
+
+        // Some employer career pages (notably Greenhouse-backed custom
+        // sites) embed the actual application form in a cross-origin iframe.
+        // The companion is injected into that frame too; the top document must
+        // not declare failure while the child frame is doing the real work.
+        const embeddedApplication = [...document.querySelectorAll("iframe[src]")].some((frame) => {
+          const src = String(frame.getAttribute("src") || "").toLowerCase();
+          return /greenhouse|workday|lever|ashby|application|apply/.test(src);
+        });
+        if (embeddedApplication && window.top === window) {
+          banner("Career Agent: continuing inside the embedded employer application…");
+          await sleep(1500);
+          continue;
         }
 
         const reason = "Career Agent could not safely identify the next application control. Continue manually on this page.";
