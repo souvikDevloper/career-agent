@@ -113,6 +113,15 @@ def map_field(field: dict, facts: dict, saved: dict, cover_note: str | None) -> 
     if ("current" in label or "recent" in label) and ("title" in label or "role" in label or "position" in label):
         title = _current_role(facts).get("title") or facts.get("headline")
         return (title, "resume:experience") if title else None
+    if label in ("company", "employer", "company name"):
+        employer = _current_role(facts).get("company")
+        return (employer, "resume:experience") if employer else None
+    if label in ("job title", "position title", "role title"):
+        title = _current_role(facts).get("title") or facts.get("headline")
+        return (title, "resume:experience") if title else None
+    if label in ("location", "work location", "job location"):
+        location = _current_role(facts).get("location")
+        return (location, "resume:experience") if location else None
     if ftype == "file" or "resume" in label or "cv" == label:
         return "__RESUME__", "profile:resume"
     if "authoriz" in label and "sponsor" not in label:
@@ -155,9 +164,9 @@ def map_field(field: dict, facts: dict, saved: dict, cover_note: str | None) -> 
             skills.update(norm_label(str(s)) for s in (project.get("skills") or []))
         if skills & known:
             return "Yes", "resume:skills"
-    if "first name" in label and facts.get("name"):
+    if ("first name" in label or "given name" in label) and facts.get("name"):
         return facts["name"].split()[0], "resume:name"
-    if "last name" in label and facts.get("name"):
+    if ("last name" in label or "family name" in label or "surname" in label) and facts.get("name"):
         return facts["name"].split()[-1], "resume:name"
     if ("full name" in label or label == "name" or name in ("name", "full_name")) and facts.get("name"):
         return facts["name"], "resume:name"

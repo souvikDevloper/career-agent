@@ -136,3 +136,35 @@ def test_stripe_external_greenhouse_prepare_asks_once_then_continues(monkeypatch
     assert app["action_state"] == "NeedsUserPresence"
     assert app["approved_hash"] == app["packet_hash"]
     assert app["apply_after_prepare"] is False
+
+
+def test_stale_stripe_placeholder_canonical_key_is_repaired_before_application_creation():
+    svc, store = make_services()
+    key = "greenhouse:stripe:9001"
+    job = {
+        "job_key": key,
+        # Simulates a row persisted by the old Stripe bug.
+        "canonical_key": "greenhouse:stripe:See Opening ID",
+        "source": "greenhouse-public",
+        "feed": "greenhouse:stripe",
+        "connector": "greenhouse-public",
+        "board": "stripe",
+        "external_id": "9001",
+        "company": "Stripe",
+        "title": "Software Engineer",
+        "location": "Bengaluru",
+        "url": "https://stripe.com/jobs/search?gh_jid=9001",
+        "apply": {"kind": "external", "url": "https://stripe.com/jobs/search?gh_jid=9001"},
+        "description": "Build software.",
+        "content_hash": "stripe-stale",
+        "environment": "live",
+    }
+    save_job_snapshot(svc.wf, job)
+    svc.store.put({
+        "pk": f"USER#{UID}", "sk": f"MATCH#{key}", "entity": "match", "job_key": key,
+        "score": 76, "auto_eligible": True, "blocked": False,
+    })
+
+    app = svc.ensure_application(UID, key)
+    assert app["canonical_key"] == "greenhouse:stripe:9001"
+    assert store.get(f"USER#{UID}", "APPKEY#greenhouse:stripe:9001")["app_id"] == app["app_id"]

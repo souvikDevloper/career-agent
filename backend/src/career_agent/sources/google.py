@@ -49,7 +49,7 @@ def query_plan(query: str) -> tuple[str, str | None]:
 
     cleaned = re.sub(
         r"\b(early careers?|new grad(?:uate)?s?|university graduates?|entry level|"
-        r"interns?|internships?|apprentices?|intern and apprentice|jobs?|roles?|openings?)\b",
+        r"interns?|internships?|apprentices?|intern and apprentice|jobs?[a-z]?|roles?[a-z]?|openings?[a-z]?)\b",
         " ",
         raw,
         flags=re.I,
@@ -180,21 +180,39 @@ def normalize(raw: list) -> dict | None:
 
 def search(query: str, *, location: str = "", limit: int = 50) -> list[dict]:
     cleaned_query, target_level = query_plan(query)
-    params = {"q": cleaned_query, "hl": "en"}
-    if location:
-        params["location"] = location
-    if target_level:
-        params["target_level"] = target_level
-    url = BASE + "?" + urllib.parse.urlencode(params)
-    _, raw, _ = fetch(url, HOSTS, headers=_BROWSER_HEADERS, timeout=25)
-    rows = _extract(raw.decode("utf8", "ignore"))
+    wanted = max(1, min(50, limit))
     jobs = []
     seen = set()
-    for row in rows:
-        job = normalize(row)
-        if job and job["title"] and job["job_key"] not in seen:
-            seen.add(job["job_key"])
-            jobs.append(job)
-        if len(jobs) >= max(1, min(50, limit)):
+
+    # Google exposes 20 rows per search page. Querying only page zero made a
+    # direct search fragile: one odd first page or a slightly over-specific
+    # query could be reported as "0 roles" even though later pages contained
+    # valid India openings. Three pages is bounded and still cheap.
+    for page in range(1, min(3, (wanted + 19) // 20) + 1):
+        params = {"q": cleaned_query, "hl": "en", "sort_by": "date", "page": page}
+        if location:
+            params["location"] = location
+        if target_level:
+            params["target_level"] = target_level
+        url = BASE + "?" + urllib.parse.urlencode(params)
+        _, raw, _ = fetch(url, HOSTS, headers=_BROWSER_HEADERS, timeout=25)
+        html = raw.decode("utf8", "ignore")
+        rows = _extract(html)
+        if not rows:
+            # A missing ds:1 blob is a source/layout failure, not evidence that
+            # Google has zero jobs. Surface it so callers do not turn parser
+            # breakage into a confident "no openings" answer.
+            if "AF_initDataCallback" not in html or "ds:1" not in html:
+                raise ValueError("google careers results payload was not present")
+            break
+
+        for row in rows:
+            job = normalize(row)
+            if job and job["title"] and job["job_key"] not in seen:
+                seen.add(job["job_key"])
+                jobs.append(job)
+            if len(jobs) >= wanted:
+                return jobs
+        if len(rows) < 20:
             break
     return jobs

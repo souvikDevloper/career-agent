@@ -173,6 +173,18 @@ class TestTheResumeAnswersWhatEmployersKeepAsking:
     def test_an_empty_resume_does_not_invent_an_employer(self):
         assert map_field(self.field("What is your current employer?"), {"name": "Asha"}, {}, None) is None
 
+    def test_workday_given_name_maps_to_resume_name(self):
+        assert map_field(self.field("Given Name(s)"), self.FACTS, {}, None) == ("Asha", "resume:name")
+
+    def test_workday_family_name_maps_to_resume_name(self):
+        assert map_field(self.field("Family Name"), self.FACTS, {}, None) == ("Rao", "resume:name")
+
+    def test_workday_plain_job_title_maps_to_current_role(self):
+        assert map_field(self.field("Job Title"), self.FACTS, {}, None) == ("Backend Engineer", "resume:experience")
+
+    def test_workday_plain_company_maps_to_current_employer(self):
+        assert map_field(self.field("Company"), self.FACTS, {}, None) == ("Northwind", "resume:experience")
+
 
 class TestLiveScreeningQuestionResolution(unittest.TestCase):
     def test_bachelors_in_cs_is_resolved_from_verified_resume_education(self):

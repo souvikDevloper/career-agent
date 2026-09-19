@@ -273,6 +273,18 @@ class Services:
         job = get_job(self.wf, job_key)
         if not job:
             raise WorkflowError("not_found", "job not found", 404)
+
+        # Older Greenhouse snapshots were persisted before the board-specific
+        # requisition bug was fixed. Stripe in particular published the literal
+        # text "See Opening ID" as requisition_id for hundreds of postings, so
+        # those old cached rows all shared one canonical key and application
+        # creation could return an unrelated/stuck Stripe application. Repair the
+        # canonical identity from the stable Greenhouse posting id at the boundary
+        # where an application is created; no cache migration is required.
+        if job.get("source") == "greenhouse-public" and job.get("board") and job.get("external_id"):
+            job = dict(job)
+            job["canonical_key"] = f"greenhouse:{job['board']}:{job['external_id']}"
+
         m = self.store.get(f"USER#{uid}", f"MATCH#{job_key}") or self.matcher.match(uid, job, is_judge=self.is_judge(uid))
         return self.wf.create_application(uid, job, m, job.get("connector") or job["source"])
 
