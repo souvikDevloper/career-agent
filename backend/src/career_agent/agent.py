@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from . import connectors
 from .config import settings as cfg
 from .util import get_logger, log
 
@@ -26,6 +27,10 @@ Ground rules:
 - search_jobs returns a "searched" summary. If it found nothing, say so plainly and say what
   you searched - the number of live postings and which boards - then name which employers are
   covered. Never answer a search for one employer with roles from a different one.
+- If "searched" reports company_covered as false, that employer is NOT one of the boards this
+  system reads. Say exactly that - we do not track their careers site - and offer to search the
+  employers in employers_covered. Never report it as the employer having no openings: we did
+  not look, and saying otherwise is a checkable lie the user can disprove in one click.
 - Never name which boards we monitor from memory. The "searched" summary lists the boards
   that were actually read for that query; use it, and say how many live postings were
   looked at. Coverage changes, and a confident wrong list is worse than no list.
@@ -42,6 +47,9 @@ Ground rules:
   you scored it 48 is not being careful, it is being unhelpful.
 - When a request has two steps - find something, then prepare it - do both in the same turn.
   Stopping after the first and describing the second is the most common way to be useless.
+- Most real employers do not accept submissions from us. When prepare_application reports
+  we_can_submit false, the packet IS the deliverable: tell the user it is ready, link them to the
+  posting, and say to mark it applied afterwards. Do not describe that as pending, stuck or failed.
 - Say clearly when something is a TEST ENVIRONMENT (the Northwind Labs portal) versus a live employer.
 - You cannot change approval modes, mandates or daily caps; tell the user to use Settings.
 - Approving a submission requires the user's explicit instruction naming or clearly identifying one pending application.
@@ -188,8 +196,16 @@ def t_prepare_application(job_key: str) -> dict:
     ctx = CTX.get()
     app = ctx.services.request_prepare(ctx.user_id, job_key=job_key)
     ctx.actions.append({"type": "prepare_requested", "app_id": app["app_id"]})
-    return {"app_id": app["app_id"], "state": "Preparing",
-            "note": "Preparation runs in the background; the review screen will ask for any unknown required answers."}
+    # Whether this employer can be submitted to is known now, not after the packet
+    # is built. Saying so up front is the difference between "ready for you to
+    # paste in" and a user watching a finished application and thinking it hung.
+    submits = connectors.can(app.get("connector", ""), "submit")
+    return {"app_id": app["app_id"], "state": "Preparing", "we_can_submit": submits,
+            "ends_in": "NeedsApproval" if submits else "ManualHandoff",
+            "note": ("Preparation runs in the background; the review screen will ask for any unknown required answers."
+                     if submits else
+                     "This employer does not accept submissions from us. Preparation still runs and produces a complete "
+                     "packet, and the user submits it on the employer's own site - that is the finished state, not a failure.")}
 
 
 def t_list_applications(state: str | None = None) -> dict:

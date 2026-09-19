@@ -151,3 +151,40 @@ class TestStrandsFollowsTheProvider:
         # trailing slash trimmed, or the client builds a double-slashed URL
         assert made["client_args"]["base_url"] == "https://models.example.test/v1"
         assert made["client_args"]["api_key"] == "test-key"
+
+
+class TestPrepareSaysWhetherWeCanSubmit:
+    """Only the test portal accepts a submission from us; every real employer
+    ends in ManualHandoff. That is the finished state, not a stall - but the
+    agent described a completed packet as pending, and the user read a finished
+    application sitting on step 1 of 6 as the system hanging.
+    """
+
+    class FakeServices:
+        def __init__(self, connector):
+            self.connector = connector
+
+        def request_prepare(self, uid, job_key):
+            return {"app_id": "app_1", "connector": self.connector}
+
+    def run(self, connector):
+        agent.CTX.current = ctx(services=self.FakeServices(connector))
+        try:
+            return agent.t_prepare_application("greenhouse:stripe:1")
+        finally:
+            agent.CTX.current = None
+
+    def test_a_live_employer_is_flagged_as_ours_to_hand_over(self):
+        got = self.run("amazon-jobs")
+        assert got["we_can_submit"] is False
+        assert got["ends_in"] == "ManualHandoff"
+        assert "does not accept submissions" in got["note"]
+
+    def test_the_one_connector_that_can_submit_says_so(self):
+        got = self.run("northwind-test-portal")
+        assert got["we_can_submit"] is True
+        assert got["ends_in"] == "NeedsApproval"
+
+    def test_an_unknown_connector_is_treated_as_not_submittable(self):
+        """Defaulting the other way would promise a submission we cannot make."""
+        assert self.run("something-new")["we_can_submit"] is False

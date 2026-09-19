@@ -22,6 +22,11 @@ type Detail = {
 };
 
 const FLOW = ["Discovered", "Preparing", "NeedsApproval", "Queued", "Submitting", "Submitted"];
+// An employer we cannot submit to is not stalled partway down the automated lane -
+// it leaves that lane. Showing it against the six automated steps put a finished
+// packet on step 1 of 6, which reads as "stuck at the beginning" when in fact
+// every step we can perform is done.
+const HANDOFF_FLOW = ["Discovered", "Preparing", "Ready for you"];
 
 export function ApplicationDetailPage({ id }: { id: string }) {
   const { data, loading, reload } = useApi<Detail>(`/api/applications/${id}`, [id], 3000);
@@ -45,7 +50,11 @@ export function ApplicationDetailPage({ id }: { id: string }) {
   if (!data) return <Shell title="Application"><p className="muted">Application not found.</p></Shell>;
   const a = data.application;
   const p = data.packet;
-  const stepIndex = Math.max(0, FLOW.indexOf(a.action_state === "NeedsInformation" ? "Preparing" : a.action_state === "Authorized" ? "Queued" : a.action_state === "OutcomeUnknown" ? "Submitting" : a.action_state));
+  const handoff = a.action_state === "ManualHandoff";
+  const flow = handoff ? HANDOFF_FLOW : FLOW;
+  const stepIndex = handoff
+    ? HANDOFF_FLOW.length - 1
+    : Math.max(0, FLOW.indexOf(a.action_state === "NeedsInformation" ? "Preparing" : a.action_state === "Authorized" ? "Queued" : a.action_state === "OutcomeUnknown" ? "Submitting" : a.action_state));
 
   return (
     <Shell title="Application">
@@ -90,7 +99,7 @@ export function ApplicationDetailPage({ id }: { id: string }) {
           </div>
         </div>
         <div className="pipeline" style={{ marginTop: 20 }}>
-          {FLOW.map((s, i) => (
+          {flow.map((s, i) => (
             <div key={s} className={`pipe-step ${i < stepIndex || a.action_state === "Submitted" ? "done" : i === stepIndex ? "active" : ""}`}>
               <div className="ic">{i < stepIndex || a.action_state === "Submitted" ? <ICheck size={14} /> : i + 1}</div>
               {s.replace("NeedsApproval", "Approval").replace("Submitting", "Browser")}
@@ -99,6 +108,13 @@ export function ApplicationDetailPage({ id }: { id: string }) {
         </div>
       </div>
 
+      {handoff && (
+        <div className="banner" style={{ marginBottom: 18 }}>
+          <IShield size={18} />
+          {data.connector?.label ?? "This employer"} does not accept submissions from us, so everything we can do is
+          done: the packet below is ready to paste into their form. Open the posting, apply, then mark it applied.
+        </div>
+      )}
       {a.last_error && !["Submitted"].includes(a.action_state) && (
         <div className="banner" style={{ marginBottom: 18 }}><IAlert size={18} /> {a.last_error}</div>
       )}

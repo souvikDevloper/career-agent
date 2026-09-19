@@ -5,8 +5,19 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 rm -rf build && mkdir -p build/backend build/worker-browser
 
-python3 -m pip install --quiet --upgrade pip
-python3 -m pip install -r backend/requirements.txt -t build/backend \
+python -m pip install --quiet --upgrade pip
+
+# Resolve, then install, in two steps - deliberately.
+#
+# pip's --platform only chooses wheel tags; environment markers are always
+# evaluated against the machine running the build. mcp declares
+# `pywin32; sys_platform == "win32"`, so resolving on Windows demands a package
+# that has no manylinux wheel and the Lambda artifact cannot be built at all.
+# Resolving on the host and installing that result with --no-deps keeps pip's
+# real resolution while dropping the packages that exist only for the build
+# machine's own operating system.
+python scripts/resolve_deps.py backend/requirements.txt build/requirements.lock
+python -m pip install --quiet --no-deps -r build/requirements.lock -t build/backend \
   --platform manylinux2014_x86_64 --implementation cp --python-version 3.12 --only-binary=:all: --upgrade
 cp -r backend/src/career_agent build/backend/
 mkdir -p build/backend/career_agent/policies
