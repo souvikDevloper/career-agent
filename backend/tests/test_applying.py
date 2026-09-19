@@ -117,7 +117,7 @@ class TestRegexesSurviveTheirOwnSource:
         for mod in pkgutil.walk_packages(career_agent.__path__, "career_agent."):
             try:
                 loaded = importlib.import_module(mod.name)
-            except Exception:  # a module that needs runtime config is not our concern here
+            except Exception:  # noqa: S112 - modules needing runtime configuration are outside this regex check
                 continue
             for name, value in vars(loaded).items():
                 if isinstance(value, _re.Pattern) and any(ord(c) < 32 for c in str(value.pattern)):
@@ -193,7 +193,7 @@ class TestLiveScreeningQuestionResolution(unittest.TestCase):
                 "education": [{
                     "degree": "Bachelor of Technology",
                     "field": "Computer Science and Engineering",
-                    "graduation_year": 2027,
+                    "graduation_year": 2020,
                     "verified": True,
                 }],
                 "skills": [],
@@ -209,6 +209,54 @@ class TestLiveScreeningQuestionResolution(unittest.TestCase):
         got = resolve_live_questions(profile, q)
         self.assertEqual(got[0]["value"], "Yes")
         self.assertEqual(got[0]["source"], "resume:education")
+
+    def test_future_degree_is_not_claimed_as_awarded(self):
+        profile = {"facts": {"education": [{"degree": "B.Tech", "field": "Computer Science",
+                                             "graduation_year": 2099, "verified": True}]}}
+        q = [{"label": "Do you have a Bachelor's degree in computer science?", "options": ["Yes", "No"]}]
+        self.assertEqual(resolve_live_questions(profile, q), [])
+
+    def test_degree_and_major_must_belong_to_the_same_qualification(self):
+        profile = {"facts": {"education": [
+            {"degree": "Bachelor of Arts", "field": "History", "graduation_year": 2020},
+            {"degree": "Certificate", "field": "Computer Science", "graduation_year": 2021},
+        ]}}
+        q = [{"label": "Do you have a Bachelor's degree in computer science?", "options": ["Yes", "No"]}]
+        self.assertEqual(resolve_live_questions(profile, q), [])
+
+    def test_string_skills_and_unverified_skills_do_not_crash_or_invent(self):
+        q = [{"label": "Do you have experience programming with at least one programming language?", "options": ["Yes", "No"]}]
+        self.assertEqual(resolve_live_questions({"facts": {"skills": ["Python"]}}, q)[0]["value"], "Yes")
+        self.assertEqual(resolve_live_questions({"facts": {"skills": [{"name": "Python", "verified": False}]}}, q), [])
+
+    def test_repeated_employment_groups_resolve_distinct_records_by_id(self):
+        profile = {"facts": {"experience": [{"company": "Current"}, {"company": "Previous"}]},
+                   "saved_answers": {"Company": "Wrong saved company"}}
+        q = [{"id": f"company-{i}", "label": "Company", "context": {"section": "experience", "index": i}}
+             for i in range(3)]
+        got = resolve_live_questions(profile, q)
+        self.assertEqual([(a["id"], a["value"]) for a in got], [("company-0", "Current"), ("company-1", "Previous")])
+
+    def test_work_location_does_not_fill_personal_location(self):
+        profile = {"facts": {"location": "Kolkata", "experience": [{"location": "Bengaluru"}]}}
+        q = [{"id": "home", "label": "Location", "context": {"section": "personal"}},
+             {"id": "work", "label": "Location", "context": {"section": "experience", "index": 0}}]
+        self.assertEqual([a["value"] for a in resolve_live_questions(profile, q)], ["Kolkata", "Bengaluru"])
+
+    def test_other_document_uploads_are_not_filled_with_resume(self):
+        f = {"name": "attachment", "label": "Upload your cover letter", "type": "file", "required": True}
+        self.assertIsNone(map_field(f, {}, {}, None))
+
+    def test_split_dates_use_the_correct_record_and_do_not_invent_missing_month(self):
+        profile = {"facts": {"experience": [{"start": "Jan 2024", "end": "Present"}, {"start": "2022"}]}}
+        questions = [
+            {"id": "m", "label": "Month", "context": {"section": "experience", "index": 0, "date_field": "start", "date_part": "month"}},
+            {"id": "y", "label": "Year", "context": {"section": "experience", "index": 1, "date_field": "start", "date_part": "year"}},
+            {"id": "unknown", "label": "Month", "context": {"section": "experience", "index": 1, "date_field": "start", "date_part": "month"}},
+            {"id": "current", "label": "I currently work here", "context": {"section": "experience", "index": 0}, "options": ["Yes", "No"]},
+            {"id": "not-current", "label": "I currently work here", "context": {"section": "experience", "index": 1}, "options": ["Yes", "No"]},
+        ]
+        assert [(a["id"], a["value"]) for a in resolve_live_questions(profile, questions)] == [("m", "1"), ("y", "2022"), ("current", "Yes")]
 
     def test_programming_language_is_not_misclassified_as_age_demographic(self):
         field = {

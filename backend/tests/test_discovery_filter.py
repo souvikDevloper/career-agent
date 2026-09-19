@@ -9,9 +9,8 @@ result - it reads as a product that makes things up.
 
 from __future__ import annotations
 
-from helpers import T0  # noqa: F401  (adds src/ to sys.path)
-
 import pytest
+from helpers import T0  # noqa: F401  (adds src/ to sys.path)
 
 from career_agent import discovery
 from career_agent.discovery import _names_match, filter_jobs, keyword_filter, parse_query
@@ -541,7 +540,7 @@ class TestLiveSearchRuns:
     def boards(self, monkeypatch):
         monkeypatch.setattr(discovery, "cfg", lambda: type("S", (), {
             "amazon_boards": ("IND",), "workday_boards": ("intel:wd1:External",),
-            "adzuna_boards": ("in",)})())
+            "adzuna_boards": ("in",), "greenhouse_boards": (), "lever_boards": (), "ashby_boards": ()})())
         monkeypatch.setattr(discovery, "save_job_snapshot", lambda wf, job: (True, False))
 
     def test_it_returns_what_the_employer_answered(self, monkeypatch):
@@ -721,11 +720,12 @@ class TestWordsAboutTheRequestDoNotConstrainTheAnswer:
 
     def test_the_query_that_was_reported(self):
         got = self.found("swe early career", company="google", location="india")
-        assert len(got) == 3, got
+        assert len(got) == 2, got
+        assert not any("Staff" in title for title in got)
 
     def test_more_request_words_do_not_narrow_it_further(self):
         """Saying "roles" or "openings" is not adding a requirement."""
-        assert self.found("swe early career roles", company="google") == self.found("swe", company="google")
+        assert self.found("swe early career roles", company="google") == self.found("swe early career", company="google")
         assert self.found("engineer openings", company="google") == self.found("engineer", company="google")
 
     def test_a_real_term_we_do_not_have_still_answers_empty(self):
@@ -743,3 +743,24 @@ class TestWordsAboutTheRequestDoNotConstrainTheAnswer:
         """"open roles" names no work, so it filters on nothing and returns the
         corpus - which is the honest reading of a request that asked for nothing."""
         assert len(self.found("roles openings")) == len(self.CORPUS)
+
+
+class TestReportedSearchRegressions:
+    def test_cold_cache_still_recognizes_country_for_direct_google_search(self):
+        parsed = parse_query([], "Google SWE early career roles in India")
+        assert parsed == {"company": "google", "location": "india", "role": "swe early career"}
+
+    def test_software_engineer_boilerplate_does_not_match_a_different_occupation(self):
+        corpus = [job("Google", "Data Center Technician", description="Our software engineers build products."),
+                  job("Google", "Silicon Engineer", description="Partner with software engineers."),
+                  job("Google", "Software Engineer II, Search", description="Build products.")]
+        for role in ("SWE", "software engineer", "SDE"):
+            assert [j["title"] for j in filter_jobs(corpus, {}, role=role)] == ["Software Engineer II, Search"]
+
+    def test_compact_level_notation_retains_the_occupation_and_level(self):
+        corpus = [job("Amazon", "Software Dev Engineer I"), job("Amazon", "Software Dev Engineer II")]
+        assert [j["title"] for j in filter_jobs(corpus, {}, role="sde2")] == ["Software Dev Engineer II"]
+
+    def test_internship_title_is_usable_when_board_omits_employment_type(self):
+        corpus = [job("Google", "Software Engineer Intern"), job("Google", "Software Engineer")]
+        assert len(filter_jobs(corpus, {}, employment_type="internship")) == 1

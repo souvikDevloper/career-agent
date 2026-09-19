@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import zlib
+
 _WIDTHS = {
     "Times-Roman": (
         250, 333, 408, 500, 500, 833, 778, 180, 333, 333, 500, 564, 250, 333, 250, 278, 500, 500, 500, 500,

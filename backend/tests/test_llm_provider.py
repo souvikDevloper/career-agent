@@ -58,6 +58,24 @@ class TestDefault:
         assert llm.provider() == "anthropic"
 
 
+def test_bounded_call_timeout_reaches_http_provider(as_openai, monkeypatch):
+    import urllib.request
+    seen = []
+    class Response:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return None
+        def read(self):
+            return json.dumps(completion(text='{"ok": true}')).encode()
+    def urlopen(request, *, timeout):
+        seen.append(timeout)
+        return Response()
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert llm.json_call("system", "question", timeout_seconds=7, repair=False) == {"ok": True}
+    assert seen == [7]
+
+
 class TestRequestTranslation:
     def test_system_prompt_leads(self, as_openai):
         out = llm._to_openai_messages("be truthful", [{"role": "user", "content": [{"text": "hi"}]}])

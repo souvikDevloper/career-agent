@@ -73,7 +73,8 @@ class Matcher:
         self.store = wf.store
         self.profiles = profiles
 
-    def evidence_for(self, uid: str, job: dict, profile: dict, *, is_judge: bool, correlation_id: str | None) -> tuple[Evidence, dict, str]:
+    def evidence_for(self, uid: str, job: dict, profile: dict, *, is_judge: bool, correlation_id: str | None,
+                     timeout_seconds: float | None = None) -> tuple[Evidence, dict, str]:
         resume_text = profile.get("resume_text") or ""
         s = cfg()
         cap = s.judge_daily_model_calls if is_judge else s.user_daily_model_calls
@@ -89,13 +90,10 @@ class Matcher:
                     # on, and the evidence that decides a match is near the top of both.
                     description=(job.get("description") or "")[:4000], resume=resume_text[:5000],
                     structured=requirements)
-                # One retry, because the failure being recovered from is a timeout
-                # against a slow endpoint rather than a bad request - and the cost
-                # of not retrying is a permanent keyword score on a real job.
-                try:
-                    data = llm.json_call(MATCH_SYSTEM, prompt, max_tokens=1800, correlation_id=correlation_id)
-                except llm.ModelUnavailable:
-                    data = llm.json_call(MATCH_SYSTEM, prompt, max_tokens=1800, correlation_id=correlation_id)
+                # One reserved call per job. Retrying unavailable providers here
+                # doubled latency/cost and could outlive the worker invocation.
+                data = llm.json_call(MATCH_SYSTEM, prompt, max_tokens=1800, correlation_id=correlation_id,
+                                     timeout_seconds=timeout_seconds, repair=False)
                 if not isinstance(data, dict):
                     raise ValueError("match response was not a JSON object")
                 if not requirements:
@@ -107,7 +105,7 @@ class Matcher:
                     experience_evidence=[q for q in data.get("experience_evidence", []) if isinstance(q, str)][:4],
                     responsibilities=float(data.get("responsibilities") or 0),
                     responsibilities_evidence=[q for q in data.get("responsibilities_evidence", []) if isinstance(q, str)][:4],
-                    extractor="bedrock:" + s.model_id, confidence=0.8,
+                    extractor=llm.provider() + ":" + (s.model_id if llm.provider() == "bedrock" else s.fallback_model_id), confidence=0.8,
                 )
                 explanation = str(data.get("explanation") or "")[:600]
                 return verify_quotes(ev, resume_text), requirements or {}, explanation
@@ -121,7 +119,7 @@ class Matcher:
         return ev, requirements or {}, f"Scored by keyword match only, because {why}. This is a weaker read than usual - re-run it to get a full explanation."
 
     def match(self, uid: str, job: dict, *, is_judge: bool = False, correlation_id: str | None = None,
-              force: bool = False) -> dict:
+              force: bool = False, timeout_seconds: float | None = None) -> dict:
         profile = self.profiles.current(uid)
         if not profile:
             raise ValueError("no profile")
@@ -144,7 +142,8 @@ class Matcher:
         provisional = bool(existing) and str(existing.get("extractor") or "").startswith("heuristic")
         if existing and existing.get("fingerprint") == fingerprint and not force and not provisional:
             return existing
-        evidence, requirements, explanation = self.evidence_for(uid, job, profile, is_judge=is_judge, correlation_id=correlation_id)
+        evidence, requirements, explanation = self.evidence_for(uid, job, profile, is_judge=is_judge,
+                                                               correlation_id=correlation_id, timeout_seconds=timeout_seconds)
         job_for_score = dict(job, requirements=requirements)
         result = score_match(job_for_score, prefs, profile["facts"], evidence)
         item: dict[str, Any] = {
@@ -161,7 +160,7 @@ class Matcher:
 
 
 def _job_card(job: dict) -> dict:
-    keys = ("job_key", "canonical_key", "source", "company", "title", "location", "work_mode", "url", "apply",
+    keys = ("job_key", "canonical_key", "source", "company", "company_aliases", "title", "location", "work_mode", "url", "apply",
             "published_at", "first_seen_at", "last_checked_at", "salary_min", "salary_max", "requirements",
             "connector", "environment", "test_environment", "content_hash")
     card = {k: job.get(k) for k in keys if job.get(k) is not None}
@@ -196,7 +195,7 @@ def save_job_snapshot(wf, job: dict) -> tuple[bool, bool]:
     # posting - Amazon roles were stored under the hiring entity ("ASSPL -
     # Karnataka") before the company name was normalised. Those fields are not in
     # the content hash, so nothing would ever rewrite them.
-    drifted = {k: job[k] for k in ("company", "work_mode", "employment_type", "country")
+    drifted = {k: job[k] for k in ("company", "company_aliases", "work_mode", "employment_type", "country")
                if k in job and job[k] is not None and current.get(k) != job[k]}
     if current.get("gsi1pk") != index or drifted:
         # Repair in place. Snapshots written before the index key was corrected

@@ -16,7 +16,7 @@ export type Me = {
     notify_email_verified?: boolean;
     voice_enabled: boolean;
     preferences: { roles: string[]; locations: string[]; work_modes: string[]; excluded_companies: string[]; min_salary?: number | null };
-    mandate?: { enabled: boolean; mode: string; expires_at: number; policy_version: string; created_at: string } | null;
+    mandate?: { enabled: boolean; mode: string; expires_at: number; policy_version: string; created_at: string; scope?: { connectors?: string[] } } | null;
     telegram_linked: boolean;
   };
   profile: null | { version: number; facts: any; created_at: string; source: string; saved_answers: Record<string, string>; has_resume: boolean };

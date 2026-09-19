@@ -55,6 +55,7 @@ class Request:
             "cooldown_ok": True,
             "connector_can_submit": True,
             "paused": False,
+            "preferences_allow_submission": True,
         }
         base.update(self.context)
         base["score"] = int(base["score"])
@@ -149,6 +150,8 @@ class ReferenceEngine:
                 forbids.append("forbid-connector-without-submit-capability")
             if c["paused"]:
                 forbids.append("forbid-paused-or-cancelled")
+            if not c["preferences_allow_submission"]:
+                forbids.append("forbid-current-preferences")
             if req.is_judge and req.target_environment != "test":
                 forbids.append("judge-sessions-test-employers-only")
         if req.action in {"send_referral", "publish_profile"} and owner and c["approved_content_hash_matches"] and not req.is_judge:
@@ -187,4 +190,9 @@ def context_grid() -> list[Request]:
                      "auto_eligible": eligible, "required_answers_complete": answers, "daily_remaining": remaining,
                      "cooldown_ok": cooldown, "connector_can_submit": capable, "paused": paused},
         ))
+    for mode in MODES:
+        out.append(Request("u1", False, SUBMIT, "u1", "live", {
+            "mode": mode, "score": 95, "approved_packet_hash_matches": True,
+            "mandate_active": True, "auto_eligible": True, "preferences_allow_submission": False,
+        }))
     return out
