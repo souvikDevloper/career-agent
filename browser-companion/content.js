@@ -182,6 +182,67 @@
     return [...new Set(out)].slice(0, 5);
   }
 
+  const SENSITIVE_FIELD = /password|passcode|verification|otp|captcha|social security|ssn|date of birth|dob|race|ethnicity|gender|sex|disability|veteran|marital|religion|sexual orientation|national id|aadhaar|pan number|passport/;
+
+  function learnedAnswers() {
+    const out = {};
+    const seenRadio = new Set();
+    for (const el of controls()) {
+      const type = (el.type || "").toLowerCase();
+      if (["hidden", "password", "file", "submit", "button"].includes(type)) continue;
+      const label = labelOf(el).slice(0, 120);
+      if (!label || SENSITIVE_FIELD.test(label)) continue;
+
+      let value = "";
+      if (type === "radio") {
+        if (!el.name || seenRadio.has(el.name)) continue;
+        seenRadio.add(el.name);
+        const checked = document.querySelector(`input[type="radio"][name="${CSS.escape(el.name)}"]:checked`);
+        if (!checked) continue;
+        value = checked.value || labelOf(checked);
+      } else if (type === "checkbox") {
+        value = el.checked ? "Yes" : "No";
+      } else if (el.tagName === "SELECT") {
+        value = el.selectedOptions?.[0]?.textContent || el.value;
+      } else {
+        value = el.value;
+      }
+      value = String(value || "").trim();
+      if (value) out[label] = value.slice(0, 1000);
+    }
+    return out;
+  }
+
+  async function rememberLearnedAnswers() {
+    const answers = learnedAnswers();
+    if (Object.keys(answers).length) {
+      await send({ type: "save_answers", answers }).catch(() => {});
+    }
+  }
+
+  async function waitForUser(getReason, timeoutMs = 8 * 60 * 1000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const reason = getReason();
+      if (!reason) {
+        await rememberLearnedAnswers();
+        return true;
+      }
+      banner(reason);
+      await sleep(1000);
+    }
+    return false;
+  }
+
+  function continueInSameTab(el) {
+    const href = el?.href || el?.getAttribute?.("href");
+    if (href && /^https?:/i.test(href)) {
+      location.href = href;
+    } else {
+      el.click();
+    }
+  }
+
   function actionButton(re) {
     return [...document.querySelectorAll("button, input[type='submit'], input[type='button'], a[role='button'], a")]
       .filter(visible)
@@ -213,17 +274,26 @@
       if (!remembered?.ok) return;
 
       const packet = (await send({ type: "packet" })).data;
-      await send({ type: "start" });
-      banner(`Career Agent: applying to ${packet.title || "this role"}…`);
+      let started = false;
+      banner(`Career Agent: ready to apply to ${packet.title || "this role"}…`);
 
       for (let step = 0; step < 12; step++) {
         await sleep(900);
 
         const attention = attentionNeeded();
         if (attention) {
-          banner(attention);
-          await complete("needs_user", { reason: attention });
-          return;
+          const resolved = await waitForUser(() => attentionNeeded());
+          if (!resolved) {
+            await complete("needs_user", { reason: attention }).catch(() => {});
+            banner("Career Agent paused. Finish the sign-in or verification step, then reopen this application.", "bad");
+            return;
+          }
+        }
+
+        if (!started) {
+          await send({ type: "start" });
+          started = true;
+          banner(`Career Agent: filling ${packet.title || "this application"}…`);
         }
 
         await fill(packet);
@@ -235,13 +305,21 @@
           return;
         }
 
-        const required = unansweredRequired();
+        let required = unansweredRequired();
         if (required.length) {
-          const reason = `Needs your answer: ${required.join("; ")}`;
-          banner(reason);
-          await complete("needs_user", { reason });
-          return;
+          const reason = () => {
+            required = unansweredRequired();
+            return required.length ? `Needs your answer: ${required.join("; ")}` : null;
+          };
+          const resolved = await waitForUser(reason);
+          if (!resolved) {
+            await complete("needs_user", { reason: reason() || "Required employer question still needs an answer." });
+            return;
+          }
+          banner("Career Agent: got it. I saved that answer for later applications and am continuing…", "good");
         }
+
+        await rememberLearnedAnswers();
 
         const final = actionButton(/^(submit application|submit|send application|complete application)$/);
         if (final) {
@@ -261,14 +339,15 @@
 
         const next = actionButton(/^(continue|next|save and continue|continue application)$/);
         if (next) {
-          next.click();
+          await rememberLearnedAnswers();
+          continueInSameTab(next);
           await sleep(1200);
           continue;
         }
 
         const apply = actionButton(/^(apply|apply now|start application|continue application)$/);
         if (apply && controls().length < 3) {
-          apply.click();
+          continueInSameTab(apply);
           await sleep(1500);
           continue;
         }
