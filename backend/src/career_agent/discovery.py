@@ -125,6 +125,26 @@ def _names_match(wanted: str, name: str) -> bool:
     return len(wanted) >= 4 and len(name) >= 4 and (wanted in name or name in wanted)
 
 
+def direct_company_supported(company: str) -> bool:
+    """Whether we have a first-party/direct search path for this employer.
+
+    Coverage is a connector property, not a consequence of getting at least one
+    result. An empty Google search still means Google Careers was queried; the
+    old code inferred coverage from cached result companies and therefore told
+    users "we don't track Google" whenever the direct result set was empty.
+    """
+    wanted = (company or "").strip().lower()
+    if not wanted:
+        return False
+    if any(_names_match(wanted, name) for name in ("amazon", "microsoft", "google")):
+        return True
+    for spec in cfg().workday_boards:
+        tenant = spec.split(":", 1)[0].lower()
+        if _names_match(wanted, tenant):
+            return True
+    return False
+
+
 def poll(wf, source: str, force: bool = False) -> dict[str, Any]:
     """Fetch a source, persist snapshots, record freshness. Returns new/changed jobs."""
     state_key = (f"SOURCE#{source}", "STATE")
