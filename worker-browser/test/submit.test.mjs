@@ -4,7 +4,7 @@ import http from "node:http";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { clickAndConfirm, fillForm, hostAllowed, isBlockedAddress, lockDown } from "../src/submit.mjs";
+import { captchaChallenged, clickAndConfirm, fillForm, hostAllowed, isBlockedAddress, lockDown } from "../src/submit.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = (n) => readFileSync(join(here, "fixtures", n));
@@ -150,6 +150,56 @@ test("wording alone is not a submission", async (t) => {
     await page.goto(`http://127.0.0.1:${port}/x`);
     const result = await clickAndConfirm(page, { timeoutMs: 4000 });
     assert.equal(result.outcome, "unknown", "the form is still on the page, so nothing was confirmed");
+  } finally {
+    await browser.close();
+    server.close();
+  }
+});
+
+test("a configured captcha is not a challenge; a visible one is", async (t) => {
+  // Greenhouse ships GOOGLE_RECAPTCHA_INVISIBLE_KEY and "disable_captcha": false
+  // in a config blob on every job page. Searching the HTML for "captcha" reported
+  // captcha_required for every Greenhouse submission, including successful ones.
+  const chromium = await loadPlaywright();
+  if (!chromium) return t.skip("playwright not installed");
+  const pages = {
+    configured: `<!doctype html><html><body>
+        <script>window.CONFIG = {"GOOGLE_RECAPTCHA_INVISIBLE_KEY":"6Lfmcbcp","disable_captcha":false};</script>
+        <h1>Thank you for applying</h1><p>We have received your application.</p>
+      </body></html>`,
+    challenged: `<!doctype html><html><body>
+        <iframe title="recaptcha challenge expires in two minutes" src="https://www.google.com/recaptcha/api2/bframe?x=1"
+                style="width:400px;height:580px"></iframe>
+        <form method="post"><button type="submit">Submit</button></form>
+      </body></html>`,
+  };
+  let which = "configured";
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(pages[which]);
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address();
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (e) {
+    server.close();
+    return t.skip("browser binary unavailable: " + e.message);
+  }
+  try {
+    const context = await browser.newContext();
+    await lockDown(context, ["127.0.0.1", "google.com"], { allowLocal: true });
+    const page = await context.newPage();
+
+    await page.goto(`http://127.0.0.1:${port}/x`);
+    assert.equal(await captchaChallenged(page), false, "a config blob is not a challenge");
+
+    which = "challenged";
+    await page.goto(`http://127.0.0.1:${port}/y`);
+    assert.equal(await captchaChallenged(page), true, "a visible challenge frame is");
+    const result = await clickAndConfirm(page, { timeoutMs: 4000 });
+    assert.equal(result.reason, "captcha_required");
   } finally {
     await browser.close();
     server.close();
