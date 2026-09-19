@@ -172,7 +172,7 @@ def _evidence_backed(value: Any, quotes: list[str]) -> float:
     """Do not grant near-full subjective credit from one vague resume passage."""
     raw = _clamp(value)
     unique = len({re.sub(r"\s+", " ", q.strip().lower()) for q in quotes if q and q.strip()})
-    cap = (0.2, 0.6, 0.8, 1.0)[min(unique, 3)]
+    cap = (0.2, 0.75, 0.9, 1.0)[min(unique, 3)]
     return min(raw, cap)
 
 
