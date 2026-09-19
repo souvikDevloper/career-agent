@@ -22,6 +22,7 @@ import {
 import { api } from "../lib/api";
 import { useMe } from "../lib/me";
 import { buildJakeTemplate, escapeTex } from "../lib/resumeJake";
+import { PdfPreview } from "../components/PdfPreview";
 
 // ---------------------------------------------------------------------------
 // Template Generators with Profile Integration
@@ -298,6 +299,7 @@ export function ResumeBuilderPage() {
   // Preview & compile state
   const [compiling, setCompiling] = useState(false);
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+  const [pdfBytes, setPdfBytes] = useState<Uint8Array | null>(null);
   const [zoom, setZoom] = useState(100);
   const [syncing, setSyncing] = useState(false);
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
@@ -350,6 +352,7 @@ export function ResumeBuilderPage() {
         const blob = new Blob([bytes], { type: "application/pdf" });
         if (pdfUrl) URL.revokeObjectURL(pdfUrl);
         setPdfUrl(URL.createObjectURL(blob));
+        setPdfBytes(bytes);
       }
     } catch (e) {
       toast((e as Error).message || "Compilation failed", "error");
@@ -572,10 +575,10 @@ export function ResumeBuilderPage() {
 
   // Zoom handlers
   function zoomIn() {
-    setZoom((z) => Math.min(150, z + 10));
+    setZoom((z) => Math.min(200, z + 10));
   }
   function zoomOut() {
-    setZoom((z) => Math.max(70, z - 10));
+    setZoom((z) => Math.max(50, z - 10));
   }
   function zoomReset() {
     setZoom(100);
@@ -1170,20 +1173,8 @@ export function ResumeBuilderPage() {
                     background: "#08090d",
                   }}
                 >
-                  {pdfUrl ? (
-                    <iframe
-                      src={`${pdfUrl}#navpanes=0&scrollbar=1&toolbar=0&view=FitH`}
-                      style={{
-                        width: "100%",
-                        height: "100%",
-                        border: "none",
-                        display: "block",
-                        transform: `scale(${zoom / 100})`,
-                        transformOrigin: "top center",
-                        transition: "transform 0.15s ease",
-                      }}
-                      title="Resume Preview"
-                    />
+                  {pdfBytes ? (
+                    <PdfPreview data={pdfBytes} zoom={zoom} fallbackUrl={pdfUrl} />
                   ) : (
                     <div
                       style={{
