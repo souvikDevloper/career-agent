@@ -63,6 +63,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === "dispatch") return { ok: true, data: await call(session, "/dispatch", "POST", {}) };
     if (msg.type === "complete") return { ok: true, data: await call(session, "/complete", "POST", msg.body || {}) };
     if (msg.type === "save_answers") return { ok: true, data: await call(session, "/answers", "PUT", { answers: msg.answers || {} }) };
+    if (msg.type === "resolve_questions") return {
+      ok: true,
+      data: await call(session, "/resolve-questions", "POST", { questions: msg.questions || [] })
+    };
     if (msg.type === "resume") {
       const res = await fetch(msg.url);
       if (!res.ok) throw new Error(`Resume download failed (${res.status})`);

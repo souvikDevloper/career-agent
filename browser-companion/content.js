@@ -35,25 +35,84 @@
     return s.display !== "none" && s.visibility !== "hidden" && r.width > 0 && r.height > 0;
   }
 
-  function labelOf(el) {
-    const parts = [el.getAttribute("aria-label"), el.getAttribute("placeholder"), el.getAttribute("name"), el.id];
+  const PLACEHOLDER_CHOICE = /^(select|choose|please select)( an?)? (option|answer)|^select an option$/;
+
+  function questionContainer(el) {
+    let node = el.parentElement;
+    for (let depth = 0; node && depth < 6; depth++, node = node.parentElement) {
+      const text = String(node.textContent || "").trim();
+      if (text.length >= 12 && text.length <= 900 &&
+          (text.includes("?") || text.includes("*") || /required/i.test(text))) {
+        return node;
+      }
+    }
+    return el.parentElement;
+  }
+
+  function rawLabelOf(el) {
+    const parts = [];
+    const labelled = String(el.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean);
+    for (const id of labelled) {
+      const n = document.getElementById(id);
+      if (n) parts.push(n.textContent);
+    }
+    parts.push(el.getAttribute("aria-label"), el.getAttribute("placeholder"), el.getAttribute("name"), el.id);
     if (el.id) {
       const lab = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
       if (lab) parts.push(lab.textContent);
     }
     const parent = el.closest("label");
     if (parent) parts.push(parent.textContent);
-    const group = el.closest("[data-automation-id], .form-group, .field, [role='group']");
-    if (group) parts.push(group.textContent?.slice(0, 220));
-    return norm(parts.filter(Boolean).join(" "));
+    const group = el.closest("[data-automation-id], .form-group, .field, [role='group'], fieldset");
+    if (group) {
+      const lab = group.querySelector("legend, label, [class*='label'], [class*='question']");
+      if (lab) parts.push(lab.textContent);
+    }
+    const q = questionContainer(el);
+    if (q) parts.push(q.textContent?.slice(0, 700));
+    return parts.filter(Boolean).join(" ");
+  }
+
+  function labelOf(el) {
+    let text = norm(rawLabelOf(el));
+    text = text
+      .replace(/select an option/g, " ")
+      .replace(/please select an option/g, " ")
+      .replace(/required fields?/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return text;
   }
 
   function controls() {
     return [...document.querySelectorAll("input, textarea, select")].filter((el) => visible(el) && !el.disabled);
   }
 
+  function customChoiceControls() {
+    const nodes = [...document.querySelectorAll("[role='combobox'], [aria-haspopup='listbox'], button")];
+    return nodes.filter((el, index) => {
+      if (!visible(el) || el.disabled) return false;
+      const roleChoice = el.getAttribute("role") === "combobox" || el.getAttribute("aria-haspopup") === "listbox";
+      const placeholderButton = el.tagName === "BUTTON" && PLACEHOLDER_CHOICE.test(norm(el.textContent || el.getAttribute("aria-label") || ""));
+      if (!roleChoice && !placeholderButton) return false;
+      // Avoid returning both a wrapper and its nested real combobox.
+      return !nodes.some((other, j) => j !== index && other !== el && el.contains(other) &&
+        (other.getAttribute("role") === "combobox" || other.getAttribute("aria-haspopup") === "listbox"));
+    });
+  }
+
+  function allControls() {
+    return [...new Set([...controls(), ...customChoiceControls()])];
+  }
+
+  function isCustomChoice(el) {
+    return el.tagName !== "SELECT" &&
+      (el.getAttribute("role") === "combobox" || el.getAttribute("aria-haspopup") === "listbox" ||
+       (el.tagName === "BUTTON" && PLACEHOLDER_CHOICE.test(norm(el.textContent || ""))));
+  }
+
   function findControl(key, exactName) {
-    const all = controls();
+    const all = allControls();
     if (exactName) {
       const exact = all.find((el) => el.name === exactName || el.id === exactName);
       if (exact) return exact;
@@ -81,7 +140,41 @@
     return best;
   }
 
-  function setValue(el, value) {
+  function openOptionNodes() {
+    const selectors = [
+      "[role='option']", "[role='listbox'] li", "[role='listbox'] button",
+      "[data-testid*='option']", "[class*='option']"
+    ];
+    const seen = new Set();
+    const out = [];
+    for (const el of document.querySelectorAll(selectors.join(","))) {
+      if (!visible(el)) continue;
+      const text = String(el.textContent || el.getAttribute("aria-label") || "").trim();
+      const key = norm(text);
+      if (!key || key.length > 180 || seen.has(key)) continue;
+      seen.add(key);
+      out.push(el);
+    }
+    return out;
+  }
+
+  async function optionTexts(el) {
+    if (el.tagName === "SELECT") {
+      return [...el.options]
+        .map((o) => String(o.textContent || o.value || "").trim())
+        .filter((x) => x && !PLACEHOLDER_CHOICE.test(norm(x)));
+    }
+    if (!isCustomChoice(el)) return [];
+    if (el.getAttribute("aria-expanded") !== "true") el.click();
+    await sleep(180);
+    const values = openOptionNodes().map((o) => String(o.textContent || o.getAttribute("aria-label") || "").trim());
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    if (el.getAttribute("aria-expanded") === "true") el.click();
+    await sleep(60);
+    return [...new Set(values)];
+  }
+
+  async function setValue(el, value) {
     const tag = el.tagName.toLowerCase();
     const type = (el.getAttribute("type") || "").toLowerCase();
     if (tag === "select") {
@@ -89,7 +182,26 @@
       const opt = [...el.options].find((o) => norm(o.value) === wanted || norm(o.textContent) === wanted);
       if (!opt) return false;
       el.value = opt.value;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    }
+    if (isCustomChoice(el)) {
+      const wanted = norm(value);
+      if (el.getAttribute("aria-expanded") !== "true") el.click();
+      await sleep(180);
+      const options = openOptionNodes();
+      const hit = options.find((o) => {
+        const got = norm(o.textContent || o.getAttribute("aria-label") || "");
+        return got === wanted ||
+          ((wanted === "yes" || wanted === "no") && got.split(" ")[0] === wanted);
+      });
+      if (!hit) {
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        return false;
+      }
+      hit.click();
+      await sleep(120);
       return true;
     }
     if (type === "checkbox") {
@@ -139,12 +251,12 @@
         const first = controls().find((x) => /first name/.test(labelOf(x)));
         const last = controls().find((x) => /last name|surname/.test(labelOf(x)));
         const parts = String(raw).trim().split(/\s+/);
-        if (first) { setValue(first, parts[0] || ""); filled++; }
-        if (last) { setValue(last, parts.slice(1).join(" ") || parts[0] || ""); filled++; }
+        if (first && await setValue(first, parts[0] || "")) filled++;
+        if (last && await setValue(last, parts.slice(1).join(" ") || parts[0] || "")) filled++;
         if (first || last) continue;
       }
       const el = findControl(label, field?.name || key);
-      if (el && setValue(el, raw)) filled++;
+      if (el && await setValue(el, raw)) filled++;
     }
     if (await attachResume(packet.resume_url).catch(() => false)) filled++;
     return filled;
@@ -164,22 +276,52 @@
     return null;
   }
 
+  function choiceText(el) {
+    if (el.tagName === "SELECT") {
+      return String(el.selectedOptions?.[0]?.textContent || el.value || "").trim();
+    }
+    return String(el.getAttribute("aria-valuetext") || el.getAttribute("data-value") ||
+                  el.textContent || el.getAttribute("aria-label") || "").trim();
+  }
+
+  function choiceEmpty(el) {
+    const value = norm(choiceText(el));
+    return !value || PLACEHOLDER_CHOICE.test(value) || value === "select" || value === "choose";
+  }
+
+  function requiredLike(el) {
+    if (el.required || el.getAttribute("aria-required") === "true") return true;
+    const q = questionContainer(el);
+    const text = String(q?.textContent || "");
+    return text.includes("*") || /\brequired\b/i.test(text);
+  }
+
   function unansweredRequired() {
     const out = [];
-    for (const el of controls()) {
-      if (!(el.required || el.getAttribute("aria-required") === "true")) continue;
-      const type = (el.type || "").toLowerCase();
+    for (const el of allControls()) {
+      const type = (el.getAttribute("type") || "").toLowerCase();
       let empty = false;
-      if (type === "checkbox" || type === "radio") {
+      let required = requiredLike(el);
+
+      if (el.tagName === "SELECT" || isCustomChoice(el)) {
+        empty = choiceEmpty(el);
+        // Authenticated screening pages often render required custom selects
+        // without aria-required. A placeholder choice directly under a
+        // question is still something we must not skip.
+        if (empty && /\?|\*/.test(String(questionContainer(el)?.textContent || ""))) required = true;
+      } else if (type === "checkbox" || type === "radio") {
         empty = el.name ? !document.querySelector(`[name="${CSS.escape(el.name)}"]:checked`) : !el.checked;
       } else if (type === "file") {
         empty = !(el.files && el.files.length);
       } else {
         empty = !String(el.value || "").trim();
       }
-      if (empty) out.push(labelOf(el).slice(0, 120) || el.name || el.id || "required field");
+      if (required && empty) {
+        const label = labelOf(el).slice(0, 180) || el.name || el.id || "required field";
+        if (label && !PLACEHOLDER_CHOICE.test(norm(label))) out.push(label);
+      }
     }
-    return [...new Set(out)].slice(0, 5);
+    return [...new Set(out)].slice(0, 6);
   }
 
   const SENSITIVE_FIELD = /password|passcode|verification|otp|captcha|social security|ssn|date of birth|dob|race|ethnicity|gender|sex|disability|veteran|marital|religion|sexual orientation|national id|aadhaar|pan number|passport/;
@@ -187,14 +329,17 @@
   function learnedAnswers() {
     const out = {};
     const seenRadio = new Set();
-    for (const el of controls()) {
-      const type = (el.type || "").toLowerCase();
-      if (["hidden", "password", "file", "submit", "button"].includes(type)) continue;
+    for (const el of allControls()) {
+      const type = (el.getAttribute("type") || "").toLowerCase();
+      if (["hidden", "password", "file", "submit"].includes(type)) continue;
       const label = labelOf(el).slice(0, 120);
       if (!label || SENSITIVE_FIELD.test(label)) continue;
 
       let value = "";
-      if (type === "radio") {
+      if (isCustomChoice(el)) {
+        value = choiceText(el);
+        if (choiceEmpty(el)) continue;
+      } else if (type === "radio") {
         if (!el.name || seenRadio.has(el.name)) continue;
         seenRadio.add(el.name);
         const checked = document.querySelector(`input[type="radio"][name="${CSS.escape(el.name)}"]:checked`);
@@ -203,14 +348,43 @@
       } else if (type === "checkbox") {
         value = el.checked ? "Yes" : "No";
       } else if (el.tagName === "SELECT") {
-        value = el.selectedOptions?.[0]?.textContent || el.value;
+        value = choiceText(el);
+        if (choiceEmpty(el)) continue;
       } else {
+        if (type === "button") continue;
         value = el.value;
       }
       value = String(value || "").trim();
       if (value) out[label] = value.slice(0, 1000);
     }
     return out;
+  }
+
+  async function resolveVisibleQuestions() {
+    const discovered = [];
+    const byLabel = new Map();
+    for (const el of allControls()) {
+      if (!(el.tagName === "SELECT" || isCustomChoice(el)) || !choiceEmpty(el)) continue;
+      const label = labelOf(el).slice(0, 600);
+      if (!label || SENSITIVE_FIELD.test(label) || byLabel.has(label)) continue;
+      const options = await optionTexts(el).catch(() => []);
+      discovered.push({ label, options, required: requiredLike(el) });
+      byLabel.set(label, el);
+    }
+    if (!discovered.length) return 0;
+
+    const response = await send({ type: "resolve_questions", questions: discovered }).catch(() => null);
+    const answers = response?.data?.answers || [];
+    let filled = 0;
+    for (const answer of answers) {
+      const el = byLabel.get(answer.label) || findControl(answer.label);
+      if (el && choiceEmpty(el) && await setValue(el, answer.value)) filled++;
+    }
+    if (filled) {
+      banner(`Career Agent filled ${filled} screening answer${filled === 1 ? "" : "s"} from your verified profile.`, "good");
+      await rememberLearnedAnswers();
+    }
+    return filled;
   }
 
   async function rememberLearnedAnswers() {
@@ -244,7 +418,7 @@
   }
 
   function actionButton(re) {
-    return [...document.querySelectorAll("button, input[type='submit'], input[type='button'], a[role='button'], a")]
+    return [...document.querySelectorAll("button, input[type='submit'], input[type='button'], [role='button'], a")]
       .filter(visible)
       .find((el) => re.test(norm(el.textContent || el.value || el.getAttribute("aria-label") || "")));
   }
@@ -297,6 +471,7 @@
         }
 
         await fill(packet);
+        await resolveVisibleQuestions();
         await sleep(450);
 
         if (confirmed()) {
