@@ -7,7 +7,7 @@ depends on cannot quietly stop being populated.
 import unittest
 
 from career_agent.scoring import work_mode_of
-from career_agent.sources import adzuna, amazon, ashby, greenhouse, lever, oraclehcm, workday
+from career_agent.sources import adzuna, amazon, ashby, google, greenhouse, lever, microsoft, oraclehcm, workday
 
 
 class LeverNormalize(unittest.TestCase):
@@ -451,3 +451,63 @@ class TestAdzunaIsSecondClassOnPurpose:
             assert "not configured" in str(exc)
         else:
             raise AssertionError("a missing key should be reported, not called with")
+
+
+class TestMicrosoftCareersDirectSearch:
+    def test_normalize_keeps_company_location_and_live_apply_url(self):
+        job = microsoft.normalize({
+            "id": "12345",
+            "name": "Software Engineer",
+            "locations": ["India, Karnataka, Bangalore"],
+            "positionUrl": "/careers/job/12345/software-engineer",
+        })
+        assert job["company"] == "Microsoft"
+        assert "Bangalore" in job["location"]
+        assert job["connector"] == microsoft.SOURCE
+        assert job["apply"]["kind"] == "external"
+        assert job["url"].startswith("https://apply.careers.microsoft.com/")
+
+    def test_search_passes_query_and_location_to_microsoft(self, monkeypatch):
+        seen = {}
+        def fake(url, hosts, **kw):
+            seen["url"] = url
+            return {"data": {"positions": [{"id": "1", "name": "Software Engineer",
+                                               "locations": ["Bengaluru"], "positionUrl": "/careers/job/1"}]}}
+        monkeypatch.setattr(microsoft, "fetch_json", fake)
+        monkeypatch.setattr(microsoft, "_detail", lambda _id: "")
+        jobs = microsoft.search("software engineer", location="Bengaluru")
+        assert "query=software+engineer" in seen["url"]
+        assert "location=Bengaluru" in seen["url"]
+        assert jobs[0]["company"] == "Microsoft"
+
+
+class TestGoogleCareersDirectSearch:
+    def test_embedded_results_are_extracted_and_normalized(self):
+        data = [[
+            ["g123", "Software Engineer", "https://www.google.com/about/careers/applications/jobs/results/123",
+             None, None, None, None, None, None, [["Bengaluru, Karnataka, India"]]]
+        ], None, 1, 20]
+        html = "before AF_initDataCallback({key: 'ds:1', isError: false, hash: 'x', data:" + __import__("json").dumps(data) + "}); after"
+        rows = google._extract(html)
+        assert len(rows) == 1
+        job = google.normalize(rows[0])
+        assert job["company"] == "Google"
+        assert "Bengaluru" in job["location"]
+        assert job["connector"] == google.SOURCE
+        assert job["apply"]["kind"] == "external"
+
+    def test_search_uses_google_query_and_location(self, monkeypatch):
+        seen = {}
+        data = [[
+            ["g1", "Software Engineer", "https://www.google.com/about/careers/applications/jobs/results/1",
+             None, None, None, None, None, None, [["Bengaluru, India"]]]
+        ], None, 1, 20]
+        html = "AF_initDataCallback({key: 'ds:1', data:" + __import__("json").dumps(data) + "});"
+        def fake(url, hosts, **kw):
+            seen["url"] = url
+            return 200, html.encode(), {}
+        monkeypatch.setattr(google, "fetch", fake)
+        jobs = google.search("software engineer", location="Bengaluru")
+        assert "q=software+engineer" in seen["url"]
+        assert "location=Bengaluru" in seen["url"]
+        assert jobs and jobs[0]["company"] == "Google"

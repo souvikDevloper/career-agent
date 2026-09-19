@@ -17,6 +17,8 @@ from . import connectors
 
 LOCAL_BROWSER_CONNECTORS = {
     "amazon-jobs",
+    "microsoft-careers",
+    "google-careers",
     "workday-public",
     "lever-public",
     "ashby-public",

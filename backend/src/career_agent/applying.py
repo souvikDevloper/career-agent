@@ -241,12 +241,41 @@ def prepare_packet(wf, uid: str, app: dict, job: dict, profile: dict, *, is_judg
             answers[f["name"]] = value
             evidence[f["name"]] = source
     else:
-        # connector cannot read the form: prepare a handoff kit instead of guessing fields
-        for label, value, source in (("Full name", facts.get("name"), "resume:name"), ("Email", facts.get("email"), "resume:email"),
-                                     ("Phone", facts.get("phone"), "resume:phone"), ("Why this role", cover, "generated:grounded_note")):
+        # Authenticated portals reveal their real form only inside the user's
+        # signed-in browser. Prepare a richer, still-reviewable answer kit now;
+        # the Browser Companion maps these labels to the live DOM and stops on
+        # anything required that this packet does not already know.
+        links = facts.get("links") or {}
+        current = _current_role(facts)
+        generic = [
+            ("Full name", facts.get("name"), "resume:name"),
+            ("Email", facts.get("email"), "resume:email"),
+            ("Phone", facts.get("phone"), "resume:phone"),
+            ("LinkedIn", links.get("linkedin"), "resume:links"),
+            ("GitHub", links.get("github"), "resume:links"),
+            ("Portfolio", links.get("portfolio"), "resume:links"),
+            ("University", _school(facts), "resume:education"),
+            ("Graduation year", _grad_year(facts), "resume:education"),
+            ("Current employer", current.get("company"), "resume:experience"),
+            ("Current title", current.get("title"), "resume:experience"),
+            ("Why this role", cover, "generated:grounded_note"),
+        ]
+        wa = facts.get("work_authorization") or {}
+        if wa.get("verified") and wa.get("value"):
+            generic.append(("Work authorization", wa.get("value"), "profile:user_confirmed"))
+        for label, value, source in generic:
             if value:
                 answers[label] = value
                 evidence[label] = source
+        # Saved answers are user-provided, including employer-specific questions.
+        # They are safe to reuse verbatim but never synthesized here.
+        for label, value in saved.items():
+            if value not in (None, ""):
+                answers.setdefault(str(label)[:160], value)
+                evidence.setdefault(str(label)[:160], "saved_answer:user")
+        if profile.get("resume_key"):
+            answers.setdefault("Resume", "__RESUME__")
+            evidence.setdefault("Resume", "profile:resume")
 
     plan = submission_plan(job, app["connector"])
     return {

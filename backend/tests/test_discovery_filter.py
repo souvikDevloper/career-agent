@@ -557,6 +557,24 @@ class TestLiveSearchRuns:
                             lambda country, query, limit=100: [{"job_key": "a1", "title": "SDE-1"}])
         assert discovery.live_search(self.wf(), company="amazon")[0]["feed"] == "amazon:IND"
 
+    def test_microsoft_direct_search_gets_role_and_location(self, monkeypatch):
+        called = []
+        monkeypatch.setattr(discovery.microsoft, "search",
+                            lambda query, location="", limit=50: called.append((query, location)) or
+                            [{"job_key": "ms1", "title": "Software Engineer", "company": "Microsoft"}])
+        got = discovery.live_search(self.wf(), company="microsoft", role="software engineer", location="Bengaluru")
+        assert called == [("software engineer", "Bengaluru")]
+        assert [j["feed"] for j in got] == ["microsoft:direct"]
+
+    def test_google_direct_search_gets_role_and_location(self, monkeypatch):
+        called = []
+        monkeypatch.setattr(discovery.google, "search",
+                            lambda query, location="", limit=50: called.append((query, location)) or
+                            [{"job_key": "g1", "title": "Software Engineer", "company": "Google"}])
+        got = discovery.live_search(self.wf(), company="google", role="software engineer", location="Bengaluru")
+        assert called == [("software engineer", "Bengaluru")]
+        assert [j["feed"] for j in got] == ["google:direct"]
+
     def test_a_workday_tenant_is_asked_when_it_is_named(self, monkeypatch):
         monkeypatch.setattr(discovery.workday, "search",
                             lambda spec, query, limit=20: [{"job_key": "w1", "title": "Module Engineer"}])
@@ -642,3 +660,15 @@ class TestFreeTextReachesTheSamePlaceAsTheAgent:
         parsed = parse_query(self.CORPUS, "gitlab backend engineer india")
         assert parsed["role"] == "backend engineer"
         assert parsed["company"] == "gitlab" and parsed["location"] == "india"
+
+
+class TestDirectOnlyEmployersParseWithoutCachedRows:
+    def test_microsoft_is_structured_even_when_the_cache_has_no_microsoft_job(self):
+        got = parse_query(CORPUS, "Microsoft software engineer")
+        assert got["company"].lower() == "microsoft"
+        assert "software" in got["role"]
+
+    def test_google_is_structured_even_when_the_cache_has_no_google_job(self):
+        got = parse_query(CORPUS, "Google software engineer")
+        assert got["company"].lower() == "google"
+        assert "software" in got["role"]
