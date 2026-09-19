@@ -99,6 +99,15 @@ class Services:
         # Structured filters when the caller has them, free text when it only has a
         # string. One implementation either way.
         active = {k: v for k, v in (filters or {}).items() if v}
+        if not active and keywords:
+            # A person typing "amazon sde 1 bangalore" into the search box is
+            # naming an employer just as plainly as the agent naming it in a
+            # field, and deciding which word is which is what parse_query already
+            # does against the corpus. Without this the whole free-text route -
+            # the Matches page, the REST endpoint, every non-agent caller - read
+            # only the cache, so it answered "no SDE 1 in Bengaluru" while five
+            # were live, which is the same wrong answer the agent used to give.
+            active = {k: v for k, v in discovery.parse_query(jobs, keywords).items() if v}
         # Someone who names an employer is asking what that employer has open right
         # now, so refresh that one board before answering rather than serving a
         # cache up to half an hour old. One board, never all of them: polling the

@@ -14,7 +14,7 @@ from helpers import T0  # noqa: F401  (adds src/ to sys.path)
 import pytest
 
 from career_agent import discovery
-from career_agent.discovery import _names_match, filter_jobs, keyword_filter
+from career_agent.discovery import _names_match, filter_jobs, keyword_filter, parse_query
 
 PREFS: dict = {"roles": [], "excluded_companies": []}
 
@@ -582,3 +582,45 @@ class TestLiveSearchRuns:
     def test_no_company_named_asks_nobody(self, monkeypatch):
         monkeypatch.setattr(discovery.amazon, "search", lambda *a, **k: [{"job_key": "x"}])
         assert discovery.live_search(self.wf(), company="", role="engineer") == []
+
+
+class TestFreeTextReachesTheSamePlaceAsTheAgent:
+    """The search box is not a lesser caller.
+
+    Everything non-agent - the Matches page, the REST endpoint - hands over a
+    string, and that string was only ever filtered against the cache. So the box
+    answered "no SDE 1 in Bengaluru" while five were live: the same wrong answer
+    the agent used to give, from the same cause, reached by a different door.
+    """
+
+    CORPUS = [
+        job("Amazon", "SDE-1 (FTC)", location="Bengaluru, Karnataka, IND"),
+        job("Gitlab", "Backend Engineer", location="Remote, India"),
+    ]
+
+    def test_an_employer_in_the_box_is_recognised_as_an_employer(self):
+        got = keyword_filter(self.CORPUS, "amazon sde bangalore", PREFS)
+        assert [j["company"] for j in got] == ["Amazon"]
+
+    def test_the_level_survives_parsing(self):
+        """_words drops single characters, which lost the "1" in "sde 1" - and the
+        level is the whole point of that query."""
+        parsed = parse_query(self.CORPUS, "amazon sde 1 bangalore")
+        assert parsed == {"company": "amazon", "location": "bangalore", "role": "sde 1"}
+
+    def test_a_level_free_query_stays_level_free(self):
+        assert parse_query(self.CORPUS, "amazon sde bangalore")["role"] == "sde"
+
+    def test_a_year_is_not_mistaken_for_a_level(self):
+        """A graduation year belongs in the role text, but it is not a seniority
+        level - reading it as one would filter a 2026 grad search down to nothing."""
+        from career_agent.discovery import _wanted_level
+
+        role = parse_query(self.CORPUS, "amazon grad 2026")["role"]
+        assert "2026" in role
+        assert _wanted_level(role) is None
+
+    def test_the_place_and_the_employer_do_not_end_up_in_the_role(self):
+        parsed = parse_query(self.CORPUS, "gitlab backend engineer india")
+        assert parsed["role"] == "backend engineer"
+        assert parsed["company"] == "gitlab" and parsed["location"] == "india"
