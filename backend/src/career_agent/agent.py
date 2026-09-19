@@ -56,9 +56,10 @@ Ground rules:
   you scored it 48 is not being careful, it is being unhelpful.
 - When a request has two steps - find something, then prepare it - do both in the same turn.
   Stopping after the first and describing the second is the most common way to be useless.
-- Most real employers do not accept submissions from us. When prepare_application reports
-  we_can_submit false, the packet IS the deliverable: tell the user it is ready, link them to the
-  posting, and say to mark it applied afterwards. Do not describe that as pending, stuck or failed.
+- prepare_application reports an execution_mode. "cloud_browser" can proceed through our submission
+  worker after approval/policy checks. "local_browser" means the packet is ready but the employer
+  requires the user's authenticated browser session; say that user presence is required rather than
+  calling the employer unsupported. "manual" is the only true manual handoff.
 - Say clearly when something is a TEST ENVIRONMENT (the Northwind Labs portal) versus a live employer.
 - You cannot change approval modes, mandates or daily caps; tell the user to use Settings.
 - Approving a submission requires the user's explicit instruction naming or clearly identifying one pending application.
@@ -205,16 +206,20 @@ def t_prepare_application(job_key: str) -> dict:
     ctx = CTX.get()
     app = ctx.services.request_prepare(ctx.user_id, job_key=job_key)
     ctx.actions.append({"type": "prepare_requested", "app_id": app["app_id"]})
-    # Whether this employer can be submitted to is known now, not after the packet
-    # is built. Saying so up front is the difference between "ready for you to
-    # paste in" and a user watching a finished application and thinking it hung.
-    submits = connectors.can(app.get("connector", ""), "submit")
-    return {"app_id": app["app_id"], "state": "Preparing", "we_can_submit": submits,
-            "ends_in": "NeedsApproval" if submits else "ManualHandoff",
-            "note": ("Preparation runs in the background; the review screen will ask for any unknown required answers."
-                     if submits else
-                     "This employer does not accept submissions from us. Preparation still runs and produces a complete "
-                     "packet, and the user submits it on the employer's own site - that is the finished state, not a failure.")}
+    plan = ctx.services.submission_plan_for_application(app)
+    mode = plan["mode"]
+    ends = "NeedsApproval" if mode == "cloud_browser" else "NeedsUserPresence" if mode == "local_browser" else "ManualHandoff"
+    note = (
+        "Preparation runs in the background; after required answers are complete the cloud browser can submit it."
+        if mode == "cloud_browser" else
+        "Preparation runs in the background. This employer requires your authenticated browser session, so the next "
+        "state is NeedsUserPresence rather than a failed or unsupported application."
+        if mode == "local_browser" else
+        "Preparation runs in the background and produces a handoff packet; this target has no automated submission route."
+    )
+    return {"app_id": app["app_id"], "state": "Preparing", "we_can_submit": bool(plan["can_submit"]),
+            "execution_mode": mode, "requires_user_presence": bool(plan["requires_user_presence"]),
+            "ends_in": ends, "note": note}
 
 
 def t_list_applications(state: str | None = None) -> dict:

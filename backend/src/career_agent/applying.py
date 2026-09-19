@@ -10,6 +10,7 @@ import re
 from typing import Any
 
 from . import connectors, llm
+from .submission import submission_plan
 from .config import settings as cfg
 from .sources import greenhouse, portal
 from .util import sha256
@@ -247,12 +248,13 @@ def prepare_packet(wf, uid: str, app: dict, job: dict, profile: dict, *, is_judg
                 answers[label] = value
                 evidence[label] = source
 
+    plan = submission_plan(job, app["connector"])
     return {
         "target": {"url": apply_url, "connector": app["connector"], "environment": app["target_environment"],
                    "job_external_id": job.get("external_id"),
-                   # A connector that can submit in general still cannot submit to
-                   # a posting whose form lives on the employer's own site.
-                   "submittable": (job.get("apply") or {}).get("kind") in ("portal", "hosted_form")},
+                   "submission": plan,
+                   # Kept for packet/1 compatibility; new code routes by submission.mode.
+                   "submittable": plan["mode"] == "cloud_browser" and plan["can_submit"]},
         "job_snapshot_hash": job.get("content_hash"),
         "profile_version": profile["version"],
         "resume_key": profile.get("resume_key"),

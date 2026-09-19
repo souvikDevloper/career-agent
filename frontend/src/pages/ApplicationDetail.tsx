@@ -28,6 +28,7 @@ const FLOW = ["Discovered", "Preparing", "NeedsApproval", "Queued", "Submitting"
 // packet on step 1 of 6, which reads as "stuck at the beginning" when in fact
 // every step we can perform is done.
 const HANDOFF_FLOW = ["Discovered", "Preparing", "Ready for you"];
+const USER_BROWSER_FLOW = ["Discovered", "Preparing", "Open signed-in browser"];
 
 export function ApplicationDetailPage({ id }: { id: string }) {
   const { data, loading, reload } = useApi<Detail>(`/api/applications/${id}`, [id], 3000);
@@ -52,10 +53,13 @@ export function ApplicationDetailPage({ id }: { id: string }) {
   const a = data.application;
   const p = data.packet;
   const handoff = a.action_state === "ManualHandoff";
-  const flow = handoff ? HANDOFF_FLOW : FLOW;
+  const userBrowser = a.action_state === "NeedsUserPresence";
+  const flow = handoff ? HANDOFF_FLOW : userBrowser ? USER_BROWSER_FLOW : FLOW;
   const stepIndex = handoff
     ? HANDOFF_FLOW.length - 1
-    : Math.max(0, FLOW.indexOf(a.action_state === "NeedsInformation" ? "Preparing" : a.action_state === "Authorized" ? "Queued" : a.action_state === "OutcomeUnknown" ? "Submitting" : a.action_state));
+    : userBrowser
+      ? USER_BROWSER_FLOW.length - 1
+      : Math.max(0, FLOW.indexOf(a.action_state === "NeedsInformation" ? "Preparing" : a.action_state === "Authorized" ? "Queued" : a.action_state === "OutcomeUnknown" ? "Submitting" : a.action_state));
 
   return (
     <Shell title="Application">
@@ -88,11 +92,16 @@ export function ApplicationDetailPage({ id }: { id: string }) {
             {a.action_state === "Paused" && (
               <button className="btn primary" disabled={!!busy} onClick={() => act("resume", `/api/applications/${a.app_id}/resume`)}><IPlay size={16} /> Resume</button>
             )}
-            {["Discovered", "NeedsApproval", "KnownFailure", "NeedsReview", "Ineligible", "Paused", "ManualHandoff"].includes(a.action_state) && (
+            {["Discovered", "NeedsApproval", "KnownFailure", "NeedsReview", "Ineligible", "Paused", "NeedsUserPresence", "ManualHandoff"].includes(a.action_state) && (
               <button className="btn" disabled={!!busy} onClick={() => act("prepare", `/api/applications/${a.app_id}/prepare`)}>{busy === "prepare" ? <Spinner /> : <IRefresh size={16} />} {p ? "Re-prepare" : "Prepare"}</button>
             )}
-            {a.action_state === "ManualHandoff" && (
-              <button className="btn primary" disabled={!!busy} onClick={() => act("handoff", `/api/applications/${a.app_id}/handoff-complete`)}><ICheck size={16} /> I applied on their site</button>
+            {a.action_state === "NeedsUserPresence" && a.url && (
+              <a className="btn primary lg" href={a.url} target="_blank" rel="noreferrer"><IExternal size={16} /> Continue in signed-in browser</a>
+            )}
+            {["ManualHandoff", "NeedsUserPresence"].includes(a.action_state) && (
+              <button className="btn" disabled={!!busy} onClick={() => act("handoff", `/api/applications/${a.app_id}/handoff-complete`)}>
+                <ICheck size={16} /> I submitted it
+              </button>
             )}
             {!["Submitted", "Withdrawn", "Submitting", "OutcomeUnknown"].includes(a.action_state) && (
               <button className="btn danger" disabled={!!busy} onClick={() => act("reject", `/api/applications/${a.app_id}/reject`, { reason: "user declined" })}><IX size={16} /> Withdraw</button>
@@ -109,11 +118,19 @@ export function ApplicationDetailPage({ id }: { id: string }) {
         </div>
       </div>
 
+      {userBrowser && (
+        <div className="banner" style={{ marginBottom: 18 }}>
+          <IShield size={18} />
+          This application is prepared, but the employer requires your authenticated browser session. Open the posting
+          while signed in; the packet below is the exact data the browser companion should fill. Login, MFA and CAPTCHA
+          stay with you rather than being stored or bypassed by the backend.
+        </div>
+      )}
       {handoff && (
         <div className="banner" style={{ marginBottom: 18 }}>
           <IShield size={18} />
-          {data.connector?.label ?? "This employer"} does not accept submissions from us, so everything we can do is
-          done: the packet below is ready to paste into their form. Open the posting, apply, then mark it applied.
+          {data.connector?.label ?? "This employer"} has no automated submission route yet. The packet below is ready
+          for a manual handoff; after submitting on the employer site, mark it submitted here.
         </div>
       )}
       {a.last_error && !["Submitted"].includes(a.action_state) && (
