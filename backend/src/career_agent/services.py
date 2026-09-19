@@ -23,6 +23,20 @@ logger = get_logger("services")
 AUTO_PREPARE_MIN_SCORE = 60
 
 
+def _candidate_pool_size(total: int, requested: int) -> int:
+    requested = max(1, min(12, requested))
+    return min(total, max(requested, min(24, requested * 3)))
+
+
+def _rank_match_cards(cards: list[dict]) -> list[dict]:
+    """Eligible first, then strongest explained fit."""
+    return sorted(cards, key=lambda c: (
+        bool(c.get("blocked")),
+        -int(c.get("score") or 0),
+        str((c.get("job") or {}).get("published_at") or ""),
+    ))
+
+
 def _same_employer(wanted: str, company: str | None) -> bool:
     name = (company or "").lower()
     return bool(name) and (wanted in name or name in wanted)
@@ -142,7 +156,7 @@ class Services:
         # crowd out a much better resume match sitting at N+1. Score a bounded
         # pool, then return the best requested results.
         requested = max(1, min(12, limit))
-        pool_size = min(len(matched), max(requested, min(24, requested * 3)))
+        pool_size = _candidate_pool_size(len(matched), requested)
         candidates = matched[:pool_size]
         discovery.hydrate(self.wf, candidates)
         if stats is not None:
@@ -194,8 +208,7 @@ class Services:
         # A search result list is a ranking. Previously it preserved retrieval
         # order even after computing fit scores, so "best match" could literally
         # be a lower-scoring job above a stronger one. Eligible first, then score.
-        ordered.sort(key=lambda c: (bool(c.get("blocked")), -int(c.get("score") or 0),
-                                    str((c.get("job") or {}).get("published_at") or "")))
+        ordered = _rank_match_cards(ordered)
         if min_score:
             ordered = [c for c in ordered if (c.get("score") or 0) >= min_score]
         ordered = ordered[:requested]
