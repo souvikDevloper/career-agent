@@ -13,7 +13,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from . import connectors
 from .config import settings as cfg
 from .util import get_logger, log
 
@@ -24,9 +23,12 @@ You help the user find openings, understand fit, prepare truthful applications, 
 
 Ground rules:
 - Use tools for facts. Never invent jobs, scores, statuses or application results.
-- search_jobs returns a "searched" summary. If it found nothing, say so plainly and say what
-  you searched - the number of live postings and which boards - then name which employers are
-  covered. Never answer a search for one employer with roles from a different one.
+- search_jobs returns a "searched" summary. Respect its filters and freshness. live_postings
+  counts responses fetched this turn; cached_postings is the older corpus, not a fresh search.
+  searched_postings is the bounded set examined for this employer, never all their openings.
+  A failed source check means the search could not be verified, not that there are no jobs.
+  Never answer a search for one employer with roles from a different one, including previous matches.
+  Do not volunteer old alternatives after an empty search unless the user asked for alternatives.
 - If "searched" reports company_covered as false, that employer is NOT one of the boards this
   system reads. Say exactly that - we do not track their careers site - and offer to search the
   employers in employers_covered. Never report it as the employer having no openings: we did
@@ -58,6 +60,14 @@ Ground rules:
   you scored it 48 is not being careful, it is being unhelpful.
 - When a request has two steps - find something, then prepare it - do both in the same turn.
   Stopping after the first and describing the second is the most common way to be useless.
+- Requests to keep watching, check periodically, or change a watch interval require watch tools.
+  Use the requested interval_minutes and separate company, role and location. list_watches identifies
+  an existing watch before update_watch; do not create a duplicate to change its cadence.
+  Report the saved interval and next check from the tool. Chat and finalized voice commands use
+  the same tools; acknowledging a reminder without saving the watch does not complete the request.
+- When the user supplies a factual screening answer to remember, use save_profile_answers with
+  the exact question labels and the user's own answer wording. Do not derive or invent answers.
+  The saved answers can resume matching applications that were waiting for that information.
 - prepare_application reports an execution_mode. "cloud_browser" can proceed through our submission
   worker after approval/policy checks. "local_browser" means the packet is ready but the employer
   requires the user's authenticated browser session; say that user presence is required rather than
@@ -79,6 +89,7 @@ class ToolContext:
     services: Any
     is_judge: bool = False
     actions: list = field(default_factory=list)
+    search_result: dict | None = None
 
 
 class _CtxHolder:
@@ -169,7 +180,7 @@ def t_search_jobs(role: str = "", company: str = "", location: str = "", work_mo
                  "work_mode": work_mode, "employment_type": employment_type},
     )
     ctx.actions.append({"type": "search", "count": len(cards)})
-    return {"results": [{"job_key": c["job_key"], "title": c["job"].get("title"), "company": c["job"].get("company"),
+    result = {"results": [{"job_key": c["job_key"], "title": c["job"].get("title"), "company": c["job"].get("company"),
                          "location": c["job"].get("location"), "score": c["score"],
                          "blocked": c["blocked"], "unknowns": c["unknowns"][:2],
                          "provisional": str(c.get("extractor") or "").startswith("heuristic"),
@@ -177,6 +188,8 @@ def t_search_jobs(role: str = "", company: str = "", location: str = "", work_mo
                          "why": (c.get("explanation") or "")[:240]}
                         for c in cards],
             "searched": stats}
+    ctx.search_result = result
+    return result
 
 
 def t_list_matches(min_score: int = 0) -> dict:
@@ -187,20 +200,93 @@ def t_list_matches(min_score: int = 0) -> dict:
     """
     ctx = CTX.get()
     rows = [m for m in ctx.services.matcher.list(ctx.user_id) if int(m.get("score", 0)) >= min_score][:10]
+    if ctx.search_result is not None:
+        # A follow-up tool in the same turn must not undo the user's employer or
+        # location restrictions by injecting unrelated historical matches.
+        from .discovery import filter_jobs
+
+        filters = ctx.search_result.get("searched", {}).get("filters") or {}
+        filters = {k: v for k, v in filters.items() if k in {"role", "company", "location", "work_mode", "employment_type"}}
+        allowed = {id(j) for j in filter_jobs([m["job"] for m in rows], {}, **filters)}
+        rows = [m for m in rows if id(m["job"]) in allowed]
     return {"matches": [{"job_key": m["job_key"], "title": m["job"].get("title"), "company": m["job"].get("company"),
                          "score": m["score"], "blocked": m.get("blocked")} for m in rows]}
 
 
-def t_create_watch(keywords: str) -> dict:
-    """Keep watching supported sources every 5 minutes for new openings matching keywords, even when the user is offline.
+def t_create_watch(keywords: str, interval_minutes: int = 5, company: str = "", role: str = "", location: str = "") -> dict:
+    """Save a recurring watch for new openings, including direct employer searches, while the user is offline.
 
     Args:
         keywords: Search keywords for the watch.
+        interval_minutes: Requested check interval in minutes, minimum 5.
+        company: One employer, e.g. Google or Microsoft.
+        role: Role and seniority, e.g. SWE early career.
+        location: City or country, e.g. India.
     """
     ctx = CTX.get()
-    w = ctx.services.create_watch(ctx.user_id, keywords)
+    w = ctx.services.create_watch(ctx.user_id, keywords, interval_minutes=interval_minutes,
+                                  company=company, role=role, location=location)
     ctx.actions.append({"type": "watch_created", "watch_id": w["watch_id"]})
-    return {"watch_id": w["watch_id"], "interval_minutes": w["interval_minutes"], "sources": w["sources"]}
+    return _watch_summary(w)
+
+
+def _watch_summary(w: dict) -> dict:
+    return {k: w.get(k) for k in ("watch_id", "keywords", "filters", "interval_minutes", "sources", "enabled",
+                                  "next_check_at", "last_checked_at", "last_status")}
+
+
+def t_list_watches() -> dict:
+    """List saved watches, their filters, check intervals and next scheduled checks."""
+    ctx = CTX.get()
+    return {"watches": [_watch_summary(w) for w in ctx.services.store.query(f"USER#{ctx.user_id}", "WATCH#", limit=50)]}
+
+
+def t_update_watch(watch_id: str, interval_minutes: int | None = None, keywords: str | None = None,
+                   company: str | None = None, role: str | None = None, location: str | None = None,
+                   enabled: bool | None = None) -> dict:
+    """Change an existing watch's interval, search or enabled state. Omitted fields keep their current values.
+
+    Args:
+        watch_id: Exact saved watch id returned by list_watches.
+        interval_minutes: Requested check interval in minutes, minimum 5.
+        keywords: Replacement search keywords.
+        company: Replacement employer filter.
+        role: Replacement role and seniority filter.
+        location: Replacement city or country filter.
+        enabled: False pauses the watch; true resumes it.
+    """
+    ctx = CTX.get()
+    watch = ctx.services.update_watch(ctx.user_id, watch_id, interval_minutes=interval_minutes, keywords=keywords,
+                                      company=company, role=role, location=location, enabled=enabled)
+    ctx.actions.append({"type": "watch_updated", "watch_id": watch["watch_id"]})
+    return _watch_summary(watch)
+
+
+def t_save_profile_answers(labels: list[str], answers: list[str], app_id: str | None = None) -> dict:
+    """Remember explicit factual answers from this user message and resume applications waiting for them.
+
+    Args:
+        labels: Exact screening question labels, in the same order as answers. Maximum 20.
+        answers: User's exact answer wording from their current message. Never infer an answer from the resume.
+        app_id: Optional application awaiting these answers; omit to resume relevant pending applications.
+    """
+    ctx = CTX.get()
+    if not labels or len(labels) != len(answers) or len(labels) > 20:
+        return {"saved": False, "reason": "Provide one answer for each question, up to 20 questions."}
+    if any(not isinstance(label, str) or not label.strip() or len(label) > 600 for label in labels):
+        return {"saved": False, "reason": "Each answer needs a question label of at most 600 characters."}
+    current_words = re.sub(r"\s+", " ", ctx.user_text).casefold()
+    for answer in answers:
+        if not isinstance(answer, str) or not answer.strip() or len(answer) > 1000:
+            return {"saved": False, "reason": "Each answer must be nonempty text of at most 1000 characters."}
+        words = re.sub(r"\s+", " ", answer.strip()).casefold()
+        if not re.search(r"(?<!\w)" + re.escape(words) + r"(?!\w)", current_words):
+            return {"saved": False, "reason": "Use the answer wording the user explicitly supplied in this message; do not guess."}
+    supplied = {label.strip(): answer.strip() for label, answer in zip(labels, answers, strict=True)}
+    result = ctx.services.save_profile_answers(ctx.user_id, supplied, reprepare_app_id=app_id)
+    resumed = result.get("reprepared_app_ids") or []
+    ctx.actions.append({"type": "profile_answers_saved", "count": len(supplied), "reprepared_app_ids": resumed})
+    return {"saved": True, "count": len(supplied), "reprepared_app_ids": resumed}
 
 
 def t_prepare_application(job_key: str) -> dict:
@@ -318,6 +404,7 @@ def t_interview_questions(app_id: str) -> dict:
 
 
 TOOLS: list[Callable[..., dict]] = [t_profile_summary, t_update_preferences, t_search_jobs, t_list_matches, t_create_watch,
+                                    t_list_watches, t_update_watch, t_save_profile_answers,
                                     t_prepare_application, t_list_applications, t_approve_application, t_application_status,
                                     t_interview_questions]
 TOOL_NAMES = {f.__name__[2:]: f for f in TOOLS}
@@ -371,7 +458,7 @@ def run(ctx: ToolContext, history: list[dict]) -> tuple[str, str]:
         try:
             agent = _strands_agent(history)
             result = agent(ctx.user_text)
-            return _result_text(result), "strands-agents"
+            return _ground_search_reply(ctx, _result_text(result)), "strands-agents"
         except ImportError as exc:
             log(logger, "agent.strands_unavailable", error=str(exc))
         except Exception as exc:
@@ -389,9 +476,35 @@ def run(ctx: ToolContext, history: list[dict]) -> tuple[str, str]:
                 correlation_id=ctx.correlation_id)
         from . import llm as _llm
 
-        return _converse_loop(ctx, history), f"{_llm.provider()}-converse"
+        return _ground_search_reply(ctx, _converse_loop(ctx, history)), f"{_llm.provider()}-converse"
     finally:
         CTX.current = None
+
+
+def _ground_search_reply(ctx: ToolContext, reply: str) -> str:
+    """Do not let an empty/failed search turn into confident historical alternatives."""
+    result = ctx.search_result
+    if result is None or result.get("results") or any(a.get("type") != "search" or a.get("count", 0) for a in ctx.actions):
+        return reply
+    searched = result.get("searched") or {}
+    filters = searched.get("filters") or {}
+    target = " ".join(str(filters.get(k) or "") for k in ("company", "role")).strip() or "your requested roles"
+    if filters.get("location"):
+        target += " in " + str(filters["location"])
+    checks = searched.get("source_checks") or {}
+    if checks.get("failed_sources"):
+        return (f"I couldn't verify current openings for {target} because the employer search did not finish successfully. "
+                "Current availability is unknown. Please retry the search.")
+    if searched.get("matched", 0):
+        if searched.get("scored", 0) == 0:
+            return (f"I found {searched['matched']} matching postings for {target}, but couldn't finish their fit scores. "
+                    "Please retry to score these results.")
+        return f"I found matching postings for {target}, but none of the scored results reached your requested minimum score of {searched.get('min_score', 0)}."
+    if searched.get("company_covered") is False:
+        return f"I couldn't find {target} in the connected sources. This employer has no direct connector here, so I cannot conclude that it has no openings."
+    if searched.get("freshness") == "live":
+        return f"The current employer search returned no postings matching {target}. This was a bounded search of {searched.get('searched_postings', 0)} returned postings, not a claim about every opening."
+    return f"I found no postings matching {target} in the cached sources. I have not verified that the employer has no current openings."
 
 
 def _result_text(result: Any) -> str:

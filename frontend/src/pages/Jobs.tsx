@@ -20,6 +20,7 @@ export function JobsPage() {
   const [env, setEnv] = useState<"all" | "test" | "live">("all");
   const [searching, setSearching] = useState<string | null>(null);
   const [watchKw, setWatchKw] = useState("");
+  const [watchInterval, setWatchInterval] = useState(30);
   const open = new URLSearchParams(window.location.search).get("job");
   const [selected, setSelected] = useState<string | null>(open);
   const [searchKeys, setSearchKeys] = useState<string[] | null>(null);
@@ -120,21 +121,27 @@ export function JobsPage() {
           </div>
           <div className="card pad glass-stripe">
             <div className="card-title"><h3>Watches</h3><Badge>{me?.watches.length ?? 0}</Badge></div>
-            <p className="small muted">Runs in AWS every 5 minutes, even when your laptop is off. Unchanged feeds cost no model calls.</p>
+            <p className="small muted">Checks on your schedule, even when your laptop is off. New matches are prepared under your approval rules. Employer forms that need your signed-in browser continue when the companion is connected.</p>
             <form className="row" style={{ marginTop: 12 }} onSubmit={async (e) => {
               e.preventDefault();
               if (!watchKw.trim()) return;
-              await api("/api/watches", { body: { keywords: watchKw } }).catch((err) => toast(err.message, "error"));
+              await api("/api/watches", { body: { keywords: watchKw, interval_minutes: watchInterval } }).catch((err) => toast(err.message, "error"));
               setWatchKw("");
               reloadMe();
             }}>
               <input className="input" placeholder="keywords" value={watchKw} onChange={(e) => setWatchKw(e.target.value)} />
+              <input className="input" aria-label="Watch interval in minutes" type="number" min={5} max={10080} step={5} style={{ width: 90 }} value={watchInterval} onChange={(e) => setWatchInterval(Number(e.target.value))} />
+              <span className="tiny muted">min</span>
               <button className="btn">Add</button>
             </form>
             <div className="col" style={{ marginTop: 12, gap: 8 }}>
               {(me?.watches || []).map((w) => (
                 <div key={w.watch_id} className="row between small">
-                  <span><Badge tone="mint" live>{w.keywords}</Badge></span>
+                  <span><Badge tone="mint" live>{w.keywords}</Badge><span className="tiny muted"> · every {w.interval_minutes} min</span></span>
+                  <select className="select" aria-label={`Frequency for ${w.keywords}`} style={{ width: 130 }} value={w.interval_minutes}
+                    onChange={async (e) => { try { await api(`/api/watches/${w.watch_id}`, { method: "PUT", body: { interval_minutes: Number(e.target.value) } }); reloadMe(); } catch (error) { toast((error as Error).message, "error"); } }}>
+                    {Array.from(new Set([5, 15, 30, 60, 180, 360, 720, 1440, w.interval_minutes])).sort((a, b) => a - b).map((minutes) => <option key={minutes} value={minutes}>{minutes < 60 ? `${minutes} min` : `${minutes / 60} hours`}</option>)}
+                  </select>
                   <button className="btn icon ghost sm" aria-label="Delete watch" onClick={async () => { await api(`/api/watches/${w.watch_id}`, { method: "DELETE" }); reloadMe(); }}><ITrash size={15} /></button>
                 </div>
               ))}

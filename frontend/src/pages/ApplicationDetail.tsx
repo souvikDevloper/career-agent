@@ -12,7 +12,7 @@ import KineticScoreGauge from "../components/motion/KineticScoreGauge";
 import confetti from "canvas-confetti";
 
 type Detail = {
-  application: Application;
+  application: Application & { local_browser_dispatched_at?: string | null };
   packet: null | { version: number; hash: string; body: any; unknown_required: string[]; field_evidence: Record<string, string>; fields: { name: string; label: string; type: string; required: boolean; options?: { label: string; value: string }[] }[]; created_at: string };
   timeline: TimelineEvent[];
   attempts: any[];
@@ -55,6 +55,7 @@ export function ApplicationDetailPage({ id }: { id: string }) {
       if (tab) tab.location.href = target.toString();
       else window.location.href = target.toString();
       toast("Live application opened. The browser companion will use only the approved packet.", "success");
+      await reload();
     } catch (e) {
       tab?.close();
       toast((e as Error).message, "error");
@@ -80,7 +81,13 @@ export function ApplicationDetailPage({ id }: { id: string }) {
   const a = data.application;
   const p = data.packet;
   const handoff = a.action_state === "ManualHandoff";
-  const userBrowser = a.action_state === "NeedsUserPresence";
+  const localBrowser = p?.body?.target?.submission?.mode === "local_browser";
+  const browserInProgress = localBrowser && a.action_state === "Submitting";
+  const userBrowser = a.action_state === "NeedsUserPresence" || browserInProgress;
+  const packetApproved = !!p && a.approved_hash === p.hash;
+  const canReopenBrowser = browserInProgress && !a.local_browser_dispatched_at;
+  const canReportBrowserSubmission = localBrowser && !!a.local_browser_dispatched_at
+    && ["Submitting", "OutcomeUnknown"].includes(a.action_state);
   const flow = handoff ? HANDOFF_FLOW : userBrowser ? USER_BROWSER_FLOW : FLOW;
   const stepIndex = handoff
     ? HANDOFF_FLOW.length - 1
@@ -122,12 +129,13 @@ export function ApplicationDetailPage({ id }: { id: string }) {
             {["Discovered", "NeedsApproval", "KnownFailure", "NeedsReview", "Ineligible", "Paused", "NeedsUserPresence", "ManualHandoff"].includes(a.action_state) && (
               <button className="btn" disabled={!!busy} onClick={() => act("prepare", `/api/applications/${a.app_id}/prepare`)}>{busy === "prepare" ? <Spinner /> : <IRefresh size={16} />} {p ? "Re-prepare" : "Prepare"}</button>
             )}
-            {a.action_state === "NeedsUserPresence" && p && (
+            {(a.action_state === "NeedsUserPresence" || canReopenBrowser) && p && (
               <button className="btn primary lg" disabled={!!busy} onClick={startBrowserCompanion}>
-                {busy === "browser" ? <Spinner /> : <IExternal size={16} />} Apply in signed-in browser
+                {busy === "browser" ? <Spinner /> : <IExternal size={16} />}
+                {canReopenBrowser ? "Reopen application in browser" : packetApproved ? "Apply in signed-in browser" : "Approve & apply in browser"}
               </button>
             )}
-            {["ManualHandoff", "NeedsUserPresence"].includes(a.action_state) && (
+            {(["ManualHandoff", "NeedsUserPresence"].includes(a.action_state) || canReportBrowserSubmission) && (
               <button className="btn" disabled={!!busy} onClick={() => act("handoff", `/api/applications/${a.app_id}/handoff-complete`)}>
                 <ICheck size={16} /> I submitted it
               </button>
@@ -150,9 +158,18 @@ export function ApplicationDetailPage({ id }: { id: string }) {
       {userBrowser && (
         <div className="banner" style={{ marginBottom: 18 }}>
           <IShield size={18} />
-          This approved packet is ready for a live application in your authenticated browser. The Browser Companion
-          fills the real employer form and can click the final submit button. Login, MFA, CAPTCHA and any unanswered
-          required question pause automation for you instead of being guessed or bypassed.
+          <span>{a.local_browser_dispatched_at && browserInProgress
+            ? "Submit was dispatched. The Browser Companion is checking the employer's confirmation; keep that tab open."
+            : <>{packetApproved ? "This approved packet is ready" : "Review the packet below, then approve it using the browser button"} for a live application in your authenticated browser.
+              The Browser Companion fills supported fields and pauses for login, verification or unanswered questions.
+              {canReopenBrowser && " If the tab closed or the session expired, reopen it to continue before submission."}</>}</span>
+        </div>
+      )}
+      {canReportBrowserSubmission && (
+        <div className="banner" style={{ marginBottom: 18 }}>
+          <IAlert size={18} />
+          Check the employer page before trying again. If it confirms your application was received,
+          choose “I submitted it” to record your confirmation here. It will be labelled as reported by you.
         </div>
       )}
       {handoff && (
@@ -234,6 +251,34 @@ export function ApplicationDetailPage({ id }: { id: string }) {
                     <div key={q} className="answer"><span className="k">{q}</span><span className="v" style={{ color: "var(--amber)" }}>Needs your answer — we don't guess</span><span className="src">unknown</span></div>
                   ))}
                 </div>
+                {p.body.profile_records && (
+                  <div className="col" style={{ marginTop: 18, gap: 14 }}>
+                    {(p.body.profile_records.experience || []).length > 0 && (
+                      <div>
+                        <h4>Work experience to enter</h4>
+                        {(p.body.profile_records.experience || []).map((record: any, index: number) => (
+                          <div key={index} className="small" style={{ padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
+                            <strong>{record.title || "Role not provided"}</strong>{record.company ? ` · ${record.company}` : ""}
+                            <div className="muted">{[record.location, [record.start, record.end].filter(Boolean).join(" – ")].filter(Boolean).join(" · ")}</div>
+                            {record.highlights && <div className="ink2" style={{ whiteSpace: "pre-line", marginTop: 4 }}>{Array.isArray(record.highlights) ? record.highlights.join("\n") : String(record.highlights)}</div>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {(p.body.profile_records.education || []).length > 0 && (
+                      <div>
+                        <h4>Education to enter</h4>
+                        {(p.body.profile_records.education || []).map((record: any, index: number) => (
+                          <div key={index} className="small" style={{ padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
+                            <strong>{record.school || "School not provided"}</strong>
+                            <div className="ink2">{[record.degree, record.field, record.graduation_year && `Graduation: ${record.graduation_year}`].filter(Boolean).join(" · ")}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <p className="tiny muted">These records are part of the approved packet. Missing dates or other required details pause the form for your answer.</p>
+                  </div>
+                )}
                 <div className="row wrap small muted" style={{ marginTop: 12, gap: 14 }}>
                   <span>Target: <span className="mono">{p.body.target?.url?.replace(/^https:\/\//, "").slice(0, 60)}</span></span>
                   <span>Form signature: <span className="mono">{p.body.form_signature?.slice(0, 10) || "n/a"}</span></span>

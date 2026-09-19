@@ -195,7 +195,9 @@ class Profiles:
         cur = self.current(uid)
         if not cur:
             raise ResumeError("Upload a resume first.")
-        merged = {**cur.get("saved_answers", {}), **{k[:120]: str(v)[:2000] for k, v in answers.items()}}
+        merged = {**cur.get("saved_answers", {}), **{k[:600]: str(v)[:2000] for k, v in answers.items()}}
+        if merged == cur.get("saved_answers", {}):
+            return cur
         return self.save_version(uid, dict(cur["facts"]), None, None, "saved_answers", base=cur, saved_answers=merged)
 
 

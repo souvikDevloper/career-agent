@@ -4,7 +4,7 @@
 
 **A job-search agent that finds, explains and prepares applications — and can prove every claim it makes.**
 
-Discovers openings across 22 employers while you're offline · explains fit against the exact lines in your resume ·
+Discovers openings across configured employer feeds while you're offline · explains fit against the exact lines in your resume ·
 prepares applications only from facts you verified · submits under rules a model cannot talk its way past ·
 turns recruiter replies into deadlines and interview prep.
 
@@ -42,7 +42,7 @@ a receipt afterwards.
 
 | | |
 |---|---|
-| 🔎 **Finds real openings** | 22 employers across 6 live connectors — Amazon, JPMorgan Chase, Stripe, NVIDIA, Salesforce, Databricks, MongoDB, Adobe, PayPal and more. ~4,500 live postings, polled on a schedule. |
+| 🔎 **Finds real openings** | Configured employer feeds plus direct Google and Microsoft searches. Returned results distinguish current responses, cached postings and source failures. |
 | 🎯 **Explains fit, with evidence** | A versioned 0–100 rubric. Every required skill links to the line in your resume that proves it — or is reported as a gap. Quotes are verified against your actual resume text before they are shown. |
 | 🧾 **Prepares truthful packets** | Reads the employer's form, maps each field to a verified fact or a saved answer, and turns anything it cannot evidence into a question for you. Demographics and work authorisation are never inferred. |
 | 🛡️ **Rules a model can't bypass** | **Cedar** policies plus DynamoDB transactions enforce approval modes, packet-hash approvals, mandates with expiry, daily caps and cooldowns. Authorisation is backend code, never the prompt. |
@@ -67,9 +67,30 @@ Find Amazon engineering jobs in Bengaluru
 Find Microsoft internships
 ```
 
-The first returns real Amazon postings. **The second returns nothing**, and says so — Microsoft blocks
-automated access to its careers search, so the agent tells you that instead of filling the silence with
-jobs from a company you didn't ask about. That behaviour is deliberate and [tested](backend/tests/test_discovery_filter.py).
+Both requests query supported employer sources. Google and Microsoft use direct careers search;
+source failures are reported separately from a successful search with no matching openings.
+Searches stay within the requested employer, role and location. See the dated
+[source verification and coverage limits](docs/search-reliability.md).
+
+### Set up the continuous application loop
+
+1. Upload and review your resume in **Profile**, then add reusable application answers.
+2. In **Settings**, choose review, auto-apply strictly above 80, or auto-apply to eligible jobs.
+   Set your daily cap and preferences. Renew an older test-only mandate to authorize live supported destinations.
+3. Enable/reload the [Browser Companion 1.1.0](browser-companion/README.md), refresh the app,
+   and click **Connect this browser** in Settings. The connection lasts seven days.
+4. Create a watch with your company, role, location and desired interval through chat, final voice input,
+   or Matches. Intervals run on the existing five-minute scheduler ticks.
+5. Verify the notification email address in Settings. New matches, preparation, approval needs,
+   browser attention and confirmed submissions produce distinct notifications.
+
+Discovery and preparation run in AWS while you are offline. Authenticated employer forms run in
+the connected browser, which must stay open and signed in. Authorized applications open automatically,
+fill from the approved resume version and saved answers, and submit only after a fresh policy check.
+Unknown required answers, login and CAPTCHA require attention; no unsupported answer is invented.
+An uncertain submission is reconciled rather than submitted again. Employer confirmation emails
+are sent by employers; Career Agent records page confirmations and its own notifications, and does
+not claim to read Gmail without a configured inbox integration.
 
 ---
 
@@ -106,12 +127,14 @@ Full design, state machine, data model and failure handling: **[docs/ARCHITECTUR
 
 ## Connector coverage
 
-Six live connectors, all reading public endpoints the operator serves to programs — no scraping, no
-credentials, no session forging.
+Configured public job-feed connectors and direct Google/Microsoft careers searches provide discovery.
+Results report whether a response is fresh, cached, incomplete or unavailable.
 
 | Connector | Employers | Capabilities |
 |---|---|---|
 | **Amazon Jobs** | Amazon | discover · read details · country filter · structured intern flag |
+| **Google Careers** | Google and YouTube | direct search · employer seniority filters · role/location filtering |
+| **Microsoft Careers** | Microsoft | direct search · entry-level facet · paginated results and details |
 | **Oracle HCM** | JPMorgan Chase | discover · read details · country filter at ingestion |
 | **Workday** | PayPal, NVIDIA, Salesforce, Adobe, Autodesk, HP | discover · read details |
 | **Greenhouse** | Stripe, Databricks, MongoDB, Elastic, Coinbase, Airbnb, Twilio, Reddit, Dropbox, GitLab, Rubrik | discover · read details |
@@ -119,16 +142,16 @@ credentials, no session forging.
 | **Ashby** | Linear, PostHog | discover · read details |
 | **Northwind Labs** | *fictional test employer, clearly labelled* | discover · read form · **fill · submit · reconcile** |
 
-Submitting to a real employer needs an account with that employer, so applying to live roles is a
-**prepared manual handoff** — the packet is built and reviewed, you press submit. End-to-end automated
-submission runs only against the labelled test portal, where it is honest to demonstrate it.
+Cloud-browser routes and authenticated Browser Companion routes are distinct. The companion uses
+your existing employer login without copying passwords or cookies to the backend. Its multistep
+regressions use local Amazon/Workday-shaped forms; those tests do not claim a real employer submission.
 
 ### What is deliberately not here
 
 **LinkedIn.** Their User Agreement prohibits automated access, and an account doing it gets banned —
 the user's own account, for a feature meant to help them.
 
-**Microsoft, Uber, Goldman Sachs.** Their careers APIs return `429` or `403` to a server on the first
+**Unsupported employer endpoints.** Some careers APIs return `429` or `403` to a server on the first
 request. They work in a browser because of session context. Getting past that means forging browser
 sessions to evade rate limiting.
 
@@ -280,7 +303,7 @@ Stated here rather than discovered by a judge:
 - **CloudFront is off.** A new AWS account cannot create a distribution until verification completes, so the
   HTTP API serves the UI on the same origin. Same TLS, same origin, private bucket, SPA deep links — it
   gives up edge caching only. One parameter turns it on.
-- **Coverage is 22 employers, not the whole market.** Every one is a feed whose operator serves it to programs.
+- **Coverage is bounded by configured feeds and direct employer adapters.** It does not represent every opening on the market.
 
 ---
 

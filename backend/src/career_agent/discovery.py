@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from .config import settings as cfg
@@ -54,7 +55,8 @@ def all_sources(extra: list[str] | None = None) -> list[str]:
 
 
 
-def live_search(wf, *, company: str, role: str = "", location: str = "", limit: int = 100) -> list[dict]:
+def live_search(wf, *, company: str, role: str = "", location: str = "", limit: int = 100,
+                stats: dict | None = None) -> list[dict]:
     """Ask the employer's own search, for boards too large to mirror.
 
     Polling keeps a cache so the whole corpus can be browsed. But Amazon India
@@ -72,6 +74,7 @@ def live_search(wf, *, company: str, role: str = "", location: str = "", limit: 
         return []
     s = cfg()
     asks: list[tuple[str, Any]] = []
+    direct = True
     if _names_match(wanted, "amazon"):
         for spec in s.amazon_boards:
             country, preset = amazon.parse_spec(spec)
@@ -85,24 +88,34 @@ def live_search(wf, *, company: str, role: str = "", location: str = "", limit: 
     for spec in s.workday_boards:
         tenant = spec.split(":", 1)[0].lower()
         if _names_match(wanted, tenant):
-            asks.append((f"workday:{spec}", lambda sp=spec: workday.search(sp, role)))
+            asks.append((f"workday:{spec}", lambda sp=spec: workday.search(sp, role, limit=limit)))
+    for prefix, boards, adapter in (("greenhouse", s.greenhouse_boards, greenhouse),
+                                    ("lever", s.lever_boards, lever), ("ashby", s.ashby_boards, ashby)):
+        for board in boards:
+            if _names_match(wanted, board.lower()):
+                asks.append((f"{prefix}:{board}", lambda b=board, a=adapter: a.fetch_board(b)))
     if not asks:
         # No dedicated board carries this employer, so fall back to the aggregator
         # rather than answering "nothing". eBay, Morningstar and Moody's all hire
         # in Bengaluru and none of them publish a feed we connect to. A connector
         # that reads the employer's own ATS is always preferred when there is one;
         # this only fills the gap where there is not.
+        direct = False
         for spec in s.adzuna_boards:
             asks.append((f"adzuna:{spec}",
                          lambda sp=spec: adzuna.search(sp, " ".join(x for x in (company, role) if x))))
 
     out: list[dict] = []
+    succeeded: list[str] = []
+    failed: list[dict] = []
     for feed, ask in asks:
         try:
             found = ask()
-        except (FetchError, ValueError, KeyError) as exc:
+        except (FetchError, ValueError, KeyError, TimeoutError, OSError) as exc:
             log(logger, "live_search.failed", feed=feed, error=str(exc)[:200])
+            failed.append({"source": feed, "error": str(exc)[:200]})
             continue
+        succeeded.append(feed)
         for job in found:
             job["feed"] = feed
             try:
@@ -111,6 +124,17 @@ def live_search(wf, *, company: str, role: str = "", location: str = "", limit: 
                 log(logger, "live_search.snapshot_failed", job=job.get("job_key"), error=str(exc)[:160])
         log(logger, "live_search.ok", feed=feed, role=role, found=len(found))
         out.extend(found)
+    if stats is not None:
+        stats.update({
+            "attempted_sources": [feed for feed, _ in asks],
+            "successful_sources": succeeded, "failed_sources": failed,
+            "status": ("partial" if succeeded and failed else "succeeded" if succeeded
+                       else "failed" if failed else "unavailable"),
+            "direct": direct and bool(asks), "postings_returned": len(out),
+            "checked_at": wf.clock.iso(),
+            # These are bounded searches; never claim this is the entire board.
+            "limit": limit,
+        })
     return out
 
 
@@ -128,7 +152,7 @@ def _names_match(wanted: str, name: str) -> bool:
 def direct_post_filter_role(company: str, role: str) -> str:
     """Role text to use after a direct employer search already applied facets."""
     wanted = (company or "").strip().lower()
-    if _names_match(wanted, "google"):
+    if _names_match(wanted, "google") or _names_match(wanted, "microsoft"):
         return google.post_filter_role(role)
     return role
 
@@ -144,12 +168,17 @@ def direct_company_supported(company: str) -> bool:
     wanted = (company or "").strip().lower()
     if not wanted:
         return False
-    if any(_names_match(wanted, name) for name in ("amazon", "microsoft", "google")):
+    if any(_names_match(wanted, name) for name in ("microsoft", "google")):
         return True
-    for spec in cfg().workday_boards:
+    s = cfg()
+    if _names_match(wanted, "amazon") and s.amazon_boards:
+        return True
+    for spec in s.workday_boards:
         tenant = spec.split(":", 1)[0].lower()
         if _names_match(wanted, tenant):
             return True
+    if any(_names_match(wanted, board.lower()) for board in (*s.greenhouse_boards, *s.lever_boards, *s.ashby_boards)):
+        return True
     return False
 
 
@@ -322,18 +351,36 @@ def hydrate(wf, jobs: list[dict]) -> None:
     instead - for the handful that survived filtering and are about to be scored.
     Saved back, so the next search for the same posting costs nothing.
     """
-    for job in jobs:
-        if job.get("description") or job.get("source") != workday.SOURCE:
-            continue
-        text = workday.fetch_description(job)
+    pending = [j for j in jobs if not j.get("description") and j.get("source") in (workday.SOURCE, microsoft.SOURCE)]
+    if not pending:
+        return
+
+    def fill(job: dict, timeout: float) -> None:
+        try:
+            text = (microsoft._detail(job.get("external_id") or "", timeout=timeout) if job.get("source") == microsoft.SOURCE
+                    else workday.fetch_description(job, timeout=timeout))
+        except (FetchError, TimeoutError, OSError, ValueError):
+            return
         if not text:
-            continue
+            return
         job["description"] = text
         job["content_hash"] = sha256({k: job[k] for k in ("title", "location", "description")})
         try:
             save_job_snapshot(wf, job)
         except Exception as exc:  # a cache miss is not worth failing a search over
             log(logger, "source.hydrate_failed", job=job.get("job_key"), error=type(exc).__name__, detail=str(exc)[:120])
+
+    # A description is useful evidence, but 24 serial detail calls can outlive
+    # the worker before scoring even starts. Bound both concurrency and time.
+    deadline = time.monotonic() + 30
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        for start in range(0, len(pending), 4):
+            remaining = deadline - time.monotonic()
+            if remaining < 1:
+                break
+            futures = [pool.submit(fill, j, min(8, remaining)) for j in pending[start:start + 4]]
+            for future in futures:
+                future.result()
 
 
 _SUFFIXES = ("ings", "ing", "ers", "er", "ies", "es", "s")
@@ -397,6 +444,10 @@ def _words(text: str) -> list[str]:
 _LEVELS = {"1": 1, "i": 1, "one": 1, "2": 2, "ii": 2, "two": 2,
            "3": 3, "iii": 3, "three": 3, "4": 4, "iv": 4, "four": 4}
 _LEVEL_RE = re.compile(r"\b(iv|iii|ii|[1-4])\b")
+_SOFTWARE_ROLE = re.compile(r"\b(?:swe|sde)[1-4]?\b|\bsoftware\s+(?:(?:development|dev)\s+)?(?:engineer(?:ing)?|developer)\b")
+_SOFTWARE_TITLE = re.compile(r"\b(?:swe|sde)(?:[- ]?[1-4])?\b|\bsoftware\s+(?:(?:development|dev)\s+)?(?:engineer|developer)\b")
+_EARLY_ROLE = re.compile(r"\b(?:early[- ]careers?|entry[- ]level|new[- ]grads?|freshers?)\b")
+_SENIOR_TITLE = re.compile(r"\b(?:senior|sr\.?|staff|principal|lead|manager|director|head)\b")
 
 
 def _wanted_level(role: str) -> int | None:
@@ -452,7 +503,16 @@ def filter_jobs(jobs: list[dict], prefs: dict, *, role: str = "", company: str =
     the field it names. Only `role` is a text search, and only across the parts
     of a posting that describe the work.
     """
-    role_words = [w for w in _words(role) if w not in REQUEST_WORDS]
+    software_role = bool(_SOFTWARE_ROLE.search(role.lower()))
+    early_role = bool(_EARLY_ROLE.search(role.lower()))
+    role_text = re.sub(r"\b(swe|sde)([1-4])\b", r"\1 \2", role.lower())
+    role_words = [w for w in _words(role_text) if w not in REQUEST_WORDS and w not in _LEVELS]
+    if software_role:
+        # An occupational request is about the title. Corporate boilerplate in
+        # Google's silicon/technician postings also mentions software engineers.
+        role_words = [w for w in role_words if w not in {"software", "engineer", "engineering", "developer", "development", "dev", "swe", "sde"}]
+    if early_role:
+        role_words = [w for w in role_words if w not in {"grad", "grads", "fresher", "freshers"}]
     company_words = _words(company)
     excluded = {c.lower() for c in prefs.get("excluded_companies", [])}
     preferred_roles = [r.lower() for r in prefs.get("roles", [])]
@@ -469,17 +529,24 @@ def filter_jobs(jobs: list[dict], prefs: dict, *, role: str = "", company: str =
         # person types "matchgroup". Every word must be there: naming two
         # employers matches nothing, which is the truth rather than a guess at
         # which one was meant.
-        squashed = re.sub(r"[^a-z0-9]", "", employer)
-        if company_words and not all(re.sub(r"[^a-z0-9]", "", w) in squashed for w in company_words):
+        employer_names = [employer, *(str(a).lower() for a in job.get("company_aliases") or [])]
+        squashed = [re.sub(r"[^a-z0-9]", "", name) for name in employer_names]
+        if company_words and not any(all(re.sub(r"[^a-z0-9]", "", w) in name for w in company_words) for name in squashed):
             continue
         if location and not _place_matches(location, job.get("location") or ""):
             continue
         if mode and (job.get("work_mode") or "").lower() != mode:
             continue
-        if kind and kind not in (job.get("employment_type") or "").lower():
-            continue
-
         title = (job.get("title") or "").lower()
+        job_kind = (job.get("employment_type") or "").lower()
+        if not job_kind and re.search(r"\bintern(?:ship)?\b", title):
+            job_kind = "internship"
+        if kind and kind not in job_kind:
+            continue
+        if software_role and not _SOFTWARE_TITLE.search(title):
+            continue
+        if early_role and _SENIOR_TITLE.search(title):
+            continue
         if level is not None and _title_level(title) != level:
             continue
         hay = f"{title} {(job.get('description') or '')[:1500]} {' '.join(job.get('departments') or [])}".lower()
@@ -518,7 +585,9 @@ def parse_query(jobs: list[dict], keywords: str) -> dict:
     companies.update({"amazon", "microsoft", "google"})
     for spec in cfg().workday_boards:
         companies.add(spec.split(":", 1)[0].lower())
-    places = _field_tokens(jobs, "location") - companies
+    # A place must be recognized even on a cold cache; otherwise India becomes
+    # part of q and a direct Google search never receives its location facet.
+    places = (_field_tokens(jobs, "location") | set(_PLACE_ALIASES) | set(_REGIONS)) - companies
     return {
         # Every company word is kept, not just the first. Dropping one silently
         # answers a different question than the one that was asked.

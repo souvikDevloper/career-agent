@@ -23,7 +23,7 @@ import re
 from typing import Any
 
 from ..util import sha256
-from .http import fetch, fetch_json
+from .http import FetchError, fetch, fetch_json
 
 SOURCE = "workday-public"
 TENANT_RE = r"[a-z0-9][a-z0-9-]{1,40}"
@@ -109,7 +109,7 @@ def fetch_board(spec: str, *, pages: int = 5, per_page: int = 20) -> list[dict]:
     return jobs
 
 
-def fetch_description(job: dict) -> str:
+def fetch_description(job: dict, *, timeout: float = 20) -> str:
     """Pull one posting's description. Called for filtered candidates only."""
     board = job.get("board") or ""
     try:
@@ -121,7 +121,7 @@ def fetch_description(job: dict) -> str:
         return ""
     url = f"https://{tenant}.{pod}.myworkdayjobs.com/wday/cxs/{tenant}/{site}{path}"
     try:
-        _, raw, _ = fetch(url, HOSTS, headers={"Accept": "application/json"}, timeout=20)
+        _, raw, _ = fetch(url, HOSTS, headers={"Accept": "application/json"}, timeout=timeout)
         info = json.loads(raw.decode("utf8")).get("jobPostingInfo") or {}
     except Exception:
         return ""
@@ -129,7 +129,7 @@ def fetch_description(job: dict) -> str:
     return re.sub(r"\s{2,}", " ", text).strip()[:12000]
 
 
-def search(spec: str, query: str, *, limit: int = 20) -> list[dict]:
+def search(spec: str, query: str, *, limit: int = 100) -> list[dict]:
     """Let the tenant run the search rather than mirroring the whole site.
 
     Workday caps a page at 20, and a tenant like Mastercard or HPE publishes over
@@ -139,9 +139,27 @@ def search(spec: str, query: str, *, limit: int = 20) -> list[dict]:
     """
     tenant, pod, site = parse_spec(spec)
     url = f"https://{tenant}.{pod}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs"
-    body = json.dumps({"appliedFacets": {}, "limit": max(1, min(20, limit)),
-                       "offset": 0, "searchText": query or ""}).encode()
-    data: Any = fetch_json(url, HOSTS, method="POST", body=body,
-                           headers={"Content-Type": "application/json", "Accept": "application/json"}, timeout=25)
-    postings = data.get("jobPostings") if isinstance(data, dict) else None
-    return [normalize(tenant, pod, site, p) for p in (postings or []) if isinstance(p, dict) and p.get("title")]
+    wanted = max(1, min(100, limit))
+    jobs: list[dict] = []
+    seen: set[str] = set()
+    for offset in range(0, wanted, 20):
+        size = min(20, wanted - offset)
+        body = json.dumps({"appliedFacets": {}, "limit": size,
+                           "offset": offset, "searchText": query or ""}).encode()
+        data: Any = fetch_json(url, HOSTS, method="POST", body=body,
+                               headers={"Content-Type": "application/json", "Accept": "application/json"}, timeout=25)
+        if not isinstance(data, dict) or not isinstance(data.get("jobPostings"), list):
+            raise FetchError("workday search returned an unreadable response")
+        postings = data["jobPostings"]
+        added = 0
+        for posting in postings:
+            if not isinstance(posting, dict) or not posting.get("title"):
+                continue
+            job = normalize(tenant, pod, site, posting)
+            if job["job_key"] not in seen:
+                seen.add(job["job_key"])
+                jobs.append(job)
+                added += 1
+        if len(postings) < size or added == 0:
+            break
+    return jobs

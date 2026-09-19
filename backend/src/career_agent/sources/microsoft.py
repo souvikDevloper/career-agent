@@ -10,18 +10,22 @@ from __future__ import annotations
 
 import re
 import urllib.parse
+from datetime import datetime, timezone
 from typing import Any
 
 from ..util import sha256
-from .http import fetch_json
+from .google import query_plan
+from .http import FetchError, fetch_json
 
 SOURCE = "microsoft-careers"
 BASE = "https://apply.careers.microsoft.com"
 HOSTS = {"apply.careers.microsoft.com"}
+HEADERS = {"Accept": "application/json", "Referer": BASE + "/careers",
+           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"}
 
 
 def _clean(text: Any) -> str:
-    return re.sub(r"\s+", " ", str(text or "")).strip()
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", str(text or ""))).strip()
 
 
 def _location(raw: dict) -> str:
@@ -42,6 +46,9 @@ def normalize(raw: dict) -> dict:
     title = _clean(raw.get("name") or raw.get("title"))
     location = _location(raw)
     description = _clean(raw.get("jobDescription") or raw.get("description"))
+    posted = raw.get("postedDate") or raw.get("created")
+    if not posted and isinstance(raw.get("postedTs"), (int, float)):
+        posted = datetime.fromtimestamp(raw["postedTs"], timezone.utc).isoformat(timespec="seconds")
     job = {
         "job_key": f"microsoft:{external_id}",
         "canonical_key": f"microsoft:{external_id}",
@@ -51,11 +58,11 @@ def normalize(raw: dict) -> dict:
         "company": "Microsoft",
         "title": title,
         "location": location,
-        "work_mode": "remote" if "remote" in location.lower() else None,
+        "work_mode": raw.get("workLocationOption") or ("remote" if "remote" in location.lower() else None),
         "description": description[:12000],
         "url": url,
         "apply": {"kind": "external", "url": url},
-        "published_at": raw.get("postedDate") or raw.get("created"),
+        "published_at": posted,
         "updated_at": raw.get("updatedDate") or raw.get("created"),
         "departments": [],
         "requirements": None,
@@ -66,33 +73,55 @@ def normalize(raw: dict) -> dict:
     return job
 
 
-def _detail(position_id: str) -> str:
+def _detail(position_id: str, *, timeout: float = 10) -> str:
     if not position_id:
         return ""
     params = urllib.parse.urlencode({"position_id": position_id, "domain": "microsoft.com", "hl": "en"})
     data: Any = fetch_json(f"{BASE}/api/pcsx/position_details?{params}", HOSTS,
-                           headers={"Accept": "application/json", "Referer": BASE + "/"}, timeout=20)
+                           headers=HEADERS, timeout=timeout)
     if not isinstance(data, dict):
         return ""
     body = data.get("data") or {}
     return _clean(body.get("jobDescription") or body.get("description"))
 
 
-def search(query: str, *, location: str = "", limit: int = 50, hydrate: int = 12) -> list[dict]:
+def search(query: str, *, location: str = "", limit: int = 50, hydrate: int = 0) -> list[dict]:
     """Ask Microsoft Careers directly and optionally hydrate top descriptions."""
+    cleaned, level = query_plan(query)
     params = {
         "domain": "microsoft.com",
-        "query": query or "software engineer",
+        "query": cleaned,
         "start": 0,
     }
+    if level:
+        params["filter_seniority"] = "Entry" if level == "EARLY" else "Intern"
     if location:
         params["location"] = location
-    data: Any = fetch_json(f"{BASE}/api/pcsx/search?{urllib.parse.urlencode(params)}", HOSTS,
-                           headers={"Accept": "application/json", "Referer": BASE + "/"}, timeout=20)
-    body = (data or {}).get("data") if isinstance(data, dict) else {}
-    positions = (body or {}).get("positions") or []
-    jobs = [normalize(p) for p in positions[:max(1, min(50, limit))]
-            if isinstance(p, dict) and (p.get("name") or p.get("title"))]
+    wanted = max(1, min(50, limit))
+    jobs: list[dict] = []
+    seen: set[str] = set()
+    for _ in range(5):
+        data: Any = fetch_json(f"{BASE}/api/pcsx/search?{urllib.parse.urlencode(params)}", HOSTS,
+                               headers=HEADERS, timeout=15)
+        body = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(body, dict) or not isinstance(body.get("positions"), list):
+            raise FetchError("microsoft careers search returned an unreadable response")
+        positions = body["positions"]
+        added = 0
+        for position in positions:
+            if not isinstance(position, dict) or not (position.get("name") or position.get("title")):
+                continue
+            job = normalize(position)
+            if job["job_key"] not in seen:
+                seen.add(job["job_key"])
+                jobs.append(job)
+                added += 1
+        if len(jobs) >= wanted or not added or len(positions) < 10:
+            break
+        params["start"] += len(positions)
+        if isinstance(body.get("count"), int) and params["start"] >= body["count"]:
+            break
+    jobs = jobs[:wanted]
     for job in jobs[:max(0, min(hydrate, len(jobs)))]:
         try:
             desc = _detail(job["external_id"])

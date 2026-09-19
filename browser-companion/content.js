@@ -1,615 +1,396 @@
 (() => {
   if (window.__careerAgentCompanion) return;
   window.__careerAgentCompanion = true;
-
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const norm = (value) => String(value || "").toLowerCase().replace(/\(s\)/g, "s").replace(/[^a-z0-9]+/g, " ").trim();
+  const clean = (value) => String(value || "").replace(/\s+/g, " ").replace(/\s*\*\s*$/, "").trim();
   const send = (msg) => new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(msg, (res) => {
       if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
-      if (!res?.ok) return reject(new Error(res?.error || "Browser companion is not connected"));
+      if (!res?.ok) return reject(Object.assign(new Error(res?.error || "Browser companion is not connected"), { code: res?.code }));
       resolve(res);
     });
   });
+  const PLACEHOLDER = /^(?:(?:please )?(?:select|choose)(?: (?:an?|your|one|the))?(?: (?:option|answer|value|country|state|month|year))?|no selection)$/;
+  const SENSITIVE = /\b(password|passcode|verification|otp|captcha|social security|ssn|date of birth|dob|race|ethnicity|gender|sex|disability|veteran|marital|religion|sexual orientation|national id|aadhaar|pan number|passport)\b/;
+  const FIELD_GROUP = "[data-automation-id^='formField'], .form-group, .form-field, .field, fieldset, [role='group']";
+  let stopped = false;
+  let started = false;
+  let dispatched = false;
 
-  function banner(text, tone = "info") {
+  window.addEventListener("message", async (event) => {
+    if (event.source !== window || event.origin !== location.origin || event.data?.type !== "CAREER_AGENT_PAIR_BROWSER") return;
+    if (location.protocol !== "https:" || !/^\/app\/settings\/?$/.test(location.pathname)) return;
+    const requestId = String(event.data.requestId || "").slice(0, 100);
+    try {
+      if (!navigator.userActivation?.isActive) throw new Error("Click Connect browser in Settings to pair this browser.");
+      const api = new URL(event.data.api);
+      if (api.origin !== location.origin) throw new Error("The browser must be connected from your Career Agent dashboard.");
+      await send({ type: "pair_runner", token: event.data.token, api: api.origin, expires_in: event.data.expires_in, expires_at: event.data.expires_at });
+      window.postMessage({ type: "CAREER_AGENT_BROWSER_PAIRED", requestId, ok: true }, location.origin);
+    } catch (error) { window.postMessage({ type: "CAREER_AGENT_BROWSER_PAIRED", requestId, ok: false, error: String(error.message || error) }, location.origin); }
+  });
+
+  function banner(message, tone = "info") {
     let box = document.getElementById("career-agent-companion-status");
     if (!box) {
-      box = document.createElement("div");
-      box.id = "career-agent-companion-status";
-      Object.assign(box.style, {
-        position: "fixed", right: "18px", bottom: "18px", zIndex: "2147483647",
-        maxWidth: "390px", padding: "12px 14px", borderRadius: "12px",
-        font: "13px/1.45 system-ui,sans-serif", color: "white",
-        boxShadow: "0 10px 35px rgba(0,0,0,.3)"
-      });
-      document.documentElement.appendChild(box);
+      box = document.createElement("div"); box.id = "career-agent-companion-status"; box.setAttribute("role", "status");
+      Object.assign(box.style, { position: "fixed", right: "18px", bottom: "18px", zIndex: "2147483647", maxWidth: "430px", padding: "12px 14px", borderRadius: "12px", font: "13px/1.45 system-ui,sans-serif", color: "white", boxShadow: "0 10px 35px rgba(0,0,0,.3)" });
+      box.appendChild(document.createElement("span"));
+      const pause = document.createElement("button"); pause.textContent = "Pause";
+      Object.assign(pause.style, { marginLeft: "12px", color: "white", background: "transparent", border: "1px solid currentColor", borderRadius: "4px", cursor: "pointer" });
+      pause.onclick = () => { stopped = true; box.firstChild.textContent = "Career Agent paused. Reopen this application from Career Agent to resume."; pause.remove(); };
+      box.appendChild(pause); document.documentElement.appendChild(box);
     }
     box.style.background = tone === "bad" ? "#8b1e3f" : tone === "good" ? "#116149" : "#312e81";
-    box.textContent = text;
+    box.firstChild.textContent = message;
   }
-
   function visible(el) {
-    const s = getComputedStyle(el);
-    const r = el.getBoundingClientRect();
-    return s.display !== "none" && s.visibility !== "hidden" && r.width > 0 && r.height > 0;
+    if (!el?.isConnected || el.closest("#career-agent-companion-status, [hidden], [aria-hidden='true'], [inert]")) return false;
+    const style = getComputedStyle(el), rect = el.getBoundingClientRect();
+    return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
   }
-
-  const PLACEHOLDER_CHOICE = /^(select|choose|please select)( an?)? (option|answer)|^select an option$/;
-
+  function enabled(el) { return !el.disabled && el.getAttribute("aria-disabled") !== "true"; }
+  function explicitLabel(el) {
+    const labelled = (el.getAttribute("aria-labelledby") || "").split(/\s+/).map((id) => document.getElementById(id)?.textContent).filter(Boolean);
+    if (labelled.length) return clean(labelled.join(" "));
+    if (el.getAttribute("aria-label")) return clean(el.getAttribute("aria-label"));
+    const labels = [...(el.labels || [])].map((label) => label.textContent);
+    if (labels.length) return clean(labels.join(" "));
+    if (el.id) { const label = document.querySelector(`label[for="${CSS.escape(el.id)}"]`); if (label) return clean(label.textContent); }
+    return "";
+  }
   function questionContainer(el) {
+    const group = el.closest(FIELD_GROUP); if (group) return group;
+    // Stop before a wrapper containing multiple unrelated questions.
     let node = el.parentElement;
-    for (let depth = 0; node && depth < 6; depth++, node = node.parentElement) {
-      const text = String(node.textContent || "").trim();
-      if (text.length >= 12 && text.length <= 900 &&
-          (text.includes("?") || text.includes("*") || /required/i.test(text))) {
-        return node;
-      }
+    for (let depth = 0; node && depth < 5; depth++, node = node.parentElement) {
+      const children = node.querySelectorAll("input:not([type='hidden']), textarea, select, [role='combobox'], [aria-haspopup]");
+      const text = clean(node.textContent);
+      if (children.length <= 1 && text.length > 2 && text.length < 700 && /[?*]/.test(text)) return node;
+      if (children.length > 1) break;
     }
     return el.parentElement;
   }
-
-  function rawLabelOf(el) {
-    const parts = [];
-    const labelled = String(el.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean);
-    for (const id of labelled) {
-      const n = document.getElementById(id);
-      if (n) parts.push(n.textContent);
-    }
-    parts.push(el.getAttribute("aria-label"), el.getAttribute("placeholder"), el.getAttribute("name"), el.id);
-    if (el.id) {
-      const lab = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-      if (lab) parts.push(lab.textContent);
-    }
-    const parent = el.closest("label");
-    if (parent) parts.push(parent.textContent);
-    const group = el.closest("[data-automation-id], .form-group, .field, [role='group'], fieldset");
-    if (group) {
-      const lab = group.querySelector("legend, label, [class*='label'], [class*='question']");
-      if (lab) parts.push(lab.textContent);
-    }
-    const q = questionContainer(el);
-    if (q) parts.push(q.textContent?.slice(0, 700));
-    return parts.filter(Boolean).join(" ");
-  }
-
   function labelOf(el) {
-    let text = norm(rawLabelOf(el));
-    text = text
-      .replace(/select an option/g, " ")
-      .replace(/please select an option/g, " ")
-      .replace(/required fields?/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-    return text;
+    const group = questionContainer(el);
+    if (el.type === "radio" && group) {
+      const legend = group.querySelector("legend, [data-automation-id='formLabel'], [class*='question'], label:not([for])");
+      if (legend && !legend.contains(el)) return clean(legend.textContent);
+      const groupLabel = explicitLabel(group); if (groupLabel) return groupLabel;
+    }
+    const direct = explicitLabel(el); if (direct && !PLACEHOLDER.test(norm(direct))) return direct;
+    if (group) {
+      const label = group.querySelector("legend, [data-automation-id='formLabel'], label, [class*='label'], [class*='question']");
+      if (label && !label.contains(el)) return clean(label.textContent);
+      const clone = group.cloneNode(true);
+      clone.querySelectorAll("input,textarea,select,button,[role='combobox'],[role='listbox'],[role='option'],[role='alert']").forEach((node) => node.remove());
+      const text = clean(clone.textContent); if (text.length > 2 && text.length <= 600) return text;
+    }
+    return clean(el.getAttribute("placeholder") || el.name || el.id);
   }
-
-  function controls() {
-    return [...document.querySelectorAll("input, textarea, select")].filter((el) => visible(el) && !el.disabled);
+  function fieldContext(el) {
+    const partLabel = norm(explicitLabel(el) || el.getAttribute("placeholder"));
+    const inputAutomation = el.getAttribute("data-automation-id") || "";
+    const datePart = /^(month|mm)$/.test(partLabel) || inputAutomation === "dateSectionMonth" ? "month" :
+      /^(year|yyyy)$/.test(partLabel) || inputAutomation === "dateSectionYear" ? "year" : undefined;
+    const dateContext = {};
+    let node = el.parentElement;
+    while (node && node !== document.body) {
+      const automation = node.getAttribute("data-automation-id") || "";
+      if (datePart && !dateContext.date_field) {
+        const dateLabel = norm(explicitLabel(node) || node.querySelector(":scope > label, :scope > legend, :scope > [data-automation-id='formLabel']")?.textContent);
+        const dateField = /^(from|start date)$/.test(dateLabel) || /^formField[-_]startDate$/i.test(automation) ? "start" :
+          /^(to|end date)$/.test(dateLabel) || /^formField[-_]endDate$/i.test(automation) ? "end" : undefined;
+        if (dateField) Object.assign(dateContext, { date_field: dateField, date_part: datePart });
+      }
+      const heading = [...node.children].find((child) => child.matches("h2,h3,h4,legend,[data-automation-id='panelTitle']"));
+      const repeated = norm(heading?.textContent).match(/^(?:work )?(experience|education)\s*(\d+)$/);
+      if (repeated) return { section: repeated[1], index: Number(repeated[2]) - 1, ...dateContext };
+      if (/^(workExperience|education)-\d+$/.test(automation)) return { section: automation.startsWith("work") ? "experience" : "education", index: Number(automation.split("-").pop()), ...dateContext };
+      node = node.parentElement;
+    }
+    return undefined;
   }
-
-  function customChoiceControls() {
-    const nodes = [...document.querySelectorAll("[role='combobox'], [aria-haspopup='listbox'], button")];
-    return nodes.filter((el, index) => {
-      if (!visible(el) || el.disabled) return false;
-      const roleChoice = el.getAttribute("role") === "combobox" || el.getAttribute("aria-haspopup") === "listbox";
-      const placeholderButton = el.tagName === "BUTTON" && PLACEHOLDER_CHOICE.test(norm(el.textContent || el.getAttribute("aria-label") || ""));
-      if (!roleChoice && !placeholderButton) return false;
-      // Avoid returning both a wrapper and its nested real combobox.
-      return !nodes.some((other, j) => j !== index && other !== el && el.contains(other) &&
-        (other.getAttribute("role") === "combobox" || other.getAttribute("aria-haspopup") === "listbox"));
-    });
+  function currentRoleCheckbox(el) {
+    return el.type === "checkbox" && fieldContext(el)?.section === "experience" &&
+      /^(i currently work here|i currently work in this role|currently work here)$/.test(norm(labelOf(el)));
   }
-
-  function allControls() {
-    return [...new Set([...controls(), ...customChoiceControls()])];
-  }
-
   function isCustomChoice(el) {
-    return el.tagName !== "SELECT" &&
-      (el.getAttribute("role") === "combobox" || el.getAttribute("aria-haspopup") === "listbox" ||
-       (el.tagName === "BUTTON" && PLACEHOLDER_CHOICE.test(norm(el.textContent || ""))));
+    if (el.tagName === "SELECT") return false;
+    return el.getAttribute("role") === "combobox" || ["listbox", "true", "menu", "dialog"].includes(el.getAttribute("aria-haspopup")) ||
+      (el.tagName === "BUTTON" && (PLACEHOLDER.test(norm(el.textContent)) || /^(selectWidget|dropdown|promptOption)$/i.test(el.getAttribute("data-automation-id") || "")));
   }
-
-  function findControl(key, exactName) {
-    const all = allControls();
-    if (exactName) {
-      const exact = all.find((el) => el.name === exactName || el.id === exactName);
-      if (exact) return exact;
-    }
-    const k = norm(key);
-    const aliases = {
-      "full name": ["full name", "legal name", "name", "given name", "given names"],
-      "email": ["email", "email address"],
-      "phone": ["phone", "phone number", "mobile"],
-      "current employer": ["current employer", "employer", "company"],
-      "current title": ["current title", "job title", "position title", "title"],
-      "university": ["university", "college", "school"],
-      "graduation year": ["graduation year", "graduation date", "year of graduation"],
-      "why this role": ["why this role", "cover letter", "interest", "why are you interested"],
-    };
-    const wants = aliases[k] || [k];
-    let best = null;
-    let bestScore = 0;
-    for (const el of all) {
-      const label = labelOf(el);
-      let score = 0;
-      for (const w of wants) {
-        if (label === w) score = Math.max(score, 5);
-        else if (label.includes(w)) score = Math.max(score, 3);
-      }
-      if (k === "full name" && /first name|given name|last name|family name|surname/.test(label)) score = 4;
-      if (score > bestScore) { best = el; bestScore = score; }
-    }
-    return best;
+  function controls() {
+    const nodes = [...document.querySelectorAll("input,textarea,select,[role='combobox'],[aria-haspopup],button")]
+      .filter((el) => visible(el) && enabled(el) && (el.matches("input,textarea,select") || isCustomChoice(el)))
+      .filter((el) => !["button", "submit", "reset", "hidden", "password"].includes((el.getAttribute("type") || "").toLowerCase()) || isCustomChoice(el));
+    return nodes.filter((el) => !nodes.some((other) => other !== el && el.contains(other)));
   }
-
-  function openOptionNodes() {
-    const selectors = [
-      "[role='option']", "[role='listbox'] li", "[role='listbox'] button",
-      "[data-testid*='option']", "[class*='option']"
-    ];
-    const seen = new Set();
-    const out = [];
-    for (const el of document.querySelectorAll(selectors.join(","))) {
-      if (!visible(el)) continue;
-      const text = String(el.textContent || el.getAttribute("aria-label") || "").trim();
-      const key = norm(text);
-      if (!key || key.length > 180 || seen.has(key)) continue;
-      seen.add(key);
-      out.push(el);
-    }
-    return out;
-  }
-
-  async function optionTexts(el) {
-    if (el.tagName === "SELECT") {
-      return [...el.options]
-        .map((o) => String(o.textContent || o.value || "").trim())
-        .filter((x) => x && !PLACEHOLDER_CHOICE.test(norm(x)));
-    }
-    if (!isCustomChoice(el)) return [];
-    if (el.getAttribute("aria-expanded") !== "true") el.click();
-    await sleep(180);
-    const values = openOptionNodes().map((o) => String(o.textContent || o.getAttribute("aria-label") || "").trim());
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    if (el.getAttribute("aria-expanded") === "true") el.click();
-    await sleep(60);
-    return [...new Set(values)];
-  }
-
-  async function setValue(el, value) {
-    const tag = el.tagName.toLowerCase();
-    const type = (el.getAttribute("type") || "").toLowerCase();
-    if (tag === "select") {
-      const wanted = norm(value);
-      const opt = [...el.options].find((o) => norm(o.value) === wanted || norm(o.textContent) === wanted);
-      if (!opt) return false;
-      el.value = opt.value;
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-      return true;
-    }
-    if (isCustomChoice(el)) {
-      const wanted = norm(value);
-      if (el.getAttribute("aria-expanded") !== "true") el.click();
-      await sleep(180);
-      const options = openOptionNodes();
-      const hit = options.find((o) => {
-        const got = norm(o.textContent || o.getAttribute("aria-label") || "");
-        return got === wanted ||
-          ((wanted === "yes" || wanted === "no") && got.split(" ")[0] === wanted);
-      });
-      if (!hit) {
-        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-        return false;
-      }
-      hit.click();
-      await sleep(120);
-      return true;
-    }
-    if (type === "checkbox") {
-      const yes = /^(true|yes|1|on|agree|i agree)$/i.test(String(value));
-      if (el.checked !== yes) el.click();
-      return true;
-    }
-    if (type === "radio") {
-      const group = [...document.querySelectorAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`)];
-      const wanted = norm(value);
-      const hit = group.find((x) => norm(x.value) === wanted || labelOf(x).includes(wanted));
-      if (!hit) return false;
-      hit.click();
-      return true;
-    }
-    const proto = tag === "textarea" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-    const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-    setter ? setter.call(el, String(value)) : (el.value = String(value));
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-    el.dispatchEvent(new Event("change", { bubbles: true }));
-    return true;
-  }
-
-  async function attachResume(resumeUrl) {
-    if (!resumeUrl) return false;
-    const files = controls().filter((el) => el.tagName === "INPUT" && (el.type || "").toLowerCase() === "file");
-    if (!files.length) return false;
-    const target = files.find((el) => /resume|cv/.test(labelOf(el))) || files[0];
-    const data = await send({ type: "resume", url: resumeUrl });
-    const bytes = Uint8Array.from(atob(data.base64), (c) => c.charCodeAt(0));
-    const file = new File([bytes], "resume.pdf", { type: data.type || "application/pdf" });
-    const dt = new DataTransfer();
-    dt.items.add(file);
-    target.files = dt.files;
-    target.dispatchEvent(new Event("change", { bubbles: true }));
-    return true;
-  }
-
-  async function fill(packet) {
-    let filled = 0;
-    const fields = new Map((packet.fields || []).map((f) => [f.name, f]));
-    for (const [key, raw] of Object.entries(packet.answers || {})) {
-      if (raw === "__RESUME__") continue;
-      const field = fields.get(key);
-      const label = field?.label || key;
-      if (norm(key) === "full name") {
-        const first = controls().find((x) => /first name|given name/.test(labelOf(x)));
-        const last = controls().find((x) => /last name|family name|surname/.test(labelOf(x)));
-        const parts = String(raw).trim().split(/\s+/);
-        if (first && await setValue(first, parts[0] || "")) filled++;
-        if (last && await setValue(last, parts.slice(1).join(" ") || parts[0] || "")) filled++;
-        if (first || last) continue;
-      }
-      const el = findControl(label, field?.name || key);
-      if (el && await setValue(el, raw)) filled++;
-    }
-    if (await attachResume(packet.resume_url).catch(() => false)) filled++;
-    return filled;
-  }
-
-  function attentionNeeded() {
-    if (controls().some((el) => (el.type || "").toLowerCase() === "password")) {
-      return "Please sign in to the employer account. Career Agent will continue after login.";
-    }
-    const body = norm(document.body?.innerText || "");
-    if (/verification code|two factor|two-factor|multi factor|multi-factor|one time password|otp/.test(body)) {
-      return "Complete the employer verification/MFA step. Career Agent will continue afterwards.";
-    }
-    const captcha = [...document.querySelectorAll('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[title*="challenge" i]')]
-      .some((el) => visible(el));
-    if (captcha) return "Complete the visible CAPTCHA. Career Agent does not bypass it.";
-    return null;
-  }
-
+  function radioGroup(el) { return el.name ? [...(el.form || document).querySelectorAll(`input[type='radio'][name="${CSS.escape(el.name)}"]`)].filter(visible) : [el]; }
+  function radioLabel(el) { return explicitLabel(el) || clean(el.value); }
   function choiceText(el) {
-    if (el.tagName === "SELECT") {
-      return String(el.selectedOptions?.[0]?.textContent || el.value || "").trim();
-    }
-    if ("value" in el && typeof el.value === "string") {
-      const value = String(el.value || "").trim();
-      if (value) return value;
-    }
-    return String(el.getAttribute("aria-valuetext") || el.getAttribute("data-value") ||
-                  el.textContent || "").trim();
+    if (el.tagName === "SELECT") return clean(el.selectedOptions?.[0]?.textContent || el.value);
+    return clean(el.getAttribute("aria-valuetext") || el.getAttribute("data-value") || el.value || el.textContent);
   }
-
-  function choiceEmpty(el) {
-    const value = norm(choiceText(el));
-    return !value || PLACEHOLDER_CHOICE.test(value) || value === "select" || value === "choose";
+  function empty(el) {
+    if (el.type === "radio") return !radioGroup(el).some((radio) => radio.checked);
+    if (el.type === "checkbox") return !el.checked;
+    if (el.type === "file") return !el.files?.length && el.dataset.careerAgentUploaded !== "true";
+    if (el.tagName === "SELECT" || isCustomChoice(el)) { const text = norm(choiceText(el)); return !text || PLACEHOLDER.test(text) || (el.tagName === "SELECT" && !el.value); }
+    return !clean(el.value);
   }
-
   function requiredLike(el) {
     if (el.required || el.getAttribute("aria-required") === "true") return true;
-    const q = questionContainer(el);
-    const text = String(q?.textContent || "");
-    return text.includes("*") || /\brequired\b/i.test(text);
+    const group = questionContainer(el);
+    const labelNode = el.labels?.[0] || (el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`)) || group?.querySelector("label,legend,[data-automation-id='formLabel']");
+    const labelled = (el.getAttribute("aria-labelledby") || "").split(/\s+/).map((id) => document.getElementById(id)?.textContent || "").join(" ");
+    const question = labelNode?.textContent || labelled || el.getAttribute("aria-label") || (clean(group?.textContent).length < 700 ? group?.textContent : "");
+    return /\*|\brequired\b/i.test(question || "") || !!group?.querySelector("[aria-label='Required'],[data-automation-id='required']");
   }
-
   function unansweredRequired() {
-    const out = [];
-    for (const el of allControls()) {
-      const type = (el.getAttribute("type") || "").toLowerCase();
-      let empty = false;
-      let required = requiredLike(el);
-
-      if (el.tagName === "SELECT" || isCustomChoice(el)) {
-        empty = choiceEmpty(el);
-        // Authenticated screening pages often render required custom selects
-        // without aria-required. A placeholder choice directly under a
-        // question is still something we must not skip.
-        if (empty && /\?|\*/.test(String(questionContainer(el)?.textContent || ""))) required = true;
-      } else if (type === "checkbox" || type === "radio") {
-        empty = el.name ? !document.querySelector(`[name="${CSS.escape(el.name)}"]:checked`) : !el.checked;
-      } else if (type === "file") {
-        empty = !(el.files && el.files.length);
-      } else {
-        empty = !String(el.value || "").trim();
+    const uploads = [...document.querySelectorAll("input[type='file']")].filter((el) => enabled(el) && visible(questionContainer(el)));
+    return [...new Set([...controls(), ...uploads].filter((el) => requiredLike(el) && empty(el)).map(labelOf))].filter(Boolean).slice(0, 8);
+  }
+  async function until(predicate, timeout = 2000, interval = 80) {
+    const end = Date.now() + timeout;
+    do { const value = predicate(); if (value) return value; await sleep(interval); } while (!stopped && Date.now() < end);
+    return null;
+  }
+  function optionNodes(el) {
+    const ids = `${el.getAttribute("aria-controls") || ""} ${el.getAttribute("aria-owns") || ""}`.split(/\s+/).filter(Boolean);
+    const roots = ids.map((id) => document.getElementById(id)).filter((root) => root && visible(root));
+    if (ids.length && !roots.length) return [];
+    if (!roots.length) roots.push(...[...document.querySelectorAll("[role='listbox'],[role='menu'],[data-automation-id='promptOption'],.dropdown-menu")].filter(visible));
+    const selector = "[role='option'],[role='menuitem'],[data-automation-id='promptOption'],[data-automation-id='menuItem'],li,button";
+    const candidates = roots.length ? roots.flatMap((root) => [root, ...root.querySelectorAll(selector)]) : [...document.querySelectorAll("[role='option'],[data-automation-id='promptOption']")];
+    return [...new Set(candidates)].filter((node) => visible(node) && enabled(node) && node !== el && clean(node.textContent).length < 300)
+      .filter((node, _, nodes) => !nodes.some((other) => other !== node && node.contains(other)));
+  }
+  async function openChoice(el) {
+    if (el.getAttribute("aria-expanded") !== "true") el.click();
+    return (await until(() => { const options = optionNodes(el); return options.length ? options : null; })) || [];
+  }
+  function closeChoice(el) { el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true })); if (el.getAttribute("aria-expanded") === "true") el.click(); }
+  async function optionTexts(el) {
+    if (el.tagName === "SELECT") return [...el.options].filter((option) => !option.disabled && option.value).map((option) => clean(option.textContent)).filter((text) => text && !PLACEHOLDER.test(norm(text)));
+    if (el.type === "radio") return radioGroup(el).map(radioLabel);
+    if (currentRoleCheckbox(el)) return ["Yes", "No"];
+    if (!isCustomChoice(el)) return [];
+    const texts = [...new Set((await openChoice(el)).map((option) => clean(option.textContent)).filter(Boolean))]; closeChoice(el); return texts;
+  }
+  async function setValue(el, value) {
+    if (!el.isConnected || !enabled(el) || value == null) return false;
+    const wanted = norm(value);
+    if (el.tagName === "SELECT") {
+      const option = [...el.options].find((candidate) => !candidate.disabled && (norm(candidate.value) === wanted || norm(candidate.textContent) === wanted));
+      if (!option) return false;
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(el, option.value);
+    } else if (isCustomChoice(el)) {
+      const option = (await openChoice(el)).find((candidate) => norm(candidate.textContent) === wanted || norm(candidate.getAttribute("data-value")) === wanted);
+      if (!option) { closeChoice(el); return false; }
+      option.click(); return !!await until(() => !el.isConnected || !empty(el), 1200);
+    } else if (el.type === "radio") {
+      const option = radioGroup(el).find((candidate) => norm(radioLabel(candidate)) === wanted || norm(candidate.value) === wanted);
+      if (!option) return false; option.click(); return option.checked;
+    } else if (el.type === "checkbox") {
+      if (!/^(true|false|yes|no|1|0|on|off|agree|i agree)$/i.test(String(value))) return false;
+      const checked = /^(true|yes|1|on|agree|i agree)$/i.test(String(value)); if (el.checked !== checked) el.click(); return el.checked === checked;
+    } else {
+      const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, String(value));
+    }
+    el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); el.dispatchEvent(new FocusEvent("blur", { bubbles: true })); return !empty(el);
+  }
+  const ALIASES = {
+    "full name": ["full name", "legal name", "name"], "email": ["email", "email address"], "phone": ["phone", "phone number", "mobile", "mobile number"],
+    "current employer": ["current employer", "current company"], "current title": ["current title", "current job title"],
+    "university": ["university", "college", "school", "school or university"], "graduation year": ["graduation year", "year of graduation"],
+    "why this role": ["why this role", "cover letter", "why are you interested in this role"],
+  };
+  function findControl(label, exactName) {
+    const all = controls().filter(empty), exact = exactName && all.find((el) => el.name === exactName || el.id === exactName);
+    if (exact) return exact;
+    const aliases = ALIASES[norm(label)] || [norm(label)]; return all.find((el) => !fieldContext(el) && aliases.includes(norm(labelOf(el))));
+  }
+  async function attachResume(url) {
+    if (!url) return false;
+    // Workday and other ATS products hide the native file input behind a widget.
+    const files = [...document.querySelectorAll("input[type='file']")].filter((el) => enabled(el) && !el.files?.length);
+    const target = files.find((el) => /\b(resume|cv)\b/i.test(labelOf(el))) || (files.length === 1 && /\b(resume|cv)\b/i.test(questionContainer(files[0])?.textContent) ? files[0] : null);
+    if (!target || target.dataset.careerAgentUploaded === "true") return false;
+    const data = await send({ type: "resume", url }), bytes = Uint8Array.from(atob(data.base64), (char) => char.charCodeAt(0)), dt = new DataTransfer();
+    const type = data.type || "application/pdf";
+    const extension = /wordprocessingml/i.test(type) ? "docx" : /msword/i.test(type) ? "doc" : "pdf";
+    dt.items.add(new File([bytes], `resume.${extension}`, { type })); target.files = dt.files; target.dataset.careerAgentUploaded = "true";
+    target.dispatchEvent(new Event("input", { bubbles: true })); target.dispatchEvent(new Event("change", { bubbles: true })); return true;
+  }
+  async function fill(packet) {
+    let filled = 0; const fields = new Map((packet.fields || []).map((field) => [field.name, field]));
+    for (const [key, value] of Object.entries(packet.answers || {})) {
+      if (stopped || value === "__RESUME__") continue;
+      const field = fields.get(key);
+      if (norm(key) === "full name") {
+        const parts = String(value).trim().split(/\s+/);
+        for (const el of controls().filter(empty)) {
+          const label = norm(labelOf(el));
+          if (/^(first name|given names?)$/.test(label) && await setValue(el, parts[0])) filled++;
+          if (/^(last name|family name|surname)$/.test(label) && parts.length > 1 && await setValue(el, parts.slice(1).join(" "))) filled++;
+        }
       }
-      if (required && empty) {
-        const label = labelOf(el).slice(0, 180) || el.name || el.id || "required field";
-        if (label && !PLACEHOLDER_CHOICE.test(norm(label))) out.push(label);
+      const el = findControl(field?.label || key, field?.name || key); if (el && await setValue(el, value)) filled++;
+    }
+    if (await attachResume(packet.resume_url).catch(() => false)) filled++; return filled;
+  }
+  async function expandRecords(packet) {
+    // Add only records actually present in the approved packet. Locate an Add
+    // button inside a single, explicitly headed history section; never click a
+    // generic page-wide Add button or synthesize empty history rows.
+    const records = packet.profile_records || {};
+    for (const [section, names] of [["experience", /^(work experience|employment history)$/], ["education", /^education$/]]) {
+      const wanted = Math.min(Array.isArray(records[section]) ? records[section].length : 0, 20);
+      if (!wanted) continue;
+      const heading = [...document.querySelectorAll("h2,h3,h4,legend")].find((node) => visible(node) && names.test(norm(node.textContent)));
+      if (!heading) continue;
+      let scope = heading.parentElement;
+      for (let depth = 0; scope && depth < 4; depth++, scope = scope.parentElement) {
+        const foreign = [...scope.querySelectorAll("h2,h3,h4,legend")].some((node) => node !== heading && /^(education|work experience|employment history)$/.test(norm(node.textContent)) && !names.test(norm(node.textContent)));
+        if (foreign) break;
+        const add = [...scope.querySelectorAll("button,[role='button']")].find((node) => visible(node) && enabled(node) && /^add(?: (?:work )?experience| education| another)?$/.test(norm(node.textContent)));
+        if (!add) continue;
+        const count = () => new Set(controls().filter((el) => scope.contains(el)).map(fieldContext).filter((context) => context?.section === section).map((context) => context.index)).size;
+        for (let added = count(); added < wanted && !stopped; added++) {
+          const before = count();
+          const currentAdd = [...scope.querySelectorAll("button,[role='button']")].find((node) => visible(node) && enabled(node) && /^add(?: (?:work )?experience| education| another)?$/.test(norm(node.textContent)));
+          if (!currentAdd) break;
+          currentAdd.click();
+          if (!await until(() => count() > before, 2500)) break;
+        }
+        break;
       }
     }
-    return [...new Set(out)].slice(0, 6);
   }
-
-  const SENSITIVE_FIELD = /password|passcode|verification|otp|captcha|social security|ssn|date of birth|dob|race|ethnicity|gender|sex|disability|veteran|marital|religion|sexual orientation|national id|aadhaar|pan number|passport/;
-
-  function learnedAnswers() {
-    const out = {};
-    const seenRadio = new Set();
-    for (const el of allControls()) {
-      const type = (el.getAttribute("type") || "").toLowerCase();
-      if (["hidden", "password", "file", "submit"].includes(type)) continue;
-      const label = labelOf(el).slice(0, 120);
-      if (!label || SENSITIVE_FIELD.test(label)) continue;
-
-      let value = "";
-      if (isCustomChoice(el)) {
-        value = choiceText(el);
-        if (choiceEmpty(el)) continue;
-      } else if (type === "radio") {
-        if (!el.name || seenRadio.has(el.name)) continue;
-        seenRadio.add(el.name);
-        const checked = document.querySelector(`input[type="radio"][name="${CSS.escape(el.name)}"]:checked`);
-        if (!checked) continue;
-        value = checked.value || labelOf(checked);
-      } else if (type === "checkbox") {
-        value = el.checked ? "Yes" : "No";
-      } else if (el.tagName === "SELECT") {
-        value = choiceText(el);
-        if (choiceEmpty(el)) continue;
-      } else {
-        if (type === "button") continue;
-        value = el.value;
-      }
-      value = String(value || "").trim();
-      if (value) out[label] = value.slice(0, 1000);
-    }
-    return out;
+  const userAnswers = new Map();
+  document.addEventListener("change", (event) => {
+    if (!event.isTrusted || !(event.target instanceof Element)) return;
+    const el = event.target, label = labelOf(el);
+    if (!label || SENSITIVE.test(norm(label)) || /\b(agree|consent|acknowledge|privacy|terms|declaration)\b/.test(norm(label)) || ["password", "file", "hidden"].includes(el.type) || fieldContext(el)) return;
+    const value = el.type === "radio" ? radioLabel(el) : el.type === "checkbox" ? (el.checked ? "Yes" : "No") : el.tagName === "SELECT" || isCustomChoice(el) ? choiceText(el) : el.value;
+    if (value && !empty(el)) userAnswers.set(label.slice(0, 600), String(value).slice(0, 1000));
+  }, true);
+  async function rememberLearnedAnswers() {
+    if (!userAnswers.size) return;
+    const answers = Object.fromEntries([...userAnswers].slice(0, 30)); await send({ type: "save_answers", answers }); Object.keys(answers).forEach((key) => userAnswers.delete(key));
   }
-
+  let nextFieldId = 0; const fieldIds = new WeakMap();
+  function fieldId(el) { if (!fieldIds.has(el)) fieldIds.set(el, `field-${++nextFieldId}`); return fieldIds.get(el); }
   async function resolveVisibleQuestions() {
-    const discovered = [];
-    const byLabel = new Map();
-    const seenRadioGroups = new Set();
-
-    for (const el of allControls()) {
-      const type = (el.getAttribute("type") || "").toLowerCase();
-      const isChoice = el.tagName === "SELECT" || isCustomChoice(el);
-      const isBlankText = (el.tagName === "INPUT" || el.tagName === "TEXTAREA") &&
-        !["hidden", "file", "password", "button", "submit", "checkbox", "radio"].includes(type) &&
-        !String(el.value || "").trim();
-      const isBlankRadio = type === "radio" && el.name &&
-        !document.querySelector(`input[type="radio"][name="${CSS.escape(el.name)}"]:checked`);
-
-      if (isChoice && !choiceEmpty(el)) continue;
-      if (!isChoice && !isBlankText && !isBlankRadio) continue;
-      if (isBlankRadio && seenRadioGroups.has(el.name)) continue;
-
-      const label = labelOf(el).slice(0, 600);
-      if (!label || SENSITIVE_FIELD.test(label) || byLabel.has(label)) continue;
-
-      let options = [];
-      if (isChoice) {
-        options = await optionTexts(el).catch(() => []);
-      } else if (isBlankRadio) {
-        seenRadioGroups.add(el.name);
-        options = [...document.querySelectorAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`)]
-          .map((radio) => {
-            const lab = labelOf(radio);
-            return String(radio.value || lab || "").trim();
-          })
-          .filter(Boolean);
-      }
-
-      discovered.push({ label, options, required: requiredLike(el) });
-      byLabel.set(label, el);
+    const byId = new Map(), seenRadio = new Set(), questions = [];
+    for (const el of controls()) {
+      if (stopped || !empty(el) || ["file", "password"].includes(el.type) || (el.type === "checkbox" && !currentRoleCheckbox(el))) continue;
+      if (el.type === "radio" && seenRadio.has(el.name)) continue;
+      if (el.type === "radio") seenRadio.add(el.name);
+      const label = labelOf(el).slice(0, 600); if (!label || SENSITIVE.test(norm(label))) continue;
+      const options = await optionTexts(el); if (isCustomChoice(el) && !options.length) continue;
+      const id = fieldId(el); questions.push({ id, label, options: options.slice(0, 50), required: requiredLike(el), context: fieldContext(el) }); byId.set(id, el);
     }
-
-    if (!discovered.length) return 0;
-
-    const response = await send({ type: "resolve_questions", questions: discovered }).catch(() => null);
-    const answers = response?.data?.answers || [];
     let filled = 0;
-    for (const answer of answers) {
-      const el = byLabel.get(answer.label) || findControl(answer.label);
-      if (!el) continue;
-      const type = (el.getAttribute("type") || "").toLowerCase();
-      const stillBlank = el.tagName === "SELECT" || isCustomChoice(el)
-        ? choiceEmpty(el)
-        : type === "radio"
-          ? !document.querySelector(`input[type="radio"][name="${CSS.escape(el.name)}"]:checked`)
-          : !String(el.value || "").trim();
-      if (stillBlank && await setValue(el, answer.value)) filled++;
-    }
-    if (filled) {
-      banner(`Career Agent filled ${filled} answer${filled === 1 ? "" : "s"} from your verified profile.`, "good");
-      await rememberLearnedAnswers();
+    for (let start = 0; start < questions.length; start += 30) {
+      const batch = questions.slice(start, start + 30), response = await send({ type: "resolve_questions", questions: batch });
+      for (const answer of response?.data?.answers || []) {
+        const matching = batch.filter((question) => question.label === answer.label);
+        const el = byId.get(answer.id) || (matching.length === 1 ? byId.get(matching[0].id) : null);
+        if (!stopped && el?.isConnected && empty(el) && await setValue(el, answer.value)) filled++;
+      }
     }
     return filled;
   }
-
-  async function rememberLearnedAnswers() {
-    const answers = learnedAnswers();
-    if (Object.keys(answers).length) {
-      await send({ type: "save_answers", answers }).catch(() => {});
-    }
+  function attentionNeeded() {
+    if ([...document.querySelectorAll("input[type='password']")].some(visible)) return "Sign in to the employer account. Career Agent will continue after login.";
+    if ([...document.querySelectorAll("input")].filter(visible).some((el) => /verification code|one time|two factor|\botp\b/.test(norm(labelOf(el))) || el.autocomplete === "one-time-code")) return "Complete the employer verification step. Career Agent will continue afterwards.";
+    if ([...document.querySelectorAll("iframe[src*='recaptcha'],iframe[src*='hcaptcha'],iframe[title*='challenge' i]")].some((el) => visible(el) && el.getBoundingClientRect().height > 70)) return "Complete the visible CAPTCHA. Career Agent will continue afterwards.";
+    return null;
   }
-
-  async function waitForUser(getReason, timeoutMs = 8 * 60 * 1000) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const reason = getReason();
-      if (!reason) {
-        await rememberLearnedAnswers();
-        return true;
-      }
-      banner(reason);
-      await sleep(1000);
-    }
-    return false;
+  function actionButton(pattern) {
+    return [...document.querySelectorAll("button,input[type='submit'],input[type='button'],[role='button'],a")].filter((el) => visible(el) && enabled(el) && !isCustomChoice(el))
+      .find((el) => pattern.test(norm(el.textContent || el.value || el.getAttribute("aria-label"))));
   }
-
-  function continueInSameTab(el) {
-    const href = el?.href || el?.getAttribute?.("href");
-    if (href && /^https?:/i.test(href)) {
-      location.href = href;
-    } else {
-      el.click();
-    }
+  function confirmed() { return /thank you for applying|thanks for applying|application (has been )?(submitted|received)|we have received your application|application complete/.test(norm(document.body?.innerText)); }
+  function fingerprint() { return JSON.stringify([location.href, controls().map((el) => [labelOf(el), el.type, choiceText(el), el.checked]), [...document.querySelectorAll("h1,h2,h3,[role='alert'],button,input[type='submit']")].filter(visible).map((el) => [clean(el.textContent || el.value), enabled(el)])]); }
+  async function waitForChange(before, reason, timeout = 8 * 60 * 1000) { banner(reason); return !!await until(() => stopped || fingerprint() !== before || confirmed(), timeout, 500); }
+  async function complete(outcome, extra = {}) { return send({ type: "complete", body: { outcome, url: location.href, provider: location.hostname, ...extra } }); }
+  async function reconcile() {
+    banner("Career Agent is checking the employer confirmation. It will not submit this application again.");
+    if (await until(confirmed, 15000)) { await complete("submitted", { reference: "confirmed-by-employer-page" }); banner("Career Agent: employer confirmed the application.", "good"); }
+    else { await complete("unknown", { reason: "Submit was dispatched but employer confirmation could not be verified." }).catch(() => {}); banner("Submission was attempted, but confirmation is unclear. Check the employer application history before retrying.", "bad"); }
   }
-
-  function actionButton(re) {
-    return [...document.querySelectorAll("button, input[type='submit'], input[type='button'], [role='button'], a")]
-      .filter(visible)
-      .find((el) => re.test(norm(el.textContent || el.value || el.getAttribute("aria-label") || "")));
-  }
-
-  function confirmed() {
-    const text = norm(document.body?.innerText || "");
-    return /thank you for applying|thanks for applying|application (has been )?(submitted|received)|we have received your application|application complete/.test(text);
-  }
-
-  async function complete(outcome, extra = {}) {
-    return send({ type: "complete", body: { outcome, url: location.href, provider: location.hostname, ...extra } });
-  }
-
   async function run() {
     try {
-      const hash = new URLSearchParams(location.hash.replace(/^#/, ""));
-      const token = hash.get("career-agent-session");
-      const api = hash.get("career-agent-api");
+      const hash = new URLSearchParams(location.hash.replace(/^#/, "")), token = hash.get("career-agent-session"), api = hash.get("career-agent-api");
       if (token && api) {
-        await send({ type: "remember", token, api, host: location.hostname });
-        hash.delete("career-agent-session");
-        hash.delete("career-agent-api");
+        await send({ type: "remember", token, api, host: location.hostname }); hash.delete("career-agent-session"); hash.delete("career-agent-api");
         history.replaceState(null, "", location.pathname + location.search + (hash.toString() ? "#" + hash : ""));
       }
-
-      const remembered = await chrome.runtime.sendMessage({ type: "session", host: location.hostname });
-      if (!remembered?.ok) return;
-
+      const remembered = await chrome.runtime.sendMessage({ type: "session", host: location.hostname }); if (!remembered?.ok) return;
       const packet = (await send({ type: "packet" })).data;
-
-      // If the employer shell embeds the actual ATS form, the same companion
-      // script is injected into that HTTPS child frame. Let that frame own the
-      // application instead of having the top document race it and mark the
-      // workflow paused while the form is still being filled.
-      if (window.top === window) {
-        const embeddedApplication = [...document.querySelectorAll("iframe[src]")].some((frame) => {
-          const src = String(frame.getAttribute("src") || "").toLowerCase();
-          return /greenhouse|workday|lever|ashby|application|apply/.test(src);
-        });
-        if (embeddedApplication) {
-          banner("Career Agent: continuing inside the embedded employer application…");
-          return;
-        }
-      }
-
-      let started = false;
-      banner(`Career Agent: ready to apply to ${packet.title || "this role"}…`);
-
-      for (let step = 0; step < 12; step++) {
-        await sleep(900);
-
-        const attention = attentionNeeded();
-        if (attention) {
-          const resolved = await waitForUser(() => attentionNeeded());
-          if (!resolved) {
-            await complete("needs_user", { reason: attention }).catch(() => {});
-            banner("Career Agent paused. Finish the sign-in or verification step, then reopen this application.", "bad");
-            return;
-          }
-        }
-
-        if (!started) {
-          await send({ type: "start" });
-          started = true;
-          banner(`Career Agent: filling ${packet.title || "this application"}…`);
-        }
-
-        await fill(packet);
-        await resolveVisibleQuestions();
-        await sleep(450);
-
-        if (confirmed()) {
-          await complete("submitted", { reference: "confirmed-by-employer-page" });
-          banner("Career Agent: employer confirmed the application.", "good");
-          return;
-        }
-
-        let required = unansweredRequired();
+      dispatched = !!(packet.dispatched_at || packet.local_browser_dispatched_at || remembered.dispatched);
+      if (packet.action_state === "Submitted") { banner("This application is already recorded as submitted.", "good"); return; }
+      if (dispatched || packet.action_state === "OutcomeUnknown") { await reconcile(); return; }
+      if (window.top !== window && !controls().length) return;
+      if (window.top === window && [...document.querySelectorAll("iframe[src]")].some((frame) => /greenhouse|workday|lever|ashby|application|apply/i.test(frame.src))) { banner("Career Agent: continuing inside the embedded employer application…"); return; }
+      banner(`Career Agent: preparing ${packet.title || "this application"}…`);
+      await until(() => controls().length || actionButton(/^(apply|apply now|apply manually|continue|next|save and continue)$/) || attentionNeeded(), 12000);
+      let requiredDeadline = 0;
+      for (let step = 0; step < 80 && !stopped; step++) {
+        const attention = attentionNeeded(); if (attention) { banner(attention); if (!await until(() => !attentionNeeded(), 8 * 60 * 1000, 500)) break; }
+        if (stopped) break;
+        if (!started) { await send({ type: "start" }); started = true; }
+        if (confirmed()) { await complete("submitted", { reference: "confirmed-by-employer-page" }); banner("Career Agent: employer confirmed the application.", "good"); return; }
+        await expandRecords(packet);
+        const count = await fill(packet) + await resolveVisibleQuestions();
+        if (count) banner(`Career Agent filled ${count} field${count === 1 ? "" : "s"} from your approved packet and verified profile.`, "good");
+        await sleep(350); if (stopped) break;
+        const required = unansweredRequired();
         if (required.length) {
-          const reason = () => {
-            required = unansweredRequired();
-            return required.length ? `Needs your answer: ${required.join("; ")}` : null;
-          };
-          const resolved = await waitForUser(reason);
-          if (!resolved) {
-            await complete("needs_user", { reason: reason() || "Required employer question still needs an answer." });
-            return;
-          }
-          banner("Career Agent: got it. I saved that answer for later applications and am continuing…", "good");
+          if (!requiredDeadline) requiredDeadline = Date.now() + 8 * 60 * 1000;
+          const remaining = requiredDeadline - Date.now();
+          if (remaining <= 0) break;
+          // A saved answer may arrive through Profile while the employer DOM
+          // remains unchanged. Re-check the server periodically, retaining the
+          // original deadline so an unresolved question cannot loop forever.
+          await waitForChange(fingerprint(), `Needs your answer: ${required.join("; ")}. Answer here or save it in Profile; I will check again automatically.`, Math.min(10000, remaining));
+          if (Date.now() >= requiredDeadline) break;
+          await rememberLearnedAnswers(); continue;
         }
-
+        requiredDeadline = 0;
         await rememberLearnedAnswers();
-
         const final = actionButton(/^(submit application|submit|send application|complete application)$/);
         if (final) {
-          await send({ type: "dispatch" });
-          banner("Career Agent: submitting the approved packet…");
-          final.click();
-          await sleep(5000);
-          if (confirmed()) {
-            await complete("submitted", { reference: "confirmed-by-employer-page" });
-            banner("Career Agent: employer confirmed the application.", "good");
-          } else {
-            await complete("unknown", { reason: "Submit was clicked but employer confirmation could not be verified." });
-            banner("Submit was clicked, but confirmation is unclear. Check before retrying.", "bad");
-          }
-          return;
+          await send({ type: "dispatch" }); dispatched = true;
+          if (stopped) { await complete("unknown", { reason: "Paused after dispatch authorization; inspect employer status." }); return; }
+          banner("Career Agent: submitting the approved application…"); final.click(); await reconcile(); return;
         }
-
-        const next = actionButton(/^(continue|next|save and continue|save continue|continue application)$/);
-        if (next) {
-          await rememberLearnedAnswers();
-          continueInSameTab(next);
-          await sleep(1200);
-          continue;
-        }
-
-        const apply = actionButton(/^(apply|apply now|apply for this role|apply to this job|start application|continue application)$/);
-        if (apply && controls().length < 3) {
-          continueInSameTab(apply);
-          await sleep(1500);
-          continue;
-        }
-
-        // Amazon has optional interstitial steps such as SMS Notifications.
-        // Their button copy varies between "Skip", "Not now" and "Save & Continue".
-        // Only take a skip-style action when the current page explicitly says
-        // the step is optional; never skip an unknown required question.
-        const pageText = norm(document.body?.innerText || "");
-        if (/optional/.test(pageText)) {
-          const skip = actionButton(/^(skip|skip for now|not now|continue without|save continue)$/);
-          if (skip) {
-            await rememberLearnedAnswers();
-            continueInSameTab(skip);
-            await sleep(1200);
-            continue;
-          }
-        }
-
-        const reason = "Career Agent could not safely identify the next application control. Continue manually on this page.";
-        banner(reason);
-        await complete("needs_user", { reason });
-        return;
+        const next = actionButton(/^(continue|next|save and continue|save continue|continue application|review application|apply manually)$/);
+        const apply = controls().length < 3 && actionButton(/^(apply|apply now|apply for this role|apply to this job|start application)$/);
+        const action = next || apply, before = fingerprint();
+        if (action) {
+          banner("Career Agent: continuing to the next application step…");
+          if (action.href && /^https:/i.test(action.href)) location.href = action.href; else action.click();
+          if (await until(() => fingerprint() !== before || confirmed(), 7000)) { await sleep(450); continue; }
+          if (!await waitForChange(before, "The employer has not advanced. Check highlighted validation messages or complete the current step; I will continue when it changes.")) break;
+        } else if (!await waitForChange(before, "Career Agent is waiting for the application form. Open the next step or answer any highlighted question; I will continue automatically.")) break;
       }
-      await complete("needs_user", { reason: "Application has more steps than the companion can safely automate in one run." });
-    } catch (e) {
-      banner(`Career Agent stopped: ${String(e.message || e)}`, "bad");
+      if (stopped && !started) {
+        // Record an early Pause too, so a paired runner cannot reopen the same
+        // unstarted application when its launch lease later expires.
+        await send({ type: "start" }); started = true;
+      }
+      if (started && !dispatched) await complete("needs_user", { reason: stopped ? "Paused by the user." : "Waiting for employer form input or navigation." }).catch(() => {});
+    } catch (error) {
+      if (error.code === "already_dispatched" || /already dispatched/i.test(error.message || "")) { await reconcile().catch(() => {}); return; }
+      if (started && !dispatched) await complete("needs_user", { reason: String(error.message || error).slice(0, 450) }).catch(() => {});
+      banner(`Career Agent paused: ${String(error.message || error)}`, "bad");
     }
   }
-
   run();
 })();

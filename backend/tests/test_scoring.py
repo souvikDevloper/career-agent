@@ -2,8 +2,7 @@ import unittest
 
 import helpers  # noqa: F401
 
-from career_agent.scoring import (FAIL, PASS, UNKNOWN, Evidence, derived_years, hard_filters,
-                                  heuristic_evidence, score_match, verify_quotes)
+from career_agent.scoring import FAIL, PASS, UNKNOWN, Evidence, derived_years, hard_filters, heuristic_evidence, score_match, verify_quotes
 
 RESUME = """Asha Rao — B.Tech Computer Science, graduating 2027.
 Built a FastAPI service on AWS Lambda with DynamoDB handling 2k requests/day.

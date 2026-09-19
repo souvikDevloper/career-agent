@@ -15,7 +15,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import connectors, policy
-from .store import And, C, ConditionFailed, Or, Put, Store, Update
+from .scoring import FAIL, UNKNOWN, hard_filters, work_mode_of
+from .store import And, C, Check, ConditionFailed, Or, Put, Store, Update
+from .submission import LOCAL_BROWSER_CONNECTORS
 from .util import Clock, canonical_json, local_date, new_id, sha256
 
 # ---------------------------------------------------------------------------
@@ -165,8 +167,10 @@ class Workflow:
         if enabled:
             if mode not in ("auto_above_80", "auto_eligible"):
                 raise WorkflowError("invalid_mode", "a mandate is only needed for automatic modes", 400)
+            default_scope = ["northwind-test-portal"] if p.is_judge else sorted(
+                {"northwind-test-portal", "greenhouse-public"} | (LOCAL_BROWSER_CONNECTORS - {"linkedin"}))
             mandate = {
-                "enabled": True, "mode": mode, "scope": scope or {"connectors": ["northwind-test-portal"]},
+                "enabled": True, "mode": mode, "scope": scope or {"connectors": default_scope},
                 "expires_at": now + max(1, min(hours, 24 * 30)) * 3600, "policy_version": policy.POLICY_VERSION,
                 "created_at": self._now_iso(), "mandate_id": new_id("md_"),
             }
@@ -241,9 +245,13 @@ class Workflow:
             raise
         return app
 
-    def save_packet(self, uid: str, app_id: str, packet: dict, settings: dict | None = None) -> dict:
+    def save_packet(self, uid: str, app_id: str, packet: dict, settings: dict | None = None,
+                    expected_prepare_request_id: str | None = None) -> dict:
         """Persist an immutable packet version and route to NeedsInformation / NeedsApproval / Authorized."""
         app = self.get_app(uid, app_id)
+        if expected_prepare_request_id and (app.get("prepare_request_id") != expected_prepare_request_id
+                                             or app["action_state"] != "Preparing"):
+            return app  # obsolete or duplicate queue delivery must not revoke approval
         settings = settings or self.settings(uid)
         if app["action_state"] not in ("Discovered", "Ineligible", "Preparing", "NeedsInformation", "NeedsApproval",
                                         "KnownFailure", "NeedsReview", "Authorized", "Queued", "Paused", "NeedsUserPresence", "ManualHandoff"):
@@ -255,7 +263,7 @@ class Workflow:
 
         version = app["packet_version"] + 1
         body = {k: packet[k] for k in ("target", "job_snapshot_hash", "profile_version", "resume_key", "answers",
-                                        "attachments", "consents", "form_signature", "cover_note") if k in packet}
+                                        "attachments", "consents", "form_signature", "cover_note", "profile_records") if k in packet}
         packet_hash = sha256(body)
         missing = [q for q in packet.get("unknown_required", [])]
         item = {
@@ -290,7 +298,8 @@ class Workflow:
                                               reserve_check=True)
             target = "Authorized" if decision.allowed else "NeedsApproval"
         extra = {"packet_version": version, "packet_hash": packet_hash, "approved_hash": None,
-                 "unknown_required": missing, "mode_at_decision": settings["mode"]}
+                 "unknown_required": missing, "mode_at_decision": settings["mode"],
+                 "last_error": None, "last_decision": None}
         ops: list[Any] = [Put(item, C("pk", "not_exists")), self._transition(app, target, extra),
                           self.event_put(uid, "packet.prepared", {"version": version, "hash": packet_hash[:12], "next": target,
                                                                    "unknown_required": missing}, app_id)]
@@ -300,6 +309,9 @@ class Workflow:
         if target == "NeedsInformation":
             ops.append(self.outbox_put("notify", {"kind": "information_needed", "user_id": uid, "app_id": app_id,
                                                   "questions": missing}, f"notify:info:{app_id}:{version}"))
+        if target == "NeedsUserPresence":
+            ops.append(self.outbox_put("notify", {"kind": "browser_ready", "user_id": uid, "app_id": app_id},
+                                       f"notify:browser-ready:{app_id}:{version}"))
         if target == "Authorized":
             ops += self._queue_ops(uid, app_id, packet_hash)
         self.store.transact(ops)
@@ -320,10 +332,10 @@ class Workflow:
                                                      app["target_environment"], {}))
         if not d.allowed:
             raise WorkflowError("forbidden", "not allowed", 403)
-        if app.get("approved_hash") == packet_hash:
-            return app  # idempotent repeat
         if app["packet_hash"] != packet_hash:
             raise WorkflowError("stale_packet", "this approval refers to an older version of the application; review the current one")
+        if app.get("approved_hash") == packet_hash:
+            return app  # idempotent repeat for the current version only
         packet = self.latest_packet(p.user_id, app_id)
         mode = _packet_submission_mode(packet, app["connector"])
         if app["action_state"] not in ("NeedsApproval", "NeedsUserPresence"):
@@ -331,8 +343,11 @@ class Workflow:
         if app["action_state"] == "NeedsUserPresence" and mode != "local_browser":
             raise WorkflowError("invalid_state", "only an authenticated-browser application can be approved from Browser ready")
 
-        approval = {"pk": U(p.user_id), "sk": f"APPROVAL#{app_id}#{packet_hash[:24]}", "entity": "approval",
+        # A re-prepared packet can have identical content. Its previous approval
+        # is still an audit record, not a reason to reject the new review action.
+        approval = {"pk": U(p.user_id), "sk": f"APPROVAL#{app_id}#{app['packet_version']:04d}#{packet_hash[:24]}", "entity": "approval",
                     "app_id": app_id, "packet_hash": packet_hash, "channel": channel, "at": self._now_iso(),
+                    "packet_version": app["packet_version"],
                     "policy_version": policy.POLICY_VERSION}
 
         if app["action_state"] == "NeedsUserPresence":
@@ -373,10 +388,34 @@ class Workflow:
             self._mark_queued(p.user_id, app_id)
         return self.get_app(p.user_id, app_id)
 
-    def local_browser_start(self, p: Principal, app_id: str, packet_hash: str) -> dict:
+    def _check_local_session(self, app: dict, packet_hash: str, session_id: str | None) -> None:
+        if app.get("packet_hash") != packet_hash or app.get("local_browser_packet_hash") != packet_hash:
+            raise WorkflowError("stale_packet", "application packet changed; start a new browser session")
+        if app.get("local_browser_session_id") != session_id:
+            raise WorkflowError("stale_session", "another browser session owns this application; return to Career Agent")
+
+    def local_browser_reopen(self, p: Principal, app_id: str, packet_hash: str) -> dict:
+        """Recover a closed/expired browser only before its external write.
+
+        This is called by an authenticated launch click, never by a bearer token.
+        The old capability loses access as soon as a replacement run starts.
+        """
+        app = self.get_app(p.user_id, app_id)
+        if app.get("local_browser_dispatched_at"):
+            raise WorkflowError("already_dispatched", "check the employer confirmation before starting another application")
+        return self.local_browser_complete(
+            p, app_id, packet_hash, "needs_user", reason="browser session reopened from Career Agent",
+            session_id=app.get("local_browser_session_id"),
+        )
+
+    def local_browser_start(self, p: Principal, app_id: str, packet_hash: str,
+                            session_id: str | None = None) -> dict:
         """Reserve policy capacity for one approved authenticated-browser run."""
         app = self.get_app(p.user_id, app_id)
-        if app["action_state"] == "Submitting" and app.get("local_browser_packet_hash") == packet_hash:
+        if app.get("browser_session_id") and app["browser_session_id"] != session_id:
+            raise WorkflowError("stale_session", "a newer browser session is available; use the most recently opened tab")
+        if app["action_state"] == "Submitting":
+            self._check_local_session(app, packet_hash, session_id)
             return app
         if app["action_state"] != "NeedsUserPresence":
             raise WorkflowError("invalid_state", f"application is {app['action_state']}, not ready for the browser companion")
@@ -406,7 +445,6 @@ class Workflow:
 
         ledger_sk = self.ledger_key(p.user_id, settings)
         cap = int(settings.get("daily_cap", 5))
-        now = self.clock.now()
         attempt_id = new_id("local_")
         try:
             self.store.transact([
@@ -418,26 +456,46 @@ class Workflow:
                     "current_attempt": attempt_id,
                     "local_browser_packet_hash": packet_hash,
                     "local_browser_ledger": ledger_sk,
+                    "local_browser_session_id": session_id,
+                    "local_browser_dispatched_at": None,
+                    "local_browser_outcome": None,
+                    "last_error": None,
                     "last_decision": decision.to_dict(),
                 }),
                 self.event_put(p.user_id, "submission.local_started",
                                {"attempt_id": attempt_id, "packet_hash": packet_hash[:12]}, app_id),
             ])
         except ConditionFailed:
+            fresh = self.get_app(p.user_id, app_id)
+            if fresh["action_state"] == "Submitting":
+                self._check_local_session(fresh, packet_hash, session_id)
+                return fresh
             raise WorkflowError("rate_limited", "daily application cap or cooldown is currently blocking submission", 409) from None
         return self.get_app(p.user_id, app_id)
 
-    def local_browser_dispatch(self, p: Principal, app_id: str, packet_hash: str) -> dict:
+    def local_browser_dispatch(self, p: Principal, app_id: str, packet_hash: str,
+                               session_id: str | None = None) -> dict:
         """Record the external-write boundary immediately before the companion clicks Submit."""
         app = self.get_app(p.user_id, app_id)
-        if app["action_state"] != "Submitting" or app.get("local_browser_packet_hash") != packet_hash:
+        self._check_local_session(app, packet_hash, session_id)
+        if app["action_state"] != "Submitting":
             raise WorkflowError("invalid_state", "browser session is not the current submission")
         if app.get("local_browser_dispatched_at"):
-            return app
+            raise WorkflowError("already_dispatched", "submission was already dispatched; check the employer confirmation instead of submitting again")
         now_epoch = self.clock.now()
         now = self._now_iso()
         settings = self.settings(p.user_id)
         ledger = app.get("local_browser_ledger") or self.ledger_key(p.user_id, settings)
+        packet = self.latest_packet(p.user_id, app_id)
+        # Refresh approvals, mandate, judge isolation and limits immediately
+        # before the write. This attempt already owns one reserved slot.
+        decision = self.decide_submission(p, app, settings, reserve_check=True,
+                                          packet=packet, local_reservation=True)
+        if not decision.allowed:
+            self.local_browser_complete(p, app_id, packet_hash, "needs_user",
+                                        reason="submission permission changed; review the application in Career Agent",
+                                        session_id=session_id)
+            raise WorkflowError("submission_blocked", "submission permission changed; review the application in Career Agent")
         cooldown = int(settings.get("cooldown_seconds", 120))
         try:
             self.store.transact([
@@ -458,6 +516,8 @@ class Workflow:
             # user retry from Browser ready after the cooldown instead of
             # leaving the application wedged in Submitting.
             fresh = self.get_app(p.user_id, app_id)
+            if fresh.get("local_browser_dispatched_at"):
+                raise WorkflowError("already_dispatched", "submission was already dispatched; check the employer confirmation instead of submitting again") from None
             if fresh["action_state"] == "Submitting" and not fresh.get("local_browser_dispatched_at"):
                 try:
                     self.store.transact([
@@ -473,17 +533,40 @@ class Workflow:
         return self.get_app(p.user_id, app_id)
 
     def local_browser_complete(self, p: Principal, app_id: str, packet_hash: str, outcome: str,
-                               receipt: dict | None = None, reason: str | None = None) -> dict:
+                               receipt: dict | None = None, reason: str | None = None,
+                               session_id: str | None = None) -> dict:
         app = self.get_app(p.user_id, app_id)
+        self._check_local_session(app, packet_hash, session_id)
         if app["action_state"] == "Submitted":
             return app
+        if app.get("local_browser_outcome") == outcome and app["action_state"] != "Submitting":
+            return app
+        if app["action_state"] == "OutcomeUnknown" and outcome == "submitted":
+            ref = (receipt or {}).get("reference")
+            if not ref:
+                raise WorkflowError("receipt_required", "employer confirmation is required to resolve an uncertain submission")
+            self.store.transact([
+                Update(U(p.user_id), app["local_browser_ledger"], add={"uncertain": -1, "submitted": 1}),
+                self._transition(app, "Submitted", {
+                    "receipt": {**receipt, "submitted_at": self._now_iso()}, "recruitment_stage": "applied",
+                    "submitted_at": self._now_iso(), "local_browser_outcome": "submitted", "last_error": None,
+                }),
+                self.event_put(p.user_id, "submission.reconciled", {"reference": ref, "via": "authenticated-browser"}, app_id),
+                self.outbox_put("notify", {"kind": "submitted", "user_id": p.user_id, "app_id": app_id, "reference": ref},
+                                f"notify:submitted:{app_id}"),
+            ])
+            return self.get_app(p.user_id, app_id)
         if app["action_state"] != "Submitting" or app.get("local_browser_packet_hash") != packet_hash:
             raise WorkflowError("invalid_state", "this browser completion does not match the current submission")
         now = self._now_iso()
         ledger = app.get("local_browser_ledger") or self.ledger_key(p.user_id, self.settings(p.user_id))
         dispatched = bool(app.get("local_browser_dispatched_at"))
+        if outcome not in ("submitted", "needs_user", "known_failure", "unknown"):
+            raise WorkflowError("invalid_outcome", "unsupported browser completion outcome", 400)
 
         if outcome == "submitted":
+            if not dispatched:
+                raise WorkflowError("not_dispatched", "submission cannot be confirmed before the submit action is recorded")
             ref = (receipt or {}).get("reference") or f"browser-{sha256([app_id, packet_hash, now])[:14]}"
             real_receipt = {**(receipt or {}), "reference": ref, "submitted_at": (receipt or {}).get("submitted_at") or now,
                             "provider": (receipt or {}).get("provider") or "authenticated-browser"}
@@ -491,9 +574,12 @@ class Workflow:
                 Update(U(p.user_id), ledger, add={"reserved": -1, "submitted": 1}),
                 self._transition(app, "Submitted", {
                     "receipt": real_receipt, "recruitment_stage": "applied", "submitted_at": now,
+                    "local_browser_outcome": outcome, "last_error": None,
                 }),
                 self.event_put(p.user_id, "submission.succeeded",
                                {"reference": ref, "via": "authenticated-browser"}, app_id),
+                self.outbox_put("notify", {"kind": "submitted", "user_id": p.user_id, "app_id": app_id, "reference": ref},
+                                f"notify:submitted:{app_id}"),
             ]
         elif outcome == "needs_user":
             # No write has happened yet. Release the reservation so login/MFA or
@@ -502,29 +588,41 @@ class Workflow:
                 raise WorkflowError("invalid_outcome", "user attention cannot be requested after submit was dispatched", 409)
             ops = [
                 Update(U(p.user_id), ledger, add={"used": -1, "reserved": -1}),
-                self._transition(app, "NeedsUserPresence", {"last_error": (reason or "browser needs your attention")[:300]}),
+                self._transition(app, "NeedsUserPresence", {"last_error": (reason or "browser needs your attention")[:300],
+                                                          "local_browser_outcome": outcome}),
                 self.event_put(p.user_id, "submission.user_presence_needed",
                                {"reason": (reason or "")[:300]}, app_id),
             ]
+            if reason != "browser session reopened from Career Agent":
+                ops.append(self.outbox_put("notify", {"kind": "browser_attention", "user_id": p.user_id,
+                                                      "app_id": app_id, "reason": (reason or "browser needs your attention")[:300]},
+                                           f"notify:browser-attention:{app_id}:{app.get('current_attempt')}"))
         elif outcome == "known_failure":
             ledger_delta = {"reserved": -1, "rejected": 1} if dispatched else {"used": -1, "reserved": -1}
             ops = [
                 Update(U(p.user_id), ledger, add=ledger_delta),
-                self._transition(app, "KnownFailure", {"last_error": (reason or "submission failed")[:300]}),
+                self._transition(app, "KnownFailure", {"last_error": (reason or "submission failed")[:300],
+                                                     "local_browser_outcome": outcome}),
                 self.event_put(p.user_id, "submission.failed", {"reason": (reason or "")[:300]}, app_id),
+                self.outbox_put("notify", {"kind": "failed", "user_id": p.user_id, "app_id": app_id, "reason": reason},
+                                f"notify:failed:{app_id}:{app.get('current_attempt')}"),
             ]
         else:
             if not dispatched:
                 ops = [
                     Update(U(p.user_id), ledger, add={"used": -1, "reserved": -1}),
-                    self._transition(app, "NeedsUserPresence", {"last_error": (reason or "browser stopped before submit")[:300]}),
+                    self._transition(app, "NeedsUserPresence", {"last_error": (reason or "browser stopped before submit")[:300],
+                                                              "local_browser_outcome": outcome}),
                     self.event_put(p.user_id, "submission.user_presence_needed", {"reason": (reason or "")[:300]}, app_id),
                 ]
             else:
                 ops = [
                     Update(U(p.user_id), ledger, add={"reserved": -1, "uncertain": 1}),
-                    self._transition(app, "OutcomeUnknown", {"last_error": (reason or "submission outcome unknown")[:300]}),
+                    self._transition(app, "OutcomeUnknown", {"last_error": (reason or "submission outcome unknown")[:300],
+                                                           "local_browser_outcome": outcome}),
                     self.event_put(p.user_id, "submission.outcome_unknown", {"reason": (reason or "")[:300]}, app_id),
+                    self.outbox_put("notify", {"kind": "needs_review", "user_id": p.user_id, "app_id": app_id},
+                                    f"notify:uncertain:{app_id}:{app.get('current_attempt')}"),
                 ]
         self.store.transact(ops)
         return self.get_app(p.user_id, app_id)
@@ -571,10 +669,53 @@ class Workflow:
     def ledger_key(self, uid: str, settings: dict) -> str:
         return f"LEDGER#{local_date(self.clock.now(), settings.get('timezone') or 'UTC')}"
 
+    def _submission_preferences_allow(self, app: dict, settings: dict) -> bool:
+        """Recheck mutable user constraints using current job facts at the write gate."""
+        from .discovery import _place_matches
+
+        prefs = settings.get("preferences") or {}
+        if not any(prefs.get(key) for key in ("excluded_companies", "locations", "work_modes")):
+            return True
+        job = self.store.get(f"JOB#{app.get('job_key')}", "SNAPSHOT") or app
+        explicit = bool(app.get("approved_hash")) and app.get("approved_hash") == app.get("packet_hash")
+        for employer in [job.get("company"), *(job.get("company_aliases") or [])]:
+            if any(item.check == "company_exclusion" and item.status == FAIL
+                   for item in hard_filters({**job, "company": employer}, prefs, {})):
+                return False
+        checks = hard_filters(job, prefs, {})
+        for item in checks:
+            if item.check == "work_mode" and (item.status == FAIL or (item.status == UNKNOWN and not explicit)):
+                return False
+        locations = [str(value) for value in prefs.get("locations", []) if value]
+        if locations:
+            location = str(job.get("location") or "")
+            remote = work_mode_of(job) == "remote"
+            if location:
+                if not any(_place_matches(wanted, location) or (wanted.lower() == "remote" and remote) for wanted in locations):
+                    return False
+            elif not explicit and not (remote and any(wanted.lower() == "remote" for wanted in locations)):
+                return False
+        return True
+
     def decide_submission(self, p: Principal, app: dict, settings: dict, reserve_check: bool = False,
-                          packet: dict | None = None) -> policy.Decision:
-        ledger = self.store.get(U(p.user_id), self.ledger_key(p.user_id, settings)) or {}
+                          packet: dict | None = None, local_reservation: bool = False,
+                          cloud_reservation: dict | None = None) -> policy.Decision:
+        ledger_key = self.ledger_key(p.user_id, settings)
+        ledger = self.store.get(U(p.user_id), ledger_key) or {}
         used = int(ledger.get("used", 0))
+        # Revalidating the final click does not ask for an additional slot. Only
+        # the currently active attempt may claim its own existing reservation.
+        own_reservation = int(local_reservation and app.get("action_state") == "Submitting"
+                              and app.get("local_browser_ledger") == ledger_key
+                              and not app.get("local_browser_dispatched_at")
+                              and int(ledger.get("reserved", 0)) > 0)
+        if cloud_reservation:
+            own_reservation = int(app.get("action_state") == "Submitting"
+                                  and cloud_reservation.get("attempt_id") == app.get("current_attempt")
+                                  and cloud_reservation.get("packet_hash") == app.get("packet_hash")
+                                  and cloud_reservation.get("ledger") == ledger_key
+                                  and not cloud_reservation.get("dispatched_at") and not cloud_reservation.get("outcome")
+                                  and int(ledger.get("reserved", 0)) > 0)
         cap = int(settings.get("daily_cap", 5))
         last = float(ledger.get("last_submit_at", 0) or settings.get("last_submit_at", 0) or 0)
         cooldown_ok = (self.clock.now() - last) >= int(settings.get("cooldown_seconds", 120)) if last else True
@@ -586,13 +727,15 @@ class Workflow:
             "mandate_active": self.mandate_active(settings, app["connector"]),
             "auto_eligible": bool(app.get("auto_eligible")) and not app.get("blocked"),
             "required_answers_complete": not unknown,
-            "daily_remaining": cap - used,
+            "daily_remaining": cap - used + own_reservation,
             "cooldown_ok": True if reserve_check else cooldown_ok,
             "connector_can_submit": (
                 _packet_submission_mode(packet, app["connector"]) in ("cloud_browser", "local_browser")
+                and (((packet or {}).get("body") or {}).get("target") or {}).get("submission", {}).get("can_submit", True)
                 if packet else connectors.can(app["connector"], "submit")
             ),
             "paused": bool(app.get("paused")),
+            "preferences_allow_submission": self._submission_preferences_allow(app, settings),
         }
         return policy.engine().authorize(policy.Request(p.user_id, p.is_judge, policy.SUBMIT, app["user_id"],
                                                         app["target_environment"], ctx))
@@ -646,6 +789,7 @@ class Workflow:
             "pk": U(p.user_id), "sk": f"ATTEMPT#{app_id}#{attempt_id}", "entity": "attempt", "app_id": app_id,
             "attempt_id": attempt_id, "packet_hash": packet_hash, "lease_until": lease_until, "fencing": fencing,
             "ledger": ledger_sk, "started_at": self._now_iso(), "decision": decision.to_dict(),
+            "is_judge": bool(p.is_judge),
         }
         cooldown = int(settings["cooldown_seconds"])
         try:
@@ -700,23 +844,52 @@ class Workflow:
     def gate_dispatch(self, uid: str, app_id: str, attempt_id: str, fencing: int, form_signature: str) -> dict:
         """Record the external-write boundary immediately before clicking Submit."""
         a = self._attempt(uid, app_id, attempt_id)
+        if (a.get("fencing") != fencing or a.get("dispatched_at") or a.get("outcome")
+                or float(a.get("lease_until", 0)) <= self.clock.now()):
+            return {"action": "abort", "reason": "lease lost or already dispatched"}
+        app = self.get_app(uid, app_id)
         packet = self.latest_packet(uid, app_id) or {}
+        if (app["action_state"] != "Submitting" or app.get("current_attempt") != attempt_id
+                or app.get("packet_hash") != a.get("packet_hash") or packet.get("hash") != a.get("packet_hash")):
+            return {"action": "abort", "reason": "application or packet changed"}
+        attempt_condition = And(C("fencing", "eq", fencing), C("dispatched_at", "not_exists"),
+                                C("outcome", "not_exists"), C("lease_until", "gt", self.clock.now()))
         expected = (packet.get("body") or {}).get("form_signature")
         if expected and form_signature != expected:
-            app = self.get_app(uid, app_id)
             self.store.transact([
                 Update(U(uid), a["sk"], set={"outcome": "form_changed", "finished_at": self._now_iso()}, add={},
-                       condition=C("fencing", "eq", fencing)),
+                       condition=attempt_condition),
                 Update(U(uid), a["ledger"], add={"used": -1, "reserved": -1}),
                 self._transition(app, "Preparing", {"invalidated_reason": "required form fields changed"}),
                 self.event_put(uid, "submission.form_changed", {"expected": expected[:12], "found": form_signature[:12]}, app_id),
                 self.outbox_put("work", {"kind": "prepare", "user_id": uid, "app_id": app_id}, f"work:reprepare:{app_id}:{attempt_id}"),
             ])
             return {"action": "abort", "reason": "form_changed"}
+        account = self.store.get(U(uid), "ACCOUNT") or {}
+        principal = Principal(uid, bool(a.get("is_judge") or account.get("is_judge")))
+        # gate_begin already reserved capacity and recorded its cooldown. Recheck
+        # current authorization without charging this same attempt a second slot
+        # or treating its own reservation timestamp as a different submission.
+        decision = self.decide_submission(principal, app, self.settings(uid), reserve_check=True,
+                                          packet=packet, cloud_reservation=a)
+        if not decision.allowed:
+            try:
+                self.store.transact([
+                    Update(U(uid), a["sk"], set={"outcome": "denied_before_dispatch", "finished_at": self._now_iso(),
+                                                 "decision": decision.to_dict()}, condition=attempt_condition),
+                    Update(U(uid), a["ledger"], add={"used": -1, "reserved": -1}),
+                    self._transition(app, "KnownFailure", {"last_decision": decision.to_dict(),
+                                     "last_error": "Submission permission changed before submit; review your rules and prepare again."}),
+                    self.event_put(uid, "submission.denied", decision.to_dict(), app_id),
+                ])
+            except ConditionFailed:
+                return {"action": "abort", "reason": "lease lost or already dispatched"}
+            return {"action": "abort", "reason": "submission_policy_changed", "decision": decision.to_dict()}
         try:
-            self.store.update(Update(U(uid), a["sk"], set={"dispatched_at": self._now_iso()},
-                                     condition=And(C("fencing", "eq", fencing), C("dispatched_at", "not_exists"),
-                                                   C("lease_until", "gt", self.clock.now()))))
+            self.store.transact([
+                Check(app["pk"], app["sk"], And(C("version", "eq", app["version"]), C("action_state", "eq", "Submitting"))),
+                Update(U(uid), a["sk"], set={"dispatched_at": self._now_iso()}, condition=attempt_condition),
+            ])
         except ConditionFailed:
             return {"action": "abort", "reason": "lease lost or already dispatched"}
         return {"action": "submit"}
