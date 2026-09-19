@@ -705,6 +705,30 @@ def browser_session_get(event, p, cid, token):
     })
 
 
+@route("PUT", r"/api/public/browser-session/(?P<token>[A-Za-z0-9_-]{20,})/answers", auth=False)
+def browser_session_answers(event, p, cid, token):
+    """Persist non-sensitive answers the user supplied in the live form.
+
+    The browser companion filters protected/sensitive fields before sending.
+    The backend still constrains count and size because this capability is public
+    and intentionally short lived.
+    """
+    body = body_json(event)
+    answers = body.get("answers") or {}
+    if not isinstance(answers, dict) or len(answers) > 30:
+        raise ValueError("answers must be an object with at most 30 entries")
+    cleaned = {}
+    for key, value in answers.items():
+        label = str(key).strip()[:120]
+        if not label or value in (None, ""):
+            continue
+        cleaned[label] = str(value)[:1000]
+    svc, row = _browser_capability(token)
+    if cleaned:
+        svc.profiles.save_answers(row["user_id"], cleaned)
+    return respond(200, {"saved": len(cleaned)})
+
+
 @route("POST", r"/api/public/browser-session/(?P<token>[A-Za-z0-9_-]{20,})/start", auth=False)
 def browser_session_start(event, p, cid, token):
     svc, row = _browser_capability(token)
