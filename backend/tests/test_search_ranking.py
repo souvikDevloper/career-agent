@@ -1,6 +1,6 @@
 import helpers  # noqa: F401
 
-from career_agent.services import _candidate_pool_size, _rank_match_cards
+from career_agent.services import SCORING_BUDGET_SECONDS, _candidate_pool_size, _rank_match_cards
 
 
 def card(key, score, blocked=False, published="2026-09-01"):
@@ -26,13 +26,18 @@ def test_blocked_role_does_not_beat_an_eligible_one_even_with_higher_score():
 
 
 def test_search_scores_more_than_the_requested_count_before_ranking():
-    """Wider than asked for, but only as wide as the endpoint can carry.
-
-    Every extra candidate is another model call against an endpoint slow enough
-    that six already time out sometimes, so the pool is half again rather than
-    triple: a routine search stays at three rounds of three instead of six.
-    """
-    assert _candidate_pool_size(100, 6) == 9
-    assert _candidate_pool_size(100, 12) == 12
+    """Retrieval relevance and resume fit are different rankings, so the best fit
+    often sits below a merely keyword-heavy posting. Scoring only the requested
+    count means never seeing it."""
+    assert _candidate_pool_size(100, 6) == 18
+    assert _candidate_pool_size(100, 12) == 24, "capped, so a big request cannot run away"
     assert _candidate_pool_size(4, 6) == 4, "never score more than there are matches"
-    assert _candidate_pool_size(100, 1) == 1, "one result asked for is one model call"
+    assert _candidate_pool_size(100, 1) == 3
+
+
+def test_the_pool_is_an_intention_not_a_promise():
+    """The wider pool is affordable because it is bounded. Without a deadline a
+    slow endpoint turns a search into a Lambda that runs out of time mid-flight
+    and returns nothing at all."""
+    assert SCORING_BUDGET_SECONDS > 0
+    assert SCORING_BUDGET_SECONDS < 300, "must finish inside the worker's own timeout"
