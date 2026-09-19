@@ -115,9 +115,14 @@ def map_field(field: dict, facts: dict, saved: dict, cover_note: str | None) -> 
         return (title, "resume:experience") if title else None
     if ftype == "file" or "resume" in label or "cv" == label:
         return "__RESUME__", "profile:resume"
-    if "authoriz" in label or "visa" in label or "sponsor" in label:
+    if "authoriz" in label and "sponsor" not in label:
         wa = facts.get("work_authorization") or {}
         return (wa["value"], "profile:user_confirmed") if wa.get("verified") and wa.get("value") else None
+    if "sponsor" in label or "visa sponsorship" in label:
+        # Authorization and sponsorship are different questions. Never turn a
+        # verified "authorized to work" answer into "needs sponsorship" (or the
+        # reverse). Sponsorship is reused only from the user's saved answer.
+        return None
 
     # Screening questions on authenticated portals are not available while the
     # packet is prepared. The browser companion sends their labels back once the
@@ -331,7 +336,14 @@ def prepare_packet(wf, uid: str, app: dict, job: dict, profile: dict, *, is_judg
         "cover_note": cover,
         "unknown_required": unknown,
         "field_evidence": evidence,
-        "fields": [{"name": f["name"], "label": f["label"], "type": f["type"], "required": f["required"]} for f in fields],
+        "fields": [{
+            "name": f["name"], "label": f["label"], "type": f["type"], "required": f["required"],
+            "options": [
+                {"label": str(o.get("label") or o.get("value") or "")[:300],
+                 "value": str(o.get("value") or o.get("label") or "")[:300]}
+                for o in (f.get("options") or [])[:80]
+            ],
+        } for f in fields],
         "prepared_hash_hint": sha256(answers)[:12],
     }
 
