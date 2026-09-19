@@ -437,6 +437,11 @@ def parse_query(jobs: list[dict], keywords: str) -> dict:
     decides what a word names by looking at what is actually in the corpus.
     """
     words = _words(keywords)
+    # _words drops single characters, which loses the "1" in "sde 1" - the level
+    # is the whole point of that query, and without it the role comes through as
+    # a bare "sde" and matches every level there is.
+    levels = re.findall(r"(?<![a-z0-9])[1-4](?![a-z0-9])", (keywords or "").lower())
+    words = words + levels
     companies = _field_tokens(jobs, "company")
     places = _field_tokens(jobs, "location") - companies
     return {
