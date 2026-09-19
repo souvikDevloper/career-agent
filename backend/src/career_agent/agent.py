@@ -204,7 +204,12 @@ def t_create_watch(keywords: str) -> dict:
 
 
 def t_prepare_application(job_key: str) -> dict:
-    """Start preparing an application packet for a job: read the form, map verified facts, draft a truthful note. Does NOT submit.
+    """Prepare one job application from verified facts.
+
+    If the current user turn explicitly asks to apply/submit, that intent is
+    carried through the asynchronous preparation: missing factual questions
+    pause for the user once, then the exact completed packet continues. Without
+    explicit apply intent this only prepares and waits for approval.
 
     Args:
         job_key: The job_key from search results.
