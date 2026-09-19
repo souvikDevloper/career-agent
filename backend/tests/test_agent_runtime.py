@@ -174,11 +174,19 @@ class TestPrepareSaysWhetherWeCanSubmit:
         finally:
             agent.CTX.current = None
 
-    def test_a_live_employer_is_flagged_as_ours_to_hand_over(self):
+    def test_an_authenticated_employer_requires_user_presence(self):
+        from career_agent import agent as agent_mod
+
+        fake_job = {"job_key": "amazon:1", "connector": "amazon-jobs",
+                    "apply": {"kind": "external", "url": "https://www.amazon.jobs/en/jobs/1/x"}}
+        self.FakeServices.request_prepare = lambda svc, uid, job_key: {
+            "app_id": "app_1", "connector": "amazon-jobs", "job_key": "amazon:1"}
+        agent_mod.get_job = lambda wf, key: fake_job
         got = self.run("amazon-jobs")
-        assert got["we_can_submit"] is False
-        assert got["ends_in"] == "ManualHandoff"
-        assert "does not accept submissions" in got["note"]
+        assert got["we_can_submit"] is True
+        assert got["execution_mode"] == "local_browser"
+        assert got["requires_user_presence"] is True
+        assert got["ends_in"] == "NeedsUserPresence"
 
     def test_the_one_connector_that_can_submit_says_so(self):
         got = self.run("northwind-test-portal")
