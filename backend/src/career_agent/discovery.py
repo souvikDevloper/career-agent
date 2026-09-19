@@ -161,8 +161,30 @@ def _stem(word: str) -> str:
     return word
 
 
+# What people type versus what a posting is titled. "amazon sde" found nothing
+# because every Amazon title says "Software Dev Engineer".
+ALIASES = {
+    "sde": ("software development engineer", "software dev engineer", "software engineer"),
+    "swe": ("software engineer", "software development engineer"),
+    "sre": ("site reliability engineer",),
+    "ml": ("machine learning",),
+    "ai": ("artificial intelligence", "machine learning"),
+    "ds": ("data scientist", "data science"),
+    "pm": ("product manager",),
+    "qa": ("quality assurance", "test engineer"),
+    "devops": ("devops", "platform engineer", "infrastructure"),
+    "fullstack": ("full stack", "full-stack"),
+    "frontend": ("frontend", "front end", "front-end"),
+    "backend": ("backend", "back end", "back-end"),
+    "newgrad": ("new grad", "graduate", "entry level"),
+    "fresher": ("graduate", "entry level", "intern"),
+}
+
+
 def _matches(word: str, hay: str) -> bool:
-    return word in hay or _stem(word) in hay
+    if word in hay or _stem(word) in hay:
+        return True
+    return any(alias in hay for alias in ALIASES.get(word, ()))
 
 
 def keyword_filter(jobs: list[dict], keywords: str, prefs: dict) -> list[dict]:

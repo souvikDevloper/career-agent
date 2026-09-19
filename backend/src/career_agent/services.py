@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any
 
@@ -82,7 +83,11 @@ class Services:
         # some needing several sequential pages, polling them here made a person
         # asking a question wait minutes for data that was already at most half an
         # hour old. The smoke test caught this as a timeout.
-        sources = discovery.all_sources()
+        # The test employer is for the pipeline demo on the command centre, where it
+        # is the only place an end-to-end browser submission can honestly be shown.
+        # It has no business in a job search: a fictional company competing with real
+        # openings is the thing that made results look made up.
+        sources = [s for s in discovery.all_sources() if s != portal.SOURCE]
         if refresh:
             self.wf.op_progress(uid, op_id, status="running", message="Checking the test employer")
             discovery.poll(self.wf, portal.SOURCE, force=True)
@@ -95,21 +100,35 @@ class Services:
         if stats is not None:
             # What was actually looked at. An empty result is only credible if the
             # agent can say what it searched, so this travels back to the model.
-            live = [j for j in jobs if j.get("source") != "northwind-test-portal"]
             stats.update({
-                "live_boards": sorted({j.get("board") or j.get("source") for j in live if j.get("company")}),
-                "live_postings": len(live),
-                "test_postings": len(jobs) - len(live),
+                "live_boards": sorted({j.get("board") or j.get("source") for j in jobs if j.get("company")}),
+                "live_postings": len(jobs),
                 "matched": len(matched),
             })
         self.wf.op_progress(uid, op_id, message=f"{len(candidates)} candidates after filters; explaining fit")
-        results = []
-        for job in candidates:
-            m = self.matcher.match(uid, job, is_judge=judge, correlation_id=correlation_id)
-            card = self.match_card(m)
-            results.append(card)
+        # Scored concurrently. Each match is one model call against a long resume
+        # and a long description - measured at 24 to 70 seconds - and six of those
+        # in sequence is the reason a search took a minute and a half. They do not
+        # depend on each other, so the wall clock should be one call, not six.
+        # Order is preserved so the best match still arrives first.
+        results: list[dict] = [None] * len(candidates)  # type: ignore[list-item]
+        if candidates:
+            with ThreadPoolExecutor(max_workers=min(6, len(candidates))) as pool:
+                futures = {
+                    pool.submit(self.matcher.match, uid, job, is_judge=judge, correlation_id=correlation_id): i
+                    for i, job in enumerate(candidates)
+                }
+                for future in as_completed(futures):
+                    i = futures[future]
+                    try:
+                        results[i] = self.match_card(future.result())
+                    except Exception as exc:  # one bad posting must not lose the rest
+                        log(logger, "search.score_failed", job=candidates[i].get("job_key"),
+                            error=type(exc).__name__, detail=str(exc)[:160], correlation_id=correlation_id)
+        ordered = [c for c in results if c]
+        for card in ordered:
             self.wf.op_progress(uid, op_id, result=card)
-        return results
+        return ordered
 
     @staticmethod
     def match_card(m: dict) -> dict:
