@@ -253,8 +253,19 @@ class Workflow:
             "schema_version": "packet/1", "created_at": self._now_iso(), "field_evidence": packet.get("field_evidence", {}),
             "fields": packet.get("fields", []),
         }
-        plan = (packet.get("target") or {}).get("submission") or {}
+        target_info = packet.get("target") or {}
+        plan = target_info.get("submission") or {}
         mode = plan.get("mode")
+        if not mode:
+            # packet/1 compatibility for existing callers/tests and already-saved
+            # packets: before submission plans existed, connector capability plus
+            # target.submittable was the routing contract.
+            legacy_can_submit = (
+                connectors.can(app["connector"], "submit")
+                and bool(target_info.get("submittable", True))
+            )
+            mode = "cloud_browser" if legacy_can_submit else "manual"
+            plan = {"mode": mode, "can_submit": legacy_can_submit}
         can_submit = mode == "cloud_browser" and bool(plan.get("can_submit"))
         if missing:
             target = "NeedsInformation"
