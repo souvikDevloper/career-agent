@@ -24,6 +24,48 @@ _BROWSER_HEADERS = {
 }
 
 
+_ROLE_ALIASES = {
+    "swe": "software engineer",
+    "sde": "software engineer",
+}
+
+
+def query_plan(query: str) -> tuple[str, str | None]:
+    """Turn what a person/model says into the query Google Careers expects.
+
+    Google understands "software engineer"; it does not reliably understand the
+    shorthand "SWE". Seniority phrases such as "early career" are filters, not
+    text that has to appear in the posting title. Keeping them in q caused a
+    second failure after the direct search was added: Google returned live EARLY
+    roles, then our own text filter rejected "Software Engineer, Search" because
+    its title does not literally contain "early career".
+    """
+    raw = (query or "software engineer").strip().lower()
+    level = None
+    if re.search(r"\b(early careers?|new grad(?:uate)?s?|university graduates?|entry level)\b", raw, re.I):
+        level = "EARLY"
+    elif re.search(r"\b(interns?|internships?|apprentices?|intern and apprentice)\b", raw, re.I):
+        level = "INTERN_AND_APPRENTICE"
+
+    cleaned = re.sub(
+        r"\b(early careers?|new grad(?:uate)?s?|university graduates?|entry level|"
+        r"interns?|internships?|apprentices?|intern and apprentice|jobs?|roles?|openings?)\b",
+        " ",
+        raw,
+        flags=re.I,
+    )
+    for short, full in _ROLE_ALIASES.items():
+        cleaned = re.sub(rf"\b{re.escape(short)}\b", full, cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip() or "software engineer"
+    return cleaned, level
+
+
+def post_filter_role(query: str) -> str:
+    """Role text safe to re-apply after Google's server-side seniority filter."""
+    cleaned, _ = query_plan(query)
+    return cleaned
+
+
 def _extract(html: str) -> list:
     hit = _DS1.search(html)
     if not hit:
@@ -137,20 +179,12 @@ def normalize(raw: list) -> dict | None:
 
 
 def search(query: str, *, location: str = "", limit: int = 50) -> list[dict]:
-    raw_query = (query or "software engineer").strip()
-    early = bool(re.search(r"\b(early careers?|new grad(?:uate)?|university graduate|entry level)\b", raw_query, re.I))
-    cleaned_query = re.sub(
-        r"\b(early career(?:s)?|new grad(?:uate)?|university graduate|entry level)\b",
-        " ",
-        raw_query,
-        flags=re.I,
-    )
-    cleaned_query = re.sub(r"\s+", " ", cleaned_query).strip() or "software engineer"
+    cleaned_query, target_level = query_plan(query)
     params = {"q": cleaned_query, "hl": "en"}
     if location:
         params["location"] = location
-    if early:
-        params["target_level"] = "EARLY"
+    if target_level:
+        params["target_level"] = target_level
     url = BASE + "?" + urllib.parse.urlencode(params)
     _, raw, _ = fetch(url, HOSTS, headers=_BROWSER_HEADERS, timeout=25)
     rows = _extract(raw.decode("utf8", "ignore"))
