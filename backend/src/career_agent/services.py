@@ -189,8 +189,10 @@ class Services:
             # answers, and only one of them is true. Without this the model saw an
             # empty list and reported that an employer we have never polled had no
             # openings - a confident, checkable lie.
-            covered = None if not wanted else any(
-                wanted in e.lower() or e.lower() in wanted for e in employers)
+            covered = None if not wanted else (
+                discovery.direct_company_supported(wanted)
+                or any(wanted in e.lower() or e.lower() in wanted for e in employers)
+            )
             stats.update({
                 "live_boards": sorted({j.get("board") or j.get("source") for j in jobs if j.get("company")}),
                 "live_postings": len(jobs),
