@@ -99,3 +99,21 @@ def fetch_board(spec: str, *, pages: int = 4, per_page: int = 100) -> list[dict]
         if len(found) < per_page:
             break
     return jobs
+
+
+def search(country: str, query: str, *, limit: int = 100) -> list[dict]:
+    """Ask Amazon to run the search, instead of mirroring the board and filtering.
+
+    Amazon India alone publishes 2,322 openings. Paging the whole board takes 98
+    seconds, so the poller kept only the 400 most recent - and a person searching
+    for "SDE 1 in Bengaluru" was told there were none while five were live, simply
+    because they were not among the newest 400. amazon.jobs takes a query and
+    answers it in about a second, completely.
+    """
+    params = {"country": country, "result_limit": max(1, min(100, limit)), "offset": 0, "sort": "relevant"}
+    if query:
+        params["base_query"] = query
+    data: Any = fetch_json(f"{BASE}?{urllib.parse.urlencode(params)}", HOSTS,
+                           headers={"Accept": "application/json"}, timeout=25)
+    found = data.get("jobs") if isinstance(data, dict) else None
+    return [normalize(j) for j in (found or []) if isinstance(j, dict) and j.get("title")]
