@@ -324,22 +324,44 @@ class Workflow:
             return app  # idempotent repeat
         if app["packet_hash"] != packet_hash:
             raise WorkflowError("stale_packet", "this approval refers to an older version of the application; review the current one")
-        if app["action_state"] != "NeedsApproval":
+        packet = self.latest_packet(p.user_id, app_id)
+        mode = _packet_submission_mode(packet, app["connector"])
+        if app["action_state"] not in ("NeedsApproval", "NeedsUserPresence"):
             raise WorkflowError("invalid_state", f"application is {app['action_state']}, not awaiting approval")
+        if app["action_state"] == "NeedsUserPresence" and mode != "local_browser":
+            raise WorkflowError("invalid_state", "only an authenticated-browser application can be approved from Browser ready")
+
         approval = {"pk": U(p.user_id), "sk": f"APPROVAL#{app_id}#{packet_hash[:24]}", "entity": "approval",
                     "app_id": app_id, "packet_hash": packet_hash, "channel": channel, "at": self._now_iso(),
                     "policy_version": policy.POLICY_VERSION}
-        packet = self.latest_packet(p.user_id, app_id)
-        mode = _packet_submission_mode(packet, app["connector"])
-        next_state = "NeedsUserPresence" if mode == "local_browser" else "Authorized"
-        ops = [
-            Put(approval, C("pk", "not_exists")),
-            self._transition(app, next_state, {"approved_hash": packet_hash}),
-            self.event_put(p.user_id, "application.approved",
-                           {"channel": channel, "hash": packet_hash[:12], "submission_mode": mode}, app_id),
-        ]
-        if mode == "cloud_browser":
-            ops += self._queue_ops(p.user_id, app_id, packet_hash)
+
+        if app["action_state"] == "NeedsUserPresence":
+            # Compatibility/self-heal for packets prepared before browser launch
+            # itself became an explicit approval action. The user is clicking
+            # "Apply in signed-in browser" on this exact packet hash, so record
+            # that approval without moving the already-correct browser-ready
+            # state.
+            ops = [
+                Put(approval, C("pk", "not_exists")),
+                Update(app["pk"], app["sk"],
+                       set={"approved_hash": packet_hash, "updated_at": self._now_iso(),
+                            "version": app["version"] + 1},
+                       condition=And(C("version", "eq", app["version"]),
+                                     C("action_state", "eq", "NeedsUserPresence"))),
+                self.event_put(p.user_id, "application.approved",
+                               {"channel": channel, "hash": packet_hash[:12],
+                                "submission_mode": mode, "state_preserved": True}, app_id),
+            ]
+        else:
+            next_state = "NeedsUserPresence" if mode == "local_browser" else "Authorized"
+            ops = [
+                Put(approval, C("pk", "not_exists")),
+                self._transition(app, next_state, {"approved_hash": packet_hash}),
+                self.event_put(p.user_id, "application.approved",
+                               {"channel": channel, "hash": packet_hash[:12], "submission_mode": mode}, app_id),
+            ]
+            if mode == "cloud_browser":
+                ops += self._queue_ops(p.user_id, app_id, packet_hash)
         try:
             self.store.transact(ops)
         except ConditionFailed:
@@ -347,7 +369,7 @@ class Workflow:
             if app2.get("approved_hash") == packet_hash:
                 return app2
             raise WorkflowError("conflict", "application changed while approving; refresh and retry") from None
-        if mode == "cloud_browser":
+        if mode == "cloud_browser" and app["action_state"] == "NeedsApproval":
             self._mark_queued(p.user_id, app_id)
         return self.get_app(p.user_id, app_id)
 

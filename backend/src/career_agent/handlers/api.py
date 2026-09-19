@@ -674,9 +674,27 @@ def browser_session_create(event, p, cid, app_id):
         raise WorkflowError("stale_packet", "refresh: the application packet changed")
     if app["action_state"] != "NeedsUserPresence":
         raise WorkflowError("invalid_state", f"application is {app['action_state']}, not ready for the browser companion")
+
+    # The click on "Apply in signed-in browser" is itself an explicit user
+    # approval of the exact packet hash. Older applications created before this
+    # invariant was enforced can legitimately be Browser ready with no
+    # approved_hash. Repair them here rather than showing a contradictory
+    # "approve first" error when there is no approval button in this state.
+    if app.get("approved_hash") != data.packet_hash:
+        app = svc.wf.approve(p, app_id, data.packet_hash, "browser_launch")
+
     decision = svc.wf.decide_submission(p, app, svc.wf.settings(p.user_id), packet=packet)
     if not decision.allowed:
-        raise WorkflowError("approval_required", "approve the current packet before opening the browser companion", 409)
+        reasons = set(decision.reasons or [])
+        if "forbid-daily-cap-exhausted" in reasons:
+            message = "daily application cap reached"
+        elif "forbid-missing-required-answers" in reasons:
+            message = "required application answers are still missing"
+        elif "forbid-paused-or-cancelled" in reasons:
+            message = "application is paused"
+        else:
+            message = "submission policy currently blocks this application"
+        raise WorkflowError("submission_blocked", message, 409)
 
     token = secrets.token_urlsafe(32)
     token_hash = __import__("hashlib").sha256(token.encode()).hexdigest()
