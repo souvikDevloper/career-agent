@@ -442,11 +442,12 @@ class TestAdzunaIsSecondClassOnPurpose:
     def test_without_a_key_it_says_so_instead_of_calling(self, monkeypatch):
         """Registered but unconfigured is a state the UI can explain; a silent
         failed call is not."""
-        monkeypatch.setenv("ADZUNA_APP_ID", "")
-        monkeypatch.setenv("ADZUNA_APP_KEY", "")
+        monkeypatch.setenv("ADZUNA_KEY_PARAM", "")
+        monkeypatch.setenv("ADZUNA_KEY", "")
+        monkeypatch.setattr(adzuna, "_creds", None)
         try:
             adzuna.fetch_board("in")
         except ValueError as exc:
-            assert "ADZUNA_APP_ID" in str(exc)
+            assert "not configured" in str(exc)
         else:
             raise AssertionError("a missing key should be reported, not called with")

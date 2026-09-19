@@ -56,8 +56,7 @@ class Settings:
     adzuna_boards: tuple[str, ...] = field(
         default_factory=lambda: tuple(b.strip() for b in _env("ADZUNA_BOARDS", "").split(",") if b.strip())
     )
-    adzuna_app_id: str = field(default_factory=lambda: _env("ADZUNA_APP_ID"))
-    adzuna_app_key: str = field(default_factory=lambda: _env("ADZUNA_APP_KEY"))
+    adzuna_key_param: str = field(default_factory=lambda: _env("ADZUNA_KEY_PARAM"))
     # Amazon Jobs, each "COUNTRY" or "COUNTRY:query" - e.g. IND or IND:intern
     amazon_boards: tuple[str, ...] = field(
         default_factory=lambda: tuple(b.strip() for b in _env("AMAZON_BOARDS", "").split(",") if b.strip())
