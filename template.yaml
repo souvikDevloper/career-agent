@@ -53,15 +53,6 @@ Parameters:
     Description: >
       Comma-separated Adzuna country indexes to monitor, each "COUNTRY" or
       "COUNTRY:query" - e.g. "in" or "in:software engineer". Inert without a key.
-  AdzunaAppId:
-    Type: String
-    Default: ""
-    Description: Adzuna application id (free tier). Leave empty to keep the connector unconfigured.
-  AdzunaAppKey:
-    Type: String
-    Default: ""
-    NoEcho: true
-    Description: Adzuna application key (free tier). Leave empty to keep the connector unconfigured.
   AmazonBoards:
     Type: String
     Default: ""
@@ -151,8 +142,8 @@ Globals:
         ORACLE_BOARDS: !Ref OracleBoards
         AMAZON_BOARDS: !Ref AmazonBoards
         ADZUNA_BOARDS: !Ref AdzunaBoards
-        ADZUNA_APP_ID: !Ref AdzunaAppId
-        ADZUNA_APP_KEY: !Ref AdzunaAppKey
+        # The key itself is a SecureString read at call time, never an env var.
+        ADZUNA_KEY_PARAM: !Sub "/${AWS::StackName}/adzuna-key"
         ENABLE_TEST_EMPLOYER: !Ref EnableTestEmployer
         SES_SENDER: !Ref SesSender
         DEMO_INBOX: !Ref DemoInbox

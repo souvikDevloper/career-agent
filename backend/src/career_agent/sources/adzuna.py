@@ -66,14 +66,39 @@ def normalize(country: str, raw: dict) -> dict:
     return job
 
 
-def _credentials() -> tuple[str, str]:
-    from ..config import settings as cfg
+_creds: tuple[str, str] | None = None
 
-    s = cfg()
-    app_id, app_key = s.adzuna_app_id, s.adzuna_app_key
-    if not app_id or not app_key:
-        raise ValueError("adzuna needs ADZUNA_APP_ID and ADZUNA_APP_KEY")
-    return app_id, app_key
+
+def _credentials() -> tuple[str, str]:
+    """Read the key from SSM once per execution environment, never from the repo.
+
+    The app key is a credential, so it follows the model key rather than the board
+    lists: a SecureString of its own, decrypted at call time, never sitting in a
+    Lambda environment variable or in the plaintext deploy-parameters string that
+    anyone with read access to the stack can print. Held as "app_id:app_key" so
+    turning it on is one command.
+    """
+    global _creds
+    if _creds is None:
+        import os
+
+        from ..config import settings as cfg
+
+        param = cfg().adzuna_key_param
+        if param:
+            import boto3
+
+            try:
+                raw = boto3.client("ssm").get_parameter(Name=param, WithDecryption=True)["Parameter"]["Value"]
+            except Exception as exc:
+                raise ValueError(f"could not read the Adzuna key: {type(exc).__name__}") from exc
+        else:
+            raw = os.environ.get("ADZUNA_KEY", "")
+        app_id, _, app_key = raw.strip().partition(":")
+        _creds = (app_id.strip(), app_key.strip())
+    if not _creds[0] or not _creds[1]:
+        raise ValueError("Adzuna is not configured: set the adzuna-key parameter to 'app_id:app_key'")
+    return _creds
 
 
 def _query(country: str, query: str, page: int, per_page: int) -> str:
