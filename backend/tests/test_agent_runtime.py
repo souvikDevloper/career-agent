@@ -163,6 +163,7 @@ class TestPrepareSaysWhetherWeCanSubmit:
     class FakeServices:
         def __init__(self, connector):
             self.connector = connector
+            self.wf = object()
 
         def request_prepare(self, uid, job_key):
             return {"app_id": "app_1", "connector": self.connector}
