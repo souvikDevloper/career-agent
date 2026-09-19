@@ -3,6 +3,7 @@ import { timeAgo } from "../lib/format";
 import { IArrow, IBuilding, IClock, IPin } from "./Icons";
 import { Badge, Bar, EnvBadge, ScoreRing } from "./ui";
 import SpotlightCard from "./motion/SpotlightCard";
+import { SpeakButton } from "./SpeakButton";
 import KineticScoreGauge from "./motion/KineticScoreGauge";
 
 export function MatchRow({ m, onOpen }: { m: M; onOpen: () => void }) {
@@ -36,6 +37,14 @@ export function MatchRow({ m, onOpen }: { m: M; onOpen: () => void }) {
         <div className="col" style={{ alignItems: "flex-end", gap: 8 }}>
           <span className="small muted">{req.length ? `${hit}/${req.length} must-haves evidenced` : "—"}</span>
           <span className="btn sm">Explain <IArrow size={14} /></span>
+          {/* The card itself opens the match, so the speak control has to stop the
+              click here or listening would navigate away from what you asked to hear. */}
+          <span onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+            <SpeakButton
+              label="Listen"
+              text={`${m.job.title} at ${m.job.company}${m.job.location ? `, ${m.job.location}` : ""}. Fit ${m.score} out of 100. ${m.explanation || ""}`}
+            />
+          </span>
         </div>
       </div>
     </SpotlightCard>

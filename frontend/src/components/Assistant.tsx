@@ -16,7 +16,7 @@ import { VoiceSession, speak, stopSpeaking } from "../lib/voice";
 import { useRouter } from "../lib/router";
 import { useMe } from "../lib/me";
 import { Markdown } from "../lib/markdown";
-import { ICheck, IClock, IMic, ISend, IStop, IVolume } from "./Icons";
+import { ICheck, IClock, IMic, IPlus, ISend, IStop, IVolume } from "./Icons";
 import { MatchRow } from "./MatchCard";
 import { Badge, useToast } from "./ui";
 
@@ -136,6 +136,21 @@ export function Assistant({ compact = false }: { compact?: boolean }) {
       stopSpeaking();
     };
   }, [compact]);
+
+  /* The agent is shown the last thirteen turns, so a failure it hit an hour ago
+     stays in front of it and it answers from that rather than from the tool.
+     Starting fresh is the cure and it needs to be one click. Chat rows only:
+     applications, matches and profile are untouched. */
+  const startFresh = useCallback(async () => {
+    if (!confirm("Start a new conversation? Your applications, matches and profile are not affected.")) return;
+    try {
+      await api("/api/chat", { method: "DELETE" });
+      setMessages([]);
+      setHasEarlier(false);
+    } catch (e) {
+      toast((e as Error).message, "error");
+    }
+  }, [toast]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
     const el = scroller.current;
@@ -374,6 +389,18 @@ export function Assistant({ compact = false }: { compact?: boolean }) {
   return (
     <div className={compact ? "" : "split agent-split"}>
       <div className="card chat-card glass-stripe">
+        <div className="chat-head">
+          <span className="tiny muted">{messages.length > 0 ? `${messages.length} messages` : "New conversation"}</span>
+          <button
+            className="new-chat"
+            disabled={busy || messages.length === 0}
+            title="Start a new conversation"
+            aria-label="Start a new conversation"
+            onClick={() => void startFresh()}
+          >
+            <IPlus size={15} /> New chat
+          </button>
+        </div>
         {thread}
         <div className="composer-wrap">
           <form
@@ -424,28 +451,7 @@ export function Assistant({ compact = false }: { compact?: boolean }) {
           </form>
           <div className="row between" style={{ gap: 12, flexWrap: "wrap" }}>
             <p className="composer-hint tiny muted">Enter sends · Shift + Enter for a new line</p>
-            {messages.length > 0 && (
-              /* The agent is shown the last thirteen turns, so a failure it hit an
-                 hour ago stays in front of it and it answers from that rather than
-                 from the tool. Starting fresh is the cure, and it needs to be one
-                 click. This clears the conversation only - applications, matches
-                 and profile are untouched. */
-              <button
-                className="btn ghost sm"
-                disabled={busy}
-                onClick={async () => {
-                  if (!confirm("Start a new conversation? Your applications, matches and profile are not affected.")) return;
-                  try {
-                    await api("/api/chat", { method: "DELETE" });
-                    setMessages([]);
-                  } catch (e) {
-                    toast((e as Error).message, "error");
-                  }
-                }}
-              >
-                New conversation
-              </button>
-            )}
+
           </div>
           {messages.length === 0 && (
             <div className="chips">

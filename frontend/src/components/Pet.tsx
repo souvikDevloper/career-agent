@@ -147,6 +147,53 @@ export function Pet({ mood = "idle" }: { mood?: Mood }) {
         ctx.globalAlpha = 1;
       }
 
+      // Silhouette first, behind the body.
+      //
+      // A plain sphere with a face on it has no shape to recognise at 90px in
+      // the corner of a dashboard - it reads as a dot. Ears, feet and an antenna
+      // give it an outline you can identify without looking directly at it,
+      // which is the whole point of a companion that reports state.
+      const dark = shadeOf(prefs.colour, 0.34);
+      ctx.fillStyle = dark;
+      for (const s of [-1, 1]) {
+        // Ears, tilted outward, with a slight lift while it is working.
+        const lift = m === "thinking" && !still ? Math.sin(t * 2.4 + (s > 0 ? 0.6 : 0)) * body * 0.05 : 0;
+        ctx.beginPath();
+        ctx.ellipse(c + s * body * 0.82, cy - body * 0.42 - lift, body * 0.24, body * 0.34,
+                    s * 0.55, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      for (const s of [-1, 1]) {
+        // Feet, so it sits on the shadow rather than hovering over it.
+        ctx.beginPath();
+        ctx.ellipse(c + s * body * 0.44, cy + body * 0.92, body * 0.26, body * 0.15, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Antenna with a state lamp: the one part that changes colour by mood, so
+      // the state is legible from across the screen and not only close up.
+      const sway = still ? 0 : Math.sin(t * 1.3) * body * 0.07;
+      const tipX = c + sway;
+      // Kept inside the canvas: body is 0.33 of the box and cy bobs, so a taller
+      // antenna clipped its own lamp against the top edge.
+      const tipY = cy - body * 1.22;
+      ctx.strokeStyle = dark;
+      ctx.lineWidth = Math.max(1.4, body * 0.09);
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(c, cy - body * 0.9);
+      ctx.quadraticCurveTo(c + sway * 0.5, cy - body * 1.2, tipX, tipY);
+      ctx.stroke();
+      const lamp = m === "alert" ? "#ff8095" : m === "thinking" ? "#ffd166" : m === "asleep" ? "#6b7280" : "#8affc1";
+      const pulse = still || m === "asleep" ? 1 : 1 + Math.sin(t * (m === "alert" ? 5 : 2.2)) * 0.18;
+      ctx.shadowColor = lamp;
+      ctx.shadowBlur = body * 0.5 * pulse;
+      ctx.fillStyle = lamp;
+      ctx.beginPath();
+      ctx.arc(tipX, tipY, body * 0.13 * pulse, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
       // Body: lit from the upper left, with a rim light picking out the far edge.
       const sphere = ctx.createRadialGradient(c - body * 0.34, cy - body * 0.4, body * 0.08, c, cy, body * 1.12);
       sphere.addColorStop(0, "#ffffff");
@@ -173,6 +220,16 @@ export function Pet({ mood = "idle" }: { mood?: Mood }) {
       ctx.beginPath();
       ctx.ellipse(c - body * 0.36, cy - body * 0.44, body * 0.2, body * 0.13, -0.6, 0, Math.PI * 2);
       ctx.fill();
+
+      // Cheeks. Small, and the reason it reads as a creature rather than a UI dot.
+      if (m !== "asleep") {
+        ctx.fillStyle = "rgba(255, 140, 170, 0.28)";
+        for (const s of [-1, 1]) {
+          ctx.beginPath();
+          ctx.ellipse(c + s * body * 0.56, cy + body * 0.24, body * 0.16, body * 0.1, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
 
       eye.x += (pointer.x - eye.x) * 0.12;
       eye.y += (pointer.y - eye.y) * 0.12;

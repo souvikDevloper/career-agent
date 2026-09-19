@@ -4,6 +4,7 @@ import { useApi } from "../lib/hooks";
 import { dateTime, EVENT_LABEL, STAGE_LABEL, timeAgo } from "../lib/format";
 import { VoiceSession } from "../lib/voice";
 import { Shell } from "../components/Shell";
+import { SpeakButton } from "../components/SpeakButton";
 import { MatchExplain } from "../components/MatchCard";
 import { Badge, Drawer, EnvBadge, Skeleton, Spinner, StateBadge, useToast } from "../components/ui";
 import { IAlert, IBrain, ICheck, IExternal, IMail, IMic, IPause, IPlay, IRefresh, IShield, IStop, IX } from "../components/Icons";
@@ -143,6 +144,15 @@ export function ApplicationDetailPage({ id }: { id: string }) {
             <div className="card-title">
               <h3>Application packet</h3>
               <div className="row" style={{ gap: 8 }}>
+                {p && (
+                  /* The cover note is the part worth hearing before you send it -
+                     reading your own words back is how you catch what is off. */
+                  <SpeakButton
+                    label="Read the note"
+                    className="btn sm ghost"
+                    text={p.body?.cover_note || ""}
+                  />
+                )}
                 {p && (
                   <button className="btn sm ghost" onClick={() => {
                     navigator.clipboard.writeText(JSON.stringify(p.body, null, 2));

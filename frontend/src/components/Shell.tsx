@@ -8,7 +8,7 @@ import { api } from "../lib/api";
 import { Badge } from "./ui";
 import { Pet, type Mood } from "./Pet";
 import { AuroraField } from "./AuroraField";
-import { IBell, IBriefcase, IChart, IChat, IHome, ILink, IList, ILogout, ISend, ISettings, IUser } from "./Icons";
+import { IBell, IBriefcase, IChart, IChat, IHome, ILink, IList, ILogout, IPanel, ISend, ISettings, IUser } from "./Icons";
 
 const NAV = [
   { to: "/app", label: "Command center", icon: IHome, exact: true },
@@ -51,12 +51,20 @@ export function Shell({ title, actions, children }: { title: string; actions?: R
   const cap = me?.limits?.model_calls ?? 0;
   const mood: Mood = cap > 0 && used >= cap ? "asleep" : waiting > 0 ? "alert" : "idle";
 
+  const [railOpen, setRailOpen] = useState(() => {
+    try {
+      return localStorage.getItem("career-agent.rail") !== "closed";
+    } catch {
+      return true;
+    }
+  });
+
   const isActive = (to: string, exact?: boolean) => (exact ? path === to : path === to || path.startsWith(to + "/"));
 
   return (
     <>
       <AuroraField className="app-aurora" />
-    <div className="shell">
+    <div className={`shell ${railOpen ? "" : "rail-closed"}`}>
       <nav className="side glass-stripe" aria-label="Main">
         <Link to="/app" className="brand"><BrandMark /> Career Agent</Link>
         {NAV.map((n) => (
@@ -80,6 +88,25 @@ export function Shell({ title, actions, children }: { title: string; actions?: R
       </nav>
       <div className="main">
         <header className="topbar glass-stripe">
+          {/* Collapsing the rail is a per-viewer preference, so it lives in
+              localStorage and is wrapped: reading it throws in a private window,
+              and the rail simply starts open when it cannot be read. */}
+          <button
+            className="rail-toggle"
+            aria-label={railOpen ? "Hide navigation" : "Show navigation"}
+            aria-expanded={railOpen}
+            onClick={() => {
+              const next = !railOpen;
+              setRailOpen(next);
+              try {
+                localStorage.setItem("career-agent.rail", next ? "open" : "closed");
+              } catch {
+                /* private window: the choice just does not persist */
+              }
+            }}
+          >
+            <IPanel size={17} />
+          </button>
           <h2>{title}</h2>
           <div className="spacer" />
           {portal && (
