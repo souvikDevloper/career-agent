@@ -26,6 +26,13 @@ def test_blocked_role_does_not_beat_an_eligible_one_even_with_higher_score():
 
 
 def test_search_scores_more_than_the_requested_count_before_ranking():
-    assert _candidate_pool_size(100, 6) == 18
-    assert _candidate_pool_size(100, 12) == 24
-    assert _candidate_pool_size(4, 6) == 4
+    """Wider than asked for, but only as wide as the endpoint can carry.
+
+    Every extra candidate is another model call against an endpoint slow enough
+    that six already time out sometimes, so the pool is half again rather than
+    triple: a routine search stays at three rounds of three instead of six.
+    """
+    assert _candidate_pool_size(100, 6) == 9
+    assert _candidate_pool_size(100, 12) == 12
+    assert _candidate_pool_size(4, 6) == 4, "never score more than there are matches"
+    assert _candidate_pool_size(100, 1) == 1, "one result asked for is one model call"

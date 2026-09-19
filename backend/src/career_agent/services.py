@@ -23,9 +23,21 @@ logger = get_logger("services")
 AUTO_PREPARE_MIN_SCORE = 60
 
 
+# Scoring a wider pool than was asked for is right - retrieval relevance and
+# resume fit are different rankings - but every extra candidate is another model
+# call, and this endpoint is slow enough that six of them already time out
+# sometimes. Tripling to eighteen put a routine search at six sequential rounds
+# of three, minutes rather than seconds, on a demo where speed has been the
+# loudest complaint. Half again, capped at twelve, keeps the re-ranking honest at
+# a cost the endpoint can actually carry.
+CANDIDATE_POOL_MULTIPLIER = 1.5
+CANDIDATE_POOL_CAP = 12
+
+
 def _candidate_pool_size(total: int, requested: int) -> int:
     requested = max(1, min(12, requested))
-    return min(total, max(requested, min(24, requested * 3)))
+    widened = min(CANDIDATE_POOL_CAP, int(requested * CANDIDATE_POOL_MULTIPLIER))
+    return min(total, max(requested, widened))
 
 
 def _rank_match_cards(cards: list[dict]) -> list[dict]:
