@@ -51,7 +51,15 @@ if isinstance(sess, dict) and sess.get("id_token"):
     op = call("POST", "/api/search", {"keywords": "backend intern", "client_request_id": f"smoke-{int(time.time())}"}, token=tok, expect=(202, 200))
     op_id = (op or {}).get("operation", {}).get("op_id") if isinstance(op, dict) else None
     status = None
-    for _ in range(40):
+    # Long enough for the latency the product deliberately spends.
+    #
+    # Search scores a pool three times the requested count so that resume fit,
+    # not retrieval order, decides the ranking, and it stops at
+    # SCORING_BUDGET_SECONDS = 150 rather than running the worker out of time.
+    # Forty polls at three seconds asserted two minutes, which is inside that
+    # budget: a healthy search that used its allowance failed the deploy. This
+    # covers the budget plus the last in-flight model call and the write.
+    for _ in range(100):
         if not op_id:
             break
         time.sleep(3)
