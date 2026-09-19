@@ -170,7 +170,10 @@ class Services:
                     else:
                         jobs = [j for j in jobs if j.get("feed") != feed]
                         jobs.extend(discovery.cached_jobs(self.wf, feed))
-        matched = (discovery.filter_jobs(jobs, prefs, **active) if active
+        filter_active = dict(active)
+        if named and filter_active.get("role"):
+            filter_active["role"] = discovery.direct_post_filter_role(named, filter_active["role"])
+        matched = (discovery.filter_jobs(jobs, prefs, **filter_active) if active
                    else discovery.keyword_filter(jobs, keywords, prefs))
         # Retrieval relevance and resume fit are different rankings. Scoring only
         # the first N retrieval hits meant a merely keyword-heavy posting could
