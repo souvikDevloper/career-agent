@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { readFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { chromium } from '../../worker-browser/node_modules/playwright-core/index.mjs';
 
-const source = await readFile(new URL('../content.js', import.meta.url), 'utf8');
+const source = (await readFile(new URL('../content.js', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
 const exported = source.replace('  run();\n})();', '  window.forms = { labelOf, fieldContext, controls, unansweredRequired, fill, optionTexts, setValue, resolveVisibleQuestions, expandRecords, rememberLearnedAnswers, run };\n})();');
 let browser;
 before(async () => { browser = await chromium.launch({ headless: true }); });
@@ -36,6 +38,87 @@ async function pageFor(html, options = {}) {
   await page.addScriptTag({ content: exported });
   return page;
 }
+
+test('Stripe cover-letter file and optional transcript never receive text; resume still uploads and submission continues', async () => {
+  const page = await pageFor(`<div class="field"><label for="resume">Resume*</label><input id="resume" type="file" required hidden></div>
+    <div class="field"><label for="cover_letter">Cover letter</label><input id="cover_letter" name="cover_letter" type="file"></div>
+    <div class="field"><label for="transcript">Academic record (optional, not required)</label><input id="transcript" type="file"></div>
+    <button onclick="document.body.innerHTML='Thank you for applying'">Submit application</button>`, {
+    packet: { answers: { cover_letter: 'My truthful application note' }, fields: [{ name: 'cover_letter', label: 'Cover letter', type: 'file' }], resume_url: 'https://resume.example.test/file' }
+  });
+  await page.evaluate(() => forms.run());
+  const messages = await page.evaluate(() => calls);
+  assert.equal(messages.filter(m => m.type === 'dispatch').length, 1);
+  assert.ok(messages.some(m => m.type === 'complete' && m.body.outcome === 'submitted'));
+  await page.close();
+});
+
+test('nested Workday education uses actual backend degree/date/GPA mapping and never adds a duplicate', async () => {
+  const page = await pageFor(`<section><h2>Education</h2><div class="record"><div><h3>Education 1</h3></div>
+    <div class="field"><label for="school">School or University*</label><input id="school"></div>
+    <div class="field"><label>Degree*</label><button id="degree" aria-label="Degree Select One Required" aria-haspopup="listbox" aria-controls="degrees">Select One</button><ul id="degrees" role="listbox" hidden><li role="option">Bachelor's Degree</li><li role="option">Master's Degree</li></ul></div>
+    <div class="field"><label for="major">Field of Study</label><input id="major"></div>
+    <div class="field"><label for="gpa">Overall Result (GPA)</label><input id="gpa"></div>
+    <div class="field"><label>From</label><input id="from" placeholder="YYYY"></div>
+    <div class="field"><label>To (Actual or Expected)</label><input id="to" placeholder="YYYY"></div>
+    </div><button id="add" onclick="window.adds=(window.adds||0)+1">Add</button></section>`);
+  const facts = { education: [{ school: 'Example Institute', degree: 'Bachelor of Technology', field: 'Computer Science & Engineering', graduation_year: 2027, verified: true, evidence: 'July 2023 - May 2027 Bachelor of Technology (CGPA: 8.67 / 10)' }] };
+  await page.evaluate(() => {
+    const el = document.getElementById('degree'), list = document.getElementById('degrees');
+    el.onclick = () => { list.hidden = !list.hidden; el.setAttribute('aria-expanded', String(!list.hidden)); };
+    list.querySelectorAll('li').forEach(node => node.onclick = () => { el.textContent = node.textContent; list.hidden = true; el.setAttribute('aria-expanded', 'false'); });
+  });
+  const questions = await page.evaluate(async () => {
+    await forms.resolveVisibleQuestions();
+    return calls.filter(m => m.type === 'resolve_questions').flatMap(m => m.questions);
+  });
+  const src = fileURLToPath(new URL('../../backend/src', import.meta.url));
+  const answers = JSON.parse(execFileSync('python', ['-c', 'import json,sys; from career_agent.applying import resolve_live_questions; x=json.load(sys.stdin); print(json.dumps(resolve_live_questions(x["profile"],x["questions"])))'], {
+    input: JSON.stringify({ profile: { facts }, questions }), env: { ...process.env, PYTHONPATH: src }, encoding: 'utf8'
+  }));
+  assert.equal(answers.length, 6);
+  await page.evaluate(async ({ answers, records }) => {
+    for (const answer of answers) {
+      const question = calls.filter(m => m.type === 'resolve_questions').flatMap(m => m.questions).find(q => q.id === answer.id);
+      const ctx = question.context, date = ctx?.date_field ? `${ctx.date_field}:${ctx.date_part}:` : '';
+      profileAnswers[`${ctx.section}:${ctx.index}:${date}${question.label}`] = answer.value;
+    }
+    for (let i=0;i<4;i++) { await forms.expandRecords({ profile_records: records }); await forms.fill({ answers: { University: 'WRONG GENERIC SCHOOL' } }); await forms.resolveVisibleQuestions(); }
+  }, { answers, records: facts });
+  assert.equal(await page.inputValue('#school'), 'Example Institute');
+  assert.equal(await page.textContent('#degree'), "Bachelor's Degree");
+  assert.equal(await page.inputValue('#from'), '2023');
+  assert.equal(await page.inputValue('#to'), '2027');
+  assert.equal(await page.inputValue('#gpa'), '8.67');
+  assert.equal(await page.evaluate(() => window.adds || 0), 0);
+  await page.close();
+});
+
+test('unknown repeated wrappers count existing schools and failed Add detection cannot multiply rows on retries', async () => {
+  const page = await pageFor(`<section><h2>Education</h2><div><label for="school">School or University*</label><input id="school"></div>
+    <button onclick="window.adds=(window.adds||0)+1">Add</button></section>`);
+  await page.evaluate(async () => { for(let i=0;i<3;i++) await forms.expandRecords({ profile_records: { education: [{school:'A'}] } }); });
+  assert.equal(await page.evaluate(() => window.adds || 0), 0);
+  await page.evaluate(async () => { for(let i=0;i<3;i++) await forms.expandRecords({ profile_records: { education: [{school:'A'},{school:'B'}] } }); });
+  assert.equal(await page.evaluate(() => window.adds || 0), 1);
+  await page.close();
+});
+
+test('search-backed field of study selects a returned suggestion and never treats unmatched search text as a selected value', async () => {
+  const page = await pageFor(`<label for="major">Field of Study</label><input id="major" role="combobox" aria-controls="subjects"><ul id="subjects" role="listbox" hidden></ul>`);
+  await page.evaluate(() => {
+    const input=document.getElementById('major'), menu=document.getElementById('subjects');
+    input.oninput=()=>{ menu.innerHTML=''; menu.hidden=true; if(input.value==='Computer Science') setTimeout(()=>{
+      menu.innerHTML='<li role="option">Computer Science</li>'; menu.hidden=false;
+      menu.firstChild.onclick=()=>{window.selected=input.value;menu.hidden=true;};
+    },100); };
+  });
+  assert.equal(await page.evaluate(()=>forms.setValue(document.getElementById('major'),'Computer Science')),true);
+  assert.equal(await page.evaluate(()=>window.selected),'Computer Science');
+  assert.equal(await page.evaluate(()=>forms.setValue(document.getElementById('major'),'Unknown subject')),false);
+  assert.equal(await page.inputValue('#major'),'');
+  await page.close();
+});
 
 test('Workday labels are semantic, required, and separated from generated IDs and neighboring questions', async () => {
   const page = await pageFor(`<div data-automation-id="formField-legalNameSection_firstName"><label for="input-8372">Given Name(s)*</label><input id="input-8372" name="opaque-uuid"></div>

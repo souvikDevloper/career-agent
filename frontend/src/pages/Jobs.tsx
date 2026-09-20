@@ -56,7 +56,7 @@ export function JobsPage() {
   async function prepare(jobKey: string) {
     try {
       const { application } = await api("/api/applications", {
-        body: { job_key: jobKey, apply_after_prepare: true },
+        body: { job_key: jobKey, apply_after_prepare: !current?.blocked },
       });
       toast("Preparing the application. Missing employer answers will be asked once and saved for reuse.", "success");
       navigate(`/app/applications/${application.app_id}`);
@@ -155,8 +155,8 @@ export function JobsPage() {
           <>
             <MatchExplain m={current} />
             <div className="row" style={{ marginTop: 22, gap: 10, position: "sticky", bottom: 0, paddingTop: 12, background: "#0c1128" }}>
-              <button className="btn primary lg" style={{ flex: 1 }} onClick={() => prepare(current.job_key)} disabled={current.blocked}>
-                <ISend size={16} /> {current.blocked ? "Not eligible" : "Prepare & apply"}
+              <button className="btn primary lg" style={{ flex: 1 }} onClick={() => prepare(current.job_key)}>
+                <ISend size={16} /> {current.blocked ? "Prepare for review" : "Prepare & apply"}
               </button>
               {current.job.url && <a className="btn lg" href={current.job.url} target="_blank" rel="noreferrer">View posting</a>}
             </div>

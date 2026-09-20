@@ -304,7 +304,16 @@ class Services:
             job["canonical_key"] = f"greenhouse:{job['board']}:{job['external_id']}"
 
         m = self.store.get(f"USER#{uid}", f"MATCH#{job_key}") or self.matcher.match(uid, job, is_judge=self.is_judge(uid))
-        return self.wf.create_application(uid, job, m, job.get("connector") or job["source"])
+        profile = self.profiles.current(uid)
+        if profile:
+            m = self.matcher.refresh_eligibility(m, profile, self.wf.settings(uid)["preferences"])
+        app = self.wf.create_application(uid, job, m, job.get("connector") or job["source"])
+        if app["action_state"] not in ("Submitted", "Submitting", "OutcomeUnknown", "Withdrawn"):
+            self.store.update(Update(app["pk"], app["sk"], set={"blocked": bool(m.get("blocked")),
+                                    "auto_eligible": bool(m.get("auto_eligible")), "score": int(m.get("score", 0))},
+                                     condition=C("version", "eq", app["version"])))
+            app = self.wf.get_app(uid, app["app_id"])
+        return app
 
     def submission_plan_for_application(self, app: dict) -> dict:
         job = get_job(self.wf, app["job_key"]) or {
@@ -380,6 +389,13 @@ class Services:
         profile = self.profiles.current(uid)
         if not job or not profile:
             raise WorkflowError("missing", "job or profile missing", 400)
+        match = self.store.get(f"USER#{uid}", f"MATCH#{app['job_key']}")
+        if match:
+            match = self.matcher.refresh_eligibility(match, profile, self.wf.settings(uid)["preferences"])
+            self.store.update(Update(app["pk"], app["sk"],
+                set={"blocked": bool(match.get("blocked")), "auto_eligible": bool(match.get("auto_eligible"))},
+                condition=And(C("version", "eq", app["version"]), C("action_state", "eq", app["action_state"]))))
+            app = self.wf.get_app(uid, app_id)
         packet = prepare_packet(self.wf, uid, app, job, profile, is_judge=self.is_judge(uid), correlation_id=correlation_id)
         try:
             prepared = self.wf.save_packet(uid, app_id, packet, expected_prepare_request_id=request_id)
@@ -498,13 +514,19 @@ class Services:
         now = self.wf.clock.now()
         watches = self.store.query("WATCH#enabled", "", index="gsi1", limit=1000)
         for watch in watches:
+            # Historical and seeded rows predate explicit identity attributes.
+            uid = watch.get("user_id") or str(watch.get("pk", "")).removeprefix("USER#")
+            wid = watch.get("watch_id") or str(watch.get("sk", "")).removeprefix("WATCH#")
+            if not str(watch.get("pk", "")).startswith("USER#") or not wid.startswith("w_"):
+                continue
+            watch = {**watch, "user_id": uid, "watch_id": wid}
             if not watch.get("enabled", True) or (not force and float(watch.get("next_check_at", 0)) > now):
                 continue
             interval = max(5, min(10080, int(watch.get("interval_minutes", 5))))
             due = watch.get("next_check_at")
             try:
                 self.store.transact([
-                    Update(watch["pk"], watch["sk"], set={"next_check_at": now + interval * 60, "last_queued_at": self.wf.clock.iso()},
+                    Update(watch["pk"], watch["sk"], set={"user_id": uid, "watch_id": wid, "next_check_at": now + interval * 60, "last_queued_at": self.wf.clock.iso()},
                            condition=And(C("enabled", "eq", True), C("next_check_at", "eq", due) if due is not None else C("next_check_at", "not_exists"))),
                     self.wf.outbox_put("work", {"kind": "check_watch", "user_id": watch["user_id"], "watch_id": watch["watch_id"]},
                                        f"work:watch:{watch['watch_id']}:{watch.get('revision', 0)}:{due}:{int(now // 60)}"),

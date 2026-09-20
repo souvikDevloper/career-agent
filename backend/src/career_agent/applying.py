@@ -40,6 +40,22 @@ def fit_option(options: list[dict], value: Any) -> str | None:
     for o in options:
         if norm_label(str(o.get("value"))) == v or norm_label(str(o.get("label") or "")) == v:
             return o.get("value")
+    equivalent = [o for o in options if norm_label(str(o.get("label") or o.get("value") or "")).replace(" and ", " ") == v.replace(" and ", " ")]
+    if len(equivalent) == 1:
+        return equivalent[0].get("value")
+    # Degree menus usually ask for a level, while resumes name a qualification.
+    # Only collapse to a broad level, never turn B.Tech into BA/BS or a master.
+    levels = {
+        "bachelor": r"\b(bachelor|bachelors|b tech|btech|b e|beng|bsc|b sc|b s|b a)\b",
+        "master": r"\b(master|masters|m tech|mtech|m e|meng|msc|m sc|m s|mba)\b",
+        "doctorate": r"\b(ph d|phd|doctorate|doctoral)\b",
+    }
+    for level, pattern in levels.items():
+        if re.search(pattern, v):
+            broad = {level, level + "s", level + " degree", level + "s degree", level + " s degree"}
+            matches = [o for o in options if norm_label(str(o.get("label") or o.get("value") or "")) in broad]
+            if len(matches) == 1:
+                return matches[0].get("value")
     first = v.split(" ")[0] if v else ""
     if first in ("yes", "no"):
         for o in options:
@@ -100,14 +116,20 @@ def _record_field(field: dict, facts: dict) -> tuple[Any, str] | None:
     record = records[index]
     if not isinstance(record, dict) or record.get("verified") is False:
         return None
-    label = norm_label(field["label"])
+    label = re.sub(r"\s+(?:select one(?: required)?|required)$", "", norm_label(field["label"]))
     if section == "experience" and label in ("i currently work here", "i currently work in this role", "currently work here"):
         end = norm_label(str(record.get("end") or ""))
         if end in ("present", "current", "ongoing", "now"):
             return "Yes", f"resume:{section}:{index}"
         return None
     if context.get("date_field") in ("start", "end") and context.get("date_part") in ("month", "year"):
-        value = str(record.get(context["date_field"]) or "").strip()
+        value = str(record.get(context["date_field"]) or
+                    (record.get("graduation_year") if section == "education" and context["date_field"] == "end" else "") or "").strip()
+        if not value and record.get("evidence"):
+            # Existing extracted profiles may retain dates only in their evidence.
+            dates = re.findall(r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(?:19|20)\d{2}", str(record["evidence"]), re.I)
+            if len(dates) == 2:
+                value = dates[0 if context["date_field"] == "start" else 1]
         year = re.search(r"\b((?:19|20)\d{2})\b", value)
         if not year:
             return None
@@ -139,6 +161,10 @@ def _record_field(field: dict, facts: dict) -> tuple[Any, str] | None:
     }.get(section, {})
     key = keys.get(label)
     value = record.get(key) if key else None
+    if key == "gpa" and not value:
+        match = re.search(r"\b(?:CGPA|GPA)\s*[:=]?\s*(\d+(?:\.\d+)?)", str(record.get("evidence") or ""), re.I)
+        if match:
+            value = match.group(1)
     if isinstance(value, list):
         value = "\n".join(str(v) for v in value)
     if value in (None, ""):
@@ -150,7 +176,7 @@ def profile_records(facts: dict) -> dict:
     """Only supported resume fields become reviewable, hashed browser input."""
     keys = {
         "experience": ("title", "company", "location", "start", "end", "highlights"),
-        "education": ("school", "degree", "field", "graduation_year"),
+        "education": ("school", "degree", "field", "graduation_year", "start", "end", "gpa"),
     }
     return {section: [{key: record[key] for key in allowed if record.get(key) not in (None, "")}
                       for record in (facts.get(section) or [])

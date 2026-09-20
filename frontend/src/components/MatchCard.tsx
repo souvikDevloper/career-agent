@@ -28,7 +28,7 @@ export function MatchRow({ m, onOpen }: { m: M; onOpen: () => void }) {
         <div className="row wrap" style={{ gap: 8 }}>
           <h4>{m.job.title}</h4>
           <EnvBadge env={m.job.environment} />
-          {m.blocked && <Badge tone="rose">Not eligible</Badge>}
+          {m.blocked && <Badge tone="rose">Eligibility mismatch</Badge>}
           {!m.blocked && m.unknowns?.length > 0 && <Badge tone="amber">Needs info</Badge>}
           {m.extractor?.startsWith("heuristic") && <Badge tone="amber">Provisional score</Badge>}
         </div>
@@ -44,6 +44,7 @@ export function MatchRow({ m, onOpen }: { m: M; onOpen: () => void }) {
           </span>
         </div>
         {m.explanation && <p className="small ink2" style={{ marginTop: 8, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{m.explanation}</p>}
+        {m.blocked && <p className="small" style={{ color: "var(--rose)" }}>{(m.filters || []).filter(f => f.mandatory !== false && f.status === "fail").map(f => f.detail).join("; ")}</p>}
       </div>
         <div className="col" style={{ alignItems: "flex-end", gap: 8 }}>
           <span className="small muted">{req.length ? `${hit}/${req.length} must-haves evidenced` : "—"}</span>
