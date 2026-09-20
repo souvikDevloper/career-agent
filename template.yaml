@@ -123,7 +123,10 @@ Globals:
         BUCKET_NAME: !Ref DataBucket
         MODEL_ID: !Ref ModelId
         STAGE: !Ref Stage
-        WORK_QUEUE_URL: !Ref WorkQueue
+        # "work" is the interactive service class. Keep it on a fresh queue so
+        # messages created after the Astra incident never sit behind the legacy
+        # WorkQueue backlog.
+        WORK_QUEUE_URL: !Ref InteractiveQueue
         WATCH_QUEUE_URL: !Ref WatchQueue
         SUBMIT_QUEUE_URL: !Ref SubmitQueue
         NOTIFY_QUEUE_URL: !Ref NotifyQueue
@@ -235,12 +238,23 @@ Resources:
   WorkDLQ:
     Type: AWS::SQS::Queue
     Properties: { MessageRetentionPeriod: 1209600, SqsManagedSseEnabled: true }
+  # Legacy queue retained while the incident backlog is drained. No new outbox
+  # work is routed here after this deployment.
   WorkQueue:
     Type: AWS::SQS::Queue
     Properties:
       VisibilityTimeout: 360
       SqsManagedSseEnabled: true
       RedrivePolicy: { deadLetterTargetArn: !GetAtt WorkDLQ.Arn, maxReceiveCount: 3 }
+  InteractiveDLQ:
+    Type: AWS::SQS::Queue
+    Properties: { MessageRetentionPeriod: 1209600, SqsManagedSseEnabled: true }
+  InteractiveQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 360
+      SqsManagedSseEnabled: true
+      RedrivePolicy: { deadLetterTargetArn: !GetAtt InteractiveDLQ.Arn, maxReceiveCount: 3 }
   WatchDLQ:
     Type: AWS::SQS::Queue
     Properties: { MessageRetentionPeriod: 1209600, SqsManagedSseEnabled: true }
@@ -365,9 +379,6 @@ Resources:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
         - S3ReadPolicy: { BucketName: !Ref DataBucket }
         - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref InternalSecret }
-        # Temporary compatibility path: messages already sitting in WorkQueue
-        # before this deploy are forwarded into the new Astra lane, then acked.
-        - SQSSendMessagePolicy: { QueueName: !GetAtt WatchQueue.QueueName }
         - Statement:
             - Effect: Allow
               Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream, bedrock:Converse, bedrock:ConverseStream]
@@ -383,12 +394,44 @@ Resources:
         Work:
           Type: SQS
           Properties:
-            Queue: !GetAtt WorkQueue.Arn
+            Queue: !GetAtt InteractiveQueue.Arn
             BatchSize: 1
             FunctionResponseTypes: [ReportBatchItemFailures]
             # Interactive work must stay responsive even when Astra has a large
             # autonomous backlog. Keep this lane small while the account-wide
             # Lambda concurrency quota is only ten.
+            ScalingConfig: { MaximumConcurrency: 2 }
+
+  LegacyWorkDrainFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: build/backend/
+      Handler: career_agent.handlers.worker.handler
+      MemorySize: 1024
+      Timeout: 300
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - S3ReadPolicy: { BucketName: !Ref DataBucket }
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref InternalSecret }
+        - SQSSendMessagePolicy: { QueueName: !GetAtt WatchQueue.QueueName }
+        - Statement:
+            - Effect: Allow
+              Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream, bedrock:Converse, bedrock:ConverseStream]
+              Resource:
+                - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*"
+                - "arn:aws:bedrock:*::foundation-model/amazon.nova-*"
+            - Effect: Allow
+              Action: [ssm:GetParameter]
+              Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/*"
+      Events:
+        LegacyWork:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt WorkQueue.Arn
+            # Migration-heavy batches move the legacy Astra backlog out of the
+            # interactive path much faster while still using only two Lambda slots.
+            BatchSize: 10
+            FunctionResponseTypes: [ReportBatchItemFailures]
             ScalingConfig: { MaximumConcurrency: 2 }
 
   WatchWorkerFunction:
@@ -431,7 +474,7 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
         - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref InternalSecret }
-        - SQSSendMessagePolicy: { QueueName: !GetAtt WorkQueue.QueueName }
+        - SQSSendMessagePolicy: { QueueName: !GetAtt InteractiveQueue.QueueName }
         - SQSSendMessagePolicy: { QueueName: !GetAtt WatchQueue.QueueName }
         - SQSSendMessagePolicy: { QueueName: !GetAtt SubmitQueue.QueueName }
         - SQSSendMessagePolicy: { QueueName: !GetAtt NotifyQueue.QueueName }
@@ -460,7 +503,7 @@ Resources:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
         - S3CrudPolicy: { BucketName: !Ref DataBucket }
         - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref InternalSecret }
-        - SQSSendMessagePolicy: { QueueName: !GetAtt WorkQueue.QueueName }
+        - SQSSendMessagePolicy: { QueueName: !GetAtt InteractiveQueue.QueueName }
         - SQSSendMessagePolicy: { QueueName: !GetAtt WatchQueue.QueueName }
         - SQSSendMessagePolicy: { QueueName: !GetAtt SubmitQueue.QueueName }
         - SQSSendMessagePolicy: { QueueName: !GetAtt NotifyQueue.QueueName }
@@ -875,6 +918,21 @@ Resources:
       Namespace: AWS/SQS
       MetricName: ApproximateNumberOfMessagesVisible
       Dimensions: [{ Name: QueueName, Value: !GetAtt WatchDLQ.QueueName }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+  InteractiveDeadLetterAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAlertEmail
+    Properties:
+      AlarmDescription: Interactive work messages landed in the dead-letter queue.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions: [{ Name: QueueName, Value: !GetAtt InteractiveDLQ.QueueName }]
       Statistic: Maximum
       Period: 300
       EvaluationPeriods: 1
