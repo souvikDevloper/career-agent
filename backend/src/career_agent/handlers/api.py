@@ -600,8 +600,8 @@ def check_now(event, p, cid):
     """Runs the real discovery pipeline immediately (same code path as the 5-minute schedule)."""
     svc = _svc()
     minute = time.strftime("%Y%m%d%H%M", time.gmtime())
-    svc.store.transact([svc.wf.outbox_put("work", {"kind": "monitor_now", "user_id": p.user_id}, f"work:monitor:{p.user_id}:{minute}")])
-    return respond(202, {"queued": True, "note": "Checking all sources now. New matches will appear in a few seconds."})
+    svc.store.transact([svc.wf.outbox_put("watch", {"kind": "monitor_now", "user_id": p.user_id}, f"watch:monitor:{p.user_id}:{minute}")])
+    return respond(202, {"queued": True, "note": "Check queued. New matches will appear as Astra processes your watch lane."})
 
 
 @route("GET", r"/api/demo/templates")
