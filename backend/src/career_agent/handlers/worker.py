@@ -6,6 +6,7 @@ Delivery is at-least-once; every handler is idempotent (operations, outbox keys,
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any
 
@@ -16,12 +17,45 @@ from .common import services
 
 logger = get_logger("worker")
 
+WATCH_KINDS = {"check_watch", "match_new_job", "monitor_now"}
+_sqs = None
+
+
+def sqs():
+    global _sqs
+    if _sqs is None:
+        import boto3
+
+        _sqs = boto3.client("sqs")
+    return _sqs
+
+
+def _watch_queue_record(record: dict) -> bool:
+    url = os.environ.get("WATCH_QUEUE_URL", "")
+    arn = record.get("eventSourceARN") or record.get("eventSourceArn") or ""
+    return bool(url and arn and arn.rsplit(":", 1)[-1] == url.rstrip("/").rsplit("/", 1)[-1])
+
+
+def _forward_legacy_watch(record: dict, msg: dict) -> bool:
+    """Move pre-deploy Astra backlog out of WorkQueue without dropping work."""
+    if msg.get("kind") not in WATCH_KINDS or _watch_queue_record(record):
+        return False
+    url = os.environ.get("WATCH_QUEUE_URL")
+    if not url:
+        return False
+    sqs().send_message(QueueUrl=url, MessageBody=json.dumps(msg, default=str))
+    log(logger, "work.watch_migrated", kind=msg.get("kind"), message_id=record.get("messageId"))
+    return True
+
 
 def handler(event: dict, context: Any) -> dict:
     failures = []
     for record in event.get("Records", []):
         try:
-            process(json.loads(record["body"]))
+            msg = json.loads(record["body"])
+            if _forward_legacy_watch(record, msg):
+                continue
+            process(msg)
         except Exception as exc:
             log(logger, "work.failed", error=type(exc).__name__, detail=str(exc)[:400], message_id=record.get("messageId"))
             failures.append({"itemIdentifier": record["messageId"]})
@@ -121,7 +155,7 @@ def process(msg: dict) -> None:
         elif kind == "match_new_job":
             svc.match_new_job(uid, msg["job_key"], msg.get("watch_id"), watch_revision=msg.get("watch_revision"))
         elif kind == "monitor_now":
-            summary = svc.run_monitor(force=True)
+            summary = svc.run_monitor(force=True, user_id=uid)
             svc.store.transact([svc.wf.event_put(uid, "monitor.checked", summary)])
         elif kind == "reconcile":
             svc.reconcile(uid, msg["app_id"], msg["attempt_id"])

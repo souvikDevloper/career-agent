@@ -14,7 +14,7 @@ from .common import services
 
 logger = get_logger("relay")
 _sqs = None
-QUEUES = {"work": "WORK_QUEUE_URL", "submit": "SUBMIT_QUEUE_URL", "notify": "NOTIFY_QUEUE_URL"}
+QUEUES = {"work": "WORK_QUEUE_URL", "watch": "WATCH_QUEUE_URL", "submit": "SUBMIT_QUEUE_URL", "notify": "NOTIFY_QUEUE_URL"}
 
 
 def sqs():
