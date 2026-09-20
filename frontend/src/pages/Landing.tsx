@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { startExampleWorkspace } from "../lib/auth";
 import { useRouter, Link } from "../lib/router";
 import { BrandMark } from "../components/Shell";
@@ -8,7 +8,7 @@ import { Spotlight, useScrolled } from "../components/motion";
 import { AtmosphericCanvas } from "../components/motion/AtmosphericCanvas";
 import { SpotlightCard } from "../components/motion/SpotlightCard";
 import { MagneticButton } from "../components/motion/MagneticButton";
-import { motion } from "motion/react";
+import { motion, useInView } from "motion/react";
 
 const STEPS = [
   { label: "Published", icon: IFile },
@@ -43,6 +43,57 @@ const AWS = [
   ["Amazon SES", "Email updates & approvals"],
 ];
 
+// ---------------------------------------------------------------------------
+// Scroll-triggered mask-reveal headline
+// Each word slides up from behind a clip mask (Igloo / Lusion style).
+// ---------------------------------------------------------------------------
+const HEADLINE_SEGMENTS = [
+  { words: ["Your", "career", "agent", "that"], grad: false },
+  { words: ["finds,", "applies", "and", "follows", "up"], grad: true },
+  { words: ["—", "truthfully."], grad: false },
+];
+
+function MaskRevealHeadline() {
+  const ref = useRef<HTMLHeadingElement>(null);
+  const inView = useInView(ref, { once: true, margin: "-10%" });
+
+  let wordIndex = 0;
+  return (
+    <h1
+      ref={ref}
+      className="rise rise-1"
+      style={{ marginTop: 18, overflow: "visible" }}
+    >
+      {HEADLINE_SEGMENTS.map((seg, si) => (
+        <span key={si} className={seg.grad ? "grad-text" : undefined}>
+          {seg.words.map((word) => {
+            const i = wordIndex++;
+            return (
+              <span
+                key={word + i}
+                style={{ display: "inline-block", overflow: "hidden", verticalAlign: "bottom", marginRight: "0.25em" }}
+              >
+                <motion.span
+                  style={{ display: "inline-block" }}
+                  initial={{ y: "110%", opacity: 0 }}
+                  animate={inView ? { y: "0%", opacity: 1 } : { y: "110%", opacity: 0 }}
+                  transition={{
+                    delay: i * 0.055,
+                    duration: 0.65,
+                    ease: [0.16, 1, 0.3, 1],
+                  }}
+                >
+                  {word}
+                </motion.span>
+              </span>
+            );
+          })}
+        </span>
+      ))}
+    </h1>
+  );
+}
+
 export function Landing() {
   const [step, setStep] = useState(0);
   const [starting, setStarting] = useState(false);
@@ -68,14 +119,29 @@ export function Landing() {
   const s = Math.min(step, STEPS.length - 1);
   const stuck = useScrolled(20);
 
+  function scrollToSection(e: React.MouseEvent<HTMLAnchorElement>, id: string) {
+    e.preventDefault();
+    const target = document.getElementById(id);
+    if (target) {
+      const topOffset = 84;
+      const elementPosition = target.getBoundingClientRect().top;
+      const offsetPosition = elementPosition + window.pageYOffset - topOffset;
+      window.scrollTo({
+        top: offsetPosition,
+        behavior: "smooth"
+      });
+    }
+  }
+
   return (
     <>
     <div className="landing">
       <header className={`nav ${stuck ? "stuck" : ""}`}>
         <div className="brand"><BrandMark /> Career Agent</div>
         <nav className="nav-links" aria-label="Sections">
-          <a className="nav-link" href="#how">How it works</a>
-          <a className="nav-link" href="#architecture">Architecture</a>
+          <a className="nav-link" href="#how" onClick={(e) => scrollToSection(e, "how")}>How it works</a>
+          <a className="nav-link" href="#architecture" onClick={(e) => scrollToSection(e, "architecture")}>Architecture</a>
+          <a className="nav-link" href="#demo" onClick={(e) => scrollToSection(e, "demo")}>Live demo</a>
         </nav>
         <div className="spacer" />
         <a className="btn ghost sm" href="/portal" target="_blank" rel="noreferrer">Test employer portal</a>
@@ -84,50 +150,14 @@ export function Landing() {
 
       <div style={{ position: "relative" }}>
         <AtmosphericCanvas />
-        <section className="hero">
-          <div>
+        <section className="hero" id="hero-section">
+          <div style={{ position: "relative", zIndex: 2 }}>
             <div className="telemetry-pill rise glass-stripe" style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "6px 14px", borderRadius: 999, fontSize: 13, marginBottom: 16 }}>
               <span className="telemetry-dot" />
               ✨ Autonomous Agent Pipeline Online · 1,200+ Opportunities Synced
             </div>
-            <div className="rise"><Badge tone="violet" live>Built on AWS · WeMakeDevs “Ship It”</Badge></div>
-            <h1 className="rise rise-1" style={{ marginTop: 18 }}>
-              {["Your", "career", "agent", "that"].map((word, i) => (
-                <motion.span
-                  key={`w1-${i}`}
-                  initial={{ y: 40, opacity: 0 }}
-                  animate={{ y: 0, opacity: 1 }}
-                  transition={{ delay: i * 0.06 }}
-                  style={{ display: "inline-block", marginRight: "0.25em" }}
-                >
-                  {word}
-                </motion.span>
-              ))}
-              <span className="grad-text">
-                {["finds,", "applies", "and", "follows", "up"].map((word, i) => (
-                  <motion.span
-                    key={`w2-${i}`}
-                    initial={{ y: 40, opacity: 0 }}
-                    animate={{ y: 0, opacity: 1 }}
-                    transition={{ delay: (4 + i) * 0.06 }}
-                    style={{ display: "inline-block", marginRight: "0.25em" }}
-                  >
-                    {word}
-                  </motion.span>
-                ))}
-              </span>
-              {["—", "truthfully."].map((word, i) => (
-                <motion.span
-                  key={`w3-${i}`}
-                  initial={{ y: 40, opacity: 0 }}
-                  animate={{ y: 0, opacity: 1 }}
-                  transition={{ delay: (9 + i) * 0.06 }}
-                  style={{ display: "inline-block", marginRight: i === 1 ? 0 : "0.25em" }}
-                >
-                  {word}
-                </motion.span>
-              ))}
-            </h1>
+            <div className="rise"><Badge tone="violet" live>Built on AWS · WeMakeDevs "Ship It"</Badge></div>
+            <MaskRevealHeadline />
             <p className="lede rise rise-2">
               Talk to it. It watches for new openings while your laptop is off, explains exactly why you fit, fills
               applications only with facts you verified, submits under rules you set, and turns recruiter replies into
@@ -147,6 +177,7 @@ export function Landing() {
               <Badge tone="amber">Test employer clearly labeled</Badge>
             </div>
           </div>
+
 
         <div className="preview rise rise-2">
           <div className="preview-glow" />
@@ -190,22 +221,31 @@ export function Landing() {
       </section>
       </div>
 
-      <section className="section reveal-soft" id="how">
-        <div className="between" style={{ alignItems: "flex-end", flexWrap: "wrap", gap: 20 }}>
-          <div>
-            <div className="eyebrow" style={{ color: "var(--racing)" }}>Kinetic Execution Engine · Igloo Scroll-Storytelling</div>
-            <h2 style={{ marginTop: 8, fontSize: "clamp(32px, 4.5vw, 56px)", letterSpacing: "-0.04em" }}>
-              Autonomy you can audit.<br />
-              <span className="grad-text">From raw feed to signed receipt.</span>
-            </h2>
-          </div>
-          <div className="telemetry-pill glass-stripe" style={{ padding: "8px 16px", borderRadius: 999, fontSize: 13, border: "1px solid rgba(210, 255, 0, 0.3)" }}>
+      <section className="section reveal-soft" id="how" style={{ paddingTop: 12, marginTop: -24 }}>
+        <div style={{ marginBottom: 26 }}>
+          <div
+            className="telemetry-pill glass-stripe"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "6px 14px",
+              borderRadius: 999,
+              fontSize: 12.5,
+              border: "1px solid rgba(210, 255, 0, 0.3)",
+              marginBottom: 14,
+            }}
+          >
             <span style={{ color: "var(--racing)", fontWeight: 700 }}>01 — 04</span> Autonomous Lifecycle
           </div>
+          <h2 style={{ fontSize: "clamp(32px, 4.2vw, 52px)", letterSpacing: "-0.035em", lineHeight: 1.12, margin: 0 }}>
+            Autonomy you can audit.<br />
+            <span className="grad-text">From raw feed to signed receipt.</span>
+          </h2>
         </div>
 
         {/* Cinematic 4-Stage Scroll-Storytelling Deck */}
-        <div className="grid g4" style={{ marginTop: 32, gap: 16 }}>
+        <div className="grid g4" style={{ marginTop: 24, gap: 16 }}>
           {[
             { num: "01", stage: "Ingest & Vectorize", tag: "Bedrock Nova", desc: "Monitors parse unstructured employer JDs and vector-embed skills against your verified resume graph." },
             { num: "02", stage: "Rubric Fit Scoring", tag: "Strict 0-100", desc: "No vibes. 4-part weighted score with exact passage citations and explicit gap analysis." },
@@ -292,7 +332,7 @@ export function Landing() {
         </div>
       </section>
 
-      <section className="section reveal-soft">
+      <section className="section reveal-soft" id="demo">
         <div className="card pad" style={{ display: "flex", gap: 20, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", padding: 28, background: "var(--grad-soft)" }}>
           <div>
             <h2 style={{ fontSize: 28 }}>See a real submission in under two minutes.</h2>
