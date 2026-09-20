@@ -92,7 +92,16 @@ export function Preloader({ onDone }: { onDone: () => void }) {
         setTimeout(() => {
           setExiting(true);
           setTimeout(() => {
-            sessionStorage.setItem(SESSION_KEY, "1");
+            // Remembering that the intro has played is a nicety; getting into the
+            // app is not. setItem throws when storage is readable but not
+            // writable - a full quota, some Safari states - and it threw before
+            // onDone, so the preloader stayed up and the app was unreachable.
+            // The reader below already fails open; this is the other half.
+            try {
+              sessionStorage.setItem(SESSION_KEY, "1");
+            } catch {
+              /* the intro plays again next time, which is the harmless outcome */
+            }
             onDone();
           }, 700);
         }, 200);
