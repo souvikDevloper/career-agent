@@ -94,14 +94,14 @@ class BrowserQuestionsIn(BaseModel):
 
 class WatchIn(BaseModel):
     keywords: str = Field(min_length=1, max_length=200)
-    interval_minutes: int = Field(default=5, ge=5, le=10080)
+    interval_minutes: int = Field(default=15, ge=15, le=10080)
     company: str | None = Field(default=None, max_length=100)
     role: str | None = Field(default=None, max_length=100)
     location: str | None = Field(default=None, max_length=100)
 
 
 class WatchUpdateIn(BaseModel):
-    interval_minutes: int | None = Field(default=None, ge=5, le=10080)
+    interval_minutes: int | None = Field(default=None, ge=15, le=10080)
     keywords: str | None = Field(default=None, min_length=1, max_length=200)
     company: str | None = Field(default=None, max_length=100)
     role: str | None = Field(default=None, max_length=100)
@@ -243,7 +243,7 @@ def seed_example_workspace(uid: str, username: str) -> None:
     # profile but no matches, which reads as a broken app rather than an empty one.
     watch_id = new_id("w_")
     svc.store.put({"pk": f"USER#{uid}", "sk": f"WATCH#{watch_id}", "watch_id": watch_id, "user_id": uid, "entity": "watch", "keywords": "intern",
-                   "interval_minutes": 5, "enabled": True, "gsi1pk": "WATCH#enabled",
+                   "interval_minutes": 15, "enabled": True, "gsi1pk": "WATCH#enabled",
                    "gsi1sk": f"USER#{uid}", "created_at": svc.wf.clock.iso(), "ttl": now + 3 * 86400})
     svc.wf.start_operation(uid, "search", {"keywords": "intern"}, f"seed:{uid}", None)
 

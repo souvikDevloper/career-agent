@@ -373,7 +373,13 @@ Resources:
             Queue: !GetAtt WorkQueue.Arn
             BatchSize: 1
             FunctionResponseTypes: [ReportBatchItemFailures]
-            ScalingConfig: { MaximumConcurrency: 5 }
+            # Ten, not fifteen. Each message is a full search that already runs
+            # its own model calls three at a time, so fifteen workers would put
+            # forty-five requests against an endpoint measured degrading from a
+            # ten second median to twenty-five under load - the concurrency that
+            # caused the timeouts this limit exists to avoid. Ten doubles the
+            # drain rate and keeps thirty in flight.
+            ScalingConfig: { MaximumConcurrency: 10 }
 
   RelayFunction:
     Type: AWS::Serverless::Function

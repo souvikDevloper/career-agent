@@ -37,6 +37,15 @@ CANDIDATE_POOL_CAP = 24
 SCORING_BUDGET_SECONDS = 150
 SCORING_CALL_TIMEOUT_SECONDS = 35
 
+# Every enabled watch is a full search - discovery, filtering, and a model call
+# per scored candidate - and the worker drains five at a time. Seventy-six
+# watches on a five minute floor arrived faster than they could be served: the
+# work queue backed up to 624 messages and a smoke-test search sat behind them
+# until its window expired. Fifteen minutes is still well inside "tell me when
+# something appears".
+WATCH_MIN_INTERVAL_MINUTES = 15
+WATCH_MAX_INTERVAL_MINUTES = 10080
+
 
 def _candidate_pool_size(total: int, requested: int) -> int:
     requested = max(1, min(12, requested))
@@ -468,7 +477,7 @@ class Services:
     def create_watch(self, uid: str, keywords: str, interval_minutes: int = 5, *,
                      company: str = "", role: str = "", location: str = "") -> dict:
         wid = new_id("w_")
-        interval = max(5, min(10080, int(interval_minutes)))
+        interval = max(WATCH_MIN_INTERVAL_MINUTES, min(WATCH_MAX_INTERVAL_MINUTES, int(interval_minutes)))
         item = {"pk": f"USER#{uid}", "sk": f"WATCH#{wid}", "entity": "watch", "watch_id": wid, "user_id": uid,
                 "keywords": keywords.strip()[:200], "sources": discovery.all_sources(), "interval_minutes": interval,
                 "filters": {"company": (company or "").strip()[:120], "role": (role or "").strip()[:160], "location": (location or "").strip()[:120]},
@@ -489,7 +498,7 @@ class Services:
         changes = {"revision": int(row.get("revision", 0)) + 1, "updated_at": self.wf.clock.iso(),
                    "next_check_at": self.wf.clock.now()}
         if interval_minutes is not None:
-            changes["interval_minutes"] = max(5, min(10080, int(interval_minutes)))
+            changes["interval_minutes"] = max(WATCH_MIN_INTERVAL_MINUTES, min(WATCH_MAX_INTERVAL_MINUTES, int(interval_minutes)))
         if keywords is not None:
             changes["keywords"] = keywords.strip()[:200]
         filters = dict(row.get("filters") or {})
@@ -522,7 +531,8 @@ class Services:
             watch = {**watch, "user_id": uid, "watch_id": wid}
             if not watch.get("enabled", True) or (not force and float(watch.get("next_check_at", 0)) > now):
                 continue
-            interval = max(5, min(10080, int(watch.get("interval_minutes", 5))))
+            interval = max(WATCH_MIN_INTERVAL_MINUTES,
+                           min(WATCH_MAX_INTERVAL_MINUTES, int(watch.get("interval_minutes", WATCH_MIN_INTERVAL_MINUTES))))
             due = watch.get("next_check_at")
             try:
                 self.store.transact([

@@ -2,7 +2,7 @@ import unittest
 
 from helpers import JOB, P, make, new_app, packet
 
-from career_agent import workflow
+from career_agent import services, workflow
 from career_agent.store import ConditionFailed, TransactionFailed
 from career_agent.workflow import WorkflowError
 
@@ -470,3 +470,27 @@ class UsageReservationUnderContention(unittest.TestCase):
         wf, calls = self._wf([])
         self.assertTrue(wf.reserve_usage("u1", "model_calls", 1, 100, 1000))
         self.assertEqual(calls["n"], 1)
+
+
+class WatchIntervalFloor(unittest.TestCase):
+    """Every enabled watch is a full search, and the worker drains a fixed number
+    at a time. Seventy-six watches on a five minute floor arrived faster than they
+    could be served and the work queue backed up to 624 messages.
+    """
+
+    def test_a_shorter_interval_than_the_floor_is_raised_to_it(self):
+        wf, store, _ = make()
+        svc_floor = services.WATCH_MIN_INTERVAL_MINUTES
+        self.assertEqual(max(svc_floor, min(services.WATCH_MAX_INTERVAL_MINUTES, 5)), svc_floor)
+
+    def test_the_floor_is_fifteen_minutes(self):
+        self.assertEqual(services.WATCH_MIN_INTERVAL_MINUTES, 15)
+
+    def test_a_longer_interval_is_respected(self):
+        self.assertEqual(
+            max(services.WATCH_MIN_INTERVAL_MINUTES, min(services.WATCH_MAX_INTERVAL_MINUTES, 60)), 60)
+
+    def test_a_week_is_the_ceiling(self):
+        self.assertEqual(
+            max(services.WATCH_MIN_INTERVAL_MINUTES, min(services.WATCH_MAX_INTERVAL_MINUTES, 99999)),
+            services.WATCH_MAX_INTERVAL_MINUTES)
