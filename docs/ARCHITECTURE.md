@@ -278,4 +278,3 @@ Model-call allowances, queue limits, lifecycle policies, and budget notification
 CI runs backend lint/tests and SDK import checks; real-Chromium browser-worker and companion regressions; and frontend type checking and builds. On `main`, deployment follows successful checks, then runs [smoke.py](../scripts/smoke.py).
 
 A domain test proves a transition rule, a browser fixture proves a supported interaction, and an employer confirmation supports a submission result. These are different levels of verification and should remain labelled as such.
-
