@@ -213,12 +213,12 @@ def t_list_matches(min_score: int = 0) -> dict:
                          "score": m["score"], "blocked": m.get("blocked")} for m in rows]}
 
 
-def t_create_watch(keywords: str, interval_minutes: int = 5, company: str = "", role: str = "", location: str = "") -> dict:
+def t_create_watch(keywords: str, interval_minutes: int = 15, company: str = "", role: str = "", location: str = "") -> dict:
     """Save a recurring watch for new openings, including direct employer searches, while the user is offline.
 
     Args:
         keywords: Search keywords for the watch.
-        interval_minutes: Requested check interval in minutes, minimum 5.
+        interval_minutes: Requested check interval in minutes, minimum 15.
         company: One employer, e.g. Google or Microsoft.
         role: Role and seniority, e.g. SWE early career.
         location: City or country, e.g. India.
@@ -249,7 +249,7 @@ def t_update_watch(watch_id: str, interval_minutes: int | None = None, keywords:
 
     Args:
         watch_id: Exact saved watch id returned by list_watches.
-        interval_minutes: Requested check interval in minutes, minimum 5.
+        interval_minutes: Requested check interval in minutes, minimum 15.
         keywords: Replacement search keywords.
         company: Replacement employer filter.
         role: Replacement role and seniority filter.
