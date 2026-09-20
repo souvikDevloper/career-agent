@@ -365,6 +365,9 @@ Resources:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
         - S3ReadPolicy: { BucketName: !Ref DataBucket }
         - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref InternalSecret }
+        # Temporary compatibility path: messages already sitting in WorkQueue
+        # before this deploy are forwarded into the new Astra lane, then acked.
+        - SQSSendMessagePolicy: { QueueName: !GetAtt WatchQueue.QueueName }
         - Statement:
             - Effect: Allow
               Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream, bedrock:Converse, bedrock:ConverseStream]
@@ -550,7 +553,7 @@ Resources:
             Queue: !GetAtt SubmitQueue.Arn
             BatchSize: 1
             FunctionResponseTypes: [ReportBatchItemFailures]
-            ScalingConfig: { MaximumConcurrency: 1 }
+            ScalingConfig: { MaximumConcurrency: 2 }
 
   # ------------------------------------------------------------------ schedules
   SchedulerRole:
