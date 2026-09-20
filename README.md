@@ -1,316 +1,190 @@
-<div align="center">
-
 # Career Agent
 
-**A job-search agent that finds, explains and prepares applications — and can prove every claim it makes.**
+**An AWS application for job discovery, evidence-based matching, and policy-controlled application automation.**
 
-Discovers openings across configured employer feeds while you're offline · explains fit against the exact lines in your resume ·
-prepares applications only from facts you verified · submits under rules a model cannot talk its way past ·
-turns recruiter replies into deadlines and interview prep.
+Career Agent connects the steps that usually live in separate tools: finding openings, comparing them with a resume, preparing answers, submitting through a supported employer form, and tracking the outcome. Users interact through text or voice and can create recurring watches with explicit automation preferences.
 
-**[▶ Live app](https://frg3ei3pc0.execute-api.us-east-1.amazonaws.com)** — one click, no signup
+[Live application](https://frg3ei3pc0.execute-api.us-east-1.amazonaws.com) · [Architecture](docs/ARCHITECTURE.md) · [Development and deployment](docs/DEVELOPMENT.md) · [Browser Companion](browser-companion/README.md)
 
-[Architecture](docs/ARCHITECTURE.md) · [Demo script](docs/DEMO_SCRIPT.md) · [Submission](docs/SUBMISSION.md)
+[![CI](https://github.com/souvikDevloper/career-agent/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/souvikDevloper/career-agent/actions/workflows/ci-cd.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-![AWS](https://img.shields.io/badge/AWS-Serverless-FF9900?logo=amazonaws&logoColor=white)
-![Bedrock](https://img.shields.io/badge/Amazon%20Bedrock-agent%20runtime-7b5cff)
-![Strands](https://img.shields.io/badge/Strands%20Agents-SDK-4cc9f0)
-![Cedar](https://img.shields.io/badge/Cedar-authorization-4ade80)
-![MCP](https://img.shields.io/badge/MCP-OAuth%202.1-f5a9dd)
-![Tests](https://img.shields.io/badge/tests-259%20passing-4ade80)
-![License](https://img.shields.io/badge/license-MIT-blue)
+## Contents
 
-</div>
+- [Purpose and capabilities](#purpose-and-capabilities)
+- [System overview](#system-overview)
+- [Application lifecycle](#application-lifecycle)
+- [Discovery and connector coverage](#discovery-and-connector-coverage)
+- [Using the application](#using-the-application)
+- [Engineering decisions](#engineering-decisions)
+- [Repository structure](#repository-structure)
+- [Validation and operational limits](#validation-and-operational-limits)
+- [Documentation](#documentation)
 
----
+## Purpose and capabilities
 
-## The problem
+Job applications require repeated searches, repeated form entry, and careful tracking of what was sent. Automation adds another problem: a generated answer, a queued task, and an accepted application are three different things.
 
-Students send hundreds of applications by hand, or hand their credentials to an "auto-apply" bot that
-sprays submissions and invents answers to questions it was never told the answer to.
+Career Agent keeps these stages explicit. A match includes its scoring evidence. An application packet records the information prepared for the employer. Submission follows backend authorization, and the application timeline records the observed result.
 
-Both fail for the same reason: **neither can show its work.** You cannot tell why a role was picked,
-what was written on your behalf, or whether a claim in your application is true.
+| Capability | Implementation |
+| --- | --- |
+| Job discovery | Configured employer feeds and direct Google and Microsoft careers adapters; company, role, location, and work-mode filters. |
+| Explained matching | A versioned 0–100 rubric combining skills, experience, responsibilities, and preferences, with resume quote verification and separate eligibility checks. |
+| Application preparation | Versioned packets built from resume facts and reusable profile answers; missing required information becomes an explicit question. |
+| Recurring watches | Scheduled searches with a configurable interval, a minimum of 15 minutes, and separate background execution. |
+| Controlled automation | Review mode, auto-apply above 80, or auto-apply to eligible roles, subject to a scoped mandate, daily cap, cooldown, and current policy checks. |
+| Browser execution | A cloud Playwright worker for supported public forms and a Browser Companion for forms in the user's signed-in browser. |
+| Voice and tool access | Amazon Transcribe and Polly for voice; Strands Agents SDK for tool orchestration; an authenticated MCP interface to the shared tool registry. |
+| Outcome tracking | Application events, confirmation evidence, notifications, and follow-up tasks; uncertain results are reconciled before another attempt. |
 
-Career Agent automates the finding and the filling, and adds the part those tools skip — an explanation
-for every score, a rule the model cannot bypass, an exact packet you approve before anything is sent, and
-a receipt afterwards.
+## System overview
 
----
+The frontend uses React and TypeScript. Python Lambda functions own the application domain, orchestration, and authorization. DynamoDB stores workflow state and transactional outbox records; SQS separates interactive work, recurring watches, browser submissions, and notifications.
 
-## What it does
-
-| | |
-|---|---|
-| 🔎 **Finds real openings** | Configured employer feeds plus direct Google and Microsoft searches. Returned results distinguish current responses, cached postings and source failures. |
-| 🎯 **Explains fit, with evidence** | A versioned 0–100 rubric. Every required skill links to the line in your resume that proves it — or is reported as a gap. Quotes are verified against your actual resume text before they are shown. |
-| 🧾 **Prepares truthful packets** | Reads the employer's form, maps each field to a verified fact or a saved answer, and turns anything it cannot evidence into a question for you. Demographics and work authorisation are never inferred. |
-| 🛡️ **Rules a model can't bypass** | **Cedar** policies plus DynamoDB transactions enforce approval modes, packet-hash approvals, mandates with expiry, daily caps and cooldowns. Authorisation is backend code, never the prompt. |
-| 🤖 **Submits with receipts** | Playwright on Lambda fills and submits, then records the employer's reference and a screenshot. A timeout becomes *confirming*, never a silent double-apply. |
-| 🎙️ **Talks** | Streaming speech-to-text (Transcribe) and neural replies (Polly). Partial transcripts never trigger actions. |
-| 🔌 **Works from your client** | An **MCP server** with **OAuth 2.1** serves the agent's own tool registry to any MCP client, authenticated as you. |
-| 📬 **Follows up** | Employer replies are matched by receipt, classified, and become dated tasks, reminders and grounded interview practice. |
-
----
-
-## Try it in 30 seconds
-
-Open the [live app](https://frg3ei3pc0.execute-api.us-east-1.amazonaws.com) and click **Try the example workspace**.
-
-No signup. You get an isolated workspace with a fictional applicant and a clearly labelled test employer —
-but real model calls, real policy checks, a real browser submission and a real receipt.
-
-Ask the agent:
-
-```
-Find Amazon engineering jobs in Bengaluru
-Find Microsoft internships
-```
-
-Both requests query supported employer sources. Google and Microsoft use direct careers search;
-source failures are reported separately from a successful search with no matching openings.
-Searches stay within the requested employer, role and location. See the dated
-[source verification and coverage limits](docs/search-reliability.md).
-
-### Set up the continuous application loop
-
-1. Upload and review your resume in **Profile**, then add reusable application answers.
-2. In **Settings**, choose review, auto-apply strictly above 80, or auto-apply to eligible jobs.
-   Set your daily cap and preferences. Renew an older test-only mandate to authorize live supported destinations.
-3. Enable/reload the [Browser Companion 1.1.0](browser-companion/README.md), refresh the app,
-   and click **Connect this browser** in Settings. The connection lasts seven days.
-4. Create a watch with your company, role, location and desired interval through chat, final voice input,
-   or Matches. Intervals run on the existing five-minute scheduler ticks.
-5. Verify the notification email address in Settings. New matches, preparation, approval needs,
-   browser attention and confirmed submissions produce distinct notifications.
-
-Discovery and preparation run in AWS while you are offline. Authenticated employer forms run in
-the connected browser, which must stay open and signed in. Authorized applications open automatically,
-fill from the approved resume version and saved answers, and submit only after a fresh policy check.
-Unknown required answers, login and CAPTCHA require attention; no unsupported answer is invented.
-An uncertain submission is reconciled rather than submitted again. Employer confirmation emails
-are sent by employers; Career Agent records page confirmations and its own notifications, and does
-not claim to read Gmail without a configured inbox integration.
-
----
-
-## Architecture
-
-```
-React 19 (S3, private)                  ┌──────────────────── EventBridge Scheduler
-        │                               │                     every 5 min
-        ▼                               ▼
-   API Gateway ──JWT (Cognito)──► API Lambda ──► DynamoDB ──Streams──► Relay ──► SQS
-        │                               │        single table                      │
-        │                               │        + transactional outbox            ▼
-        ├─ /api/mcp  ── OAuth 2.1 ──────┤                                  Worker Lambda
-        │                               │                                  Strands + Bedrock
-        └─ /portal   ── HMAC webhook ───┘                                          │
-                                                          ┌───────────────────────┼─────────────┐
-                                                          ▼                       ▼             ▼
-                                                    SQS FIFO             SQS notify      Cedar gate
-                                                          │                       │             │
-                                                   Browser Lambda          SES / Telegram   allow/deny
-                                                   (Playwright)                             at submit time
+```mermaid
+flowchart TB
+    User["User · text or voice"] --> UI["React application"]
+    UI --> API["HTTP API + Cognito<br/>Python API Lambda"]
+    API --> DB[("DynamoDB<br/>State + transactional outbox")]
+    Timer["EventBridge Scheduler"] --> Scheduled["Scheduled Lambda"]
+    Scheduled --> DB
+    DB --> Relay["DynamoDB Streams<br/>Outbox relay"]
+    Relay --> IQ["Interactive queue"]
+    Relay --> WQ["Watch queue"]
+    IQ --> IW["Interactive worker"]
+    WQ --> WW["Watch worker"]
+    IW --> Agent["Strands Agents SDK<br/>Amazon Bedrock · GLM-5"]
+    WW --> Agent
+    Agent --> Tools["Typed application tools<br/>Discovery, scoring, preparation"]
+    Tools --> Sources["Employer sources"]
+    Tools --> DB
+    Relay --> SQ["Submission FIFO queue"]
+    SQ --> Cloud["Playwright browser Lambda"]
+    UI --> Local["Browser Companion<br/>Signed-in employer session"]
+    Cloud --> Gate["Backend submission gate<br/>Cedar + conditional writes"]
+    Local --> Gate
+    Gate --> DB
+    Cloud --> Employer["Employer application form"]
+    Local --> Employer
+    Relay --> NQ["Notification queue"]
+    NQ --> Notify["Notifier<br/>SES / Telegram"]
 ```
 
-Two paths, deliberately separated:
+The submission-gate arrows represent authorization requests: the browser interacts with the employer after authorization. The cloud worker calls a dedicated gate Lambda; the companion uses scoped browser-session API routes. The [architecture guide](docs/ARCHITECTURE.md) expands these boundaries and recovery paths.
 
-- **Synchronous** — anything a person waits on. Writes to DynamoDB and returns. Never calls the model or a browser inline.
-- **Asynchronous** — everything slow or risky. The API commits a state change *and* an outbox row in **one transaction**;
-  the relay turns that row into an SQS message. A browser worker can time out without losing a state change,
-  because the state change was committed before the work was dispatched.
+**Model configuration:** the project deployment uses GLM-5 on Amazon Bedrock through its OpenAI-compatible endpoint. Strands remains the agent SDK. In this route, `ModelProvider=openai` selects the client protocol; it does not mean the model is hosted by OpenAI. The repository also supports the native Bedrock adapter. See [model configuration](docs/DEVELOPMENT.md#model-configuration).
 
-Full design, state machine, data model and failure handling: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
+## Application lifecycle
 
----
+1. **Discover.** Retrieve openings from supported sources and preserve source status. A source failure is different from a successful search with no matches.
+2. **Evaluate.** Apply preferences and eligibility checks, then calculate an explained fit score. A high score alone does not authorize submission.
+3. **Prepare.** Build a packet from the selected resume version, profile facts, saved answers, and the form information available to the connector.
+4. **Authorize.** Evaluate the user's review or automation mode. Explicit approvals bind to a packet hash; automatic authorization also requires an active mandate and the relevant eligibility checks.
+5. **Execute.** Select the route for the concrete posting. Fill a supported public form in the cloud or use the connected browser for an authenticated employer portal.
+6. **Confirm.** Record employer confirmation when observed. If the browser may have submitted but cannot establish the outcome, preserve `OutcomeUnknown` and reconcile instead of blindly submitting again.
 
-## Connector coverage
+Cloud discovery and preparation can run while the user is offline. The companion route requires the connected browser to remain open and the employer session to be usable. Login, MFA, CAPTCHA, unsupported controls, and genuinely missing answers can still require user attention.
 
-Configured public job-feed connectors and direct Google/Microsoft careers searches provide discovery.
-Results report whether a response is fresh, cached, incomplete or unavailable.
+## Discovery and connector coverage
 
-| Connector | Employers | Capabilities |
-|---|---|---|
-| **Amazon Jobs** | Amazon | discover · read details · country filter · structured intern flag |
-| **Google Careers** | Google and YouTube | direct search · employer seniority filters · role/location filtering |
-| **Microsoft Careers** | Microsoft | direct search · entry-level facet · paginated results and details |
-| **Oracle HCM** | JPMorgan Chase | discover · read details · country filter at ingestion |
-| **Workday** | PayPal, NVIDIA, Salesforce, Adobe, Autodesk, HP | discover · read details |
-| **Greenhouse** | Stripe, Databricks, MongoDB, Elastic, Coinbase, Airbnb, Twilio, Reddit, Dropbox, GitLab, Rubrik | discover · read details |
-| **Lever** | Match Group | discover · read details · employer-declared work mode |
-| **Ashby** | Linear, PostHog | discover · read details |
-| **Northwind Labs** | *fictional test employer, clearly labelled* | discover · read form · **fill · submit · reconcile** |
+Discovery coverage and submission support are separate capabilities. A connector can discover a posting whose application form needs a different executor.
 
-Cloud-browser routes and authenticated Browser Companion routes are distinct. The companion uses
-your existing employer login without copying passwords or cookies to the backend. Its multistep
-regressions use local Amazon/Workday-shaped forms; those tests do not claim a real employer submission.
+| Source family | Examples in the configured catalog | Discovery approach |
+| --- | --- | --- |
+| Amazon Jobs | Amazon | Public search, details, and country filters |
+| Google Careers | Google, YouTube | Direct search with role, location, and seniority handling |
+| Microsoft Careers | Microsoft | Direct search, pagination, details, and entry-level facets |
+| Workday | Adobe, NVIDIA, PayPal, Salesforce, Autodesk, HP | Configured tenant and career-site feeds |
+| Oracle HCM | JPMorgan Chase | Configured tenant/site search |
+| Greenhouse | Stripe, Databricks, MongoDB, Elastic, and other configured boards | Public board listings and job details |
+| Lever | Match Group | Public postings |
+| Ashby | Linear, PostHog | Public job boards |
+| Adzuna | Configuration-dependent | Optional aggregator; requires credentials and configured boards |
+| Test portal | Fictional Northwind Labs | Controlled discovery, form submission, and reconciliation fixture |
 
-### What is deliberately not here
+The fictional employer is disabled by default. Enabling or explicitly provisioning a test fixture does not establish that a real employer accepted an application.
 
-**LinkedIn.** Their User Agreement prohibits automated access, and an account doing it gets banned —
-the user's own account, for a feature meant to help them.
+Submission routing is implemented in [submission.py](backend/src/career_agent/submission.py):
 
-**Unsupported employer endpoints.** Some careers APIs return `429` or `403` to a server on the first
-request. They work in a browser because of session context. Getting past that means forging browser
-sessions to evade rate limiting.
+- **Cloud browser:** the test portal and qualifying public forms hosted on `job-boards.greenhouse.io`.
+- **Local browser:** supported authenticated portals and external application destinations, using the Browser Companion.
+- **Manual handoff:** destinations without a supported automated route.
 
-The line is not whether data is public. It is **whether the operator serves it to programs.**
-Greenhouse, Lever, Ashby, Workday, Oracle and Amazon do. The others deliberately do not.
+These routes describe implementation support, not a guarantee that every employer's current form will succeed. Source availability, form changes, and employer session requirements remain operational dependencies. See the dated [search reliability notes](docs/search-reliability.md).
 
----
+## Using the application
 
-## How truthfulness is enforced
+1. Open the [application](https://frg3ei3pc0.execute-api.us-east-1.amazonaws.com), sign in, and review your resume and extracted facts in **Profile**. The example workspace is available for exploration.
+2. Save reusable screening answers and preferences. Accurate employment dates, education details, and authorization answers improve preparation.
+3. Choose an automation mode in **Settings**, configure a daily cap, and grant the intended mandate.
+4. Install the [Browser Companion](browser-companion/README.md), connect the browser in Settings, and sign in to the relevant employer accounts.
+5. Search or create a watch through text or voice. For example: “Watch for Microsoft software engineering internships in India every 30 minutes.”
+6. Follow the application's timeline and notification status. Confirmed submissions, approval requests, and browser attention requests are distinct events.
 
-Not by asking the model nicely. Four mechanisms, each with tests:
+An unpacked extension must be reloaded after its files change; deploying the backend does not update an already-loaded extension. Employer confirmation emails originate from the employer. Career Agent's own notifications do not imply access to a user's Gmail inbox.
 
-1. **Quote verification** — every quote the model attributes to your resume is checked against the actual
-   resume text. Unverifiable quotes are dropped, not shown.
-2. **Number grounding** — a figure in a generated cover note must appear in the source material
-   ([`applying.py`](backend/src/career_agent/applying.py)). Invented metrics never reach a packet.
-3. **Unknowns become questions** — a form field with no verified answer is surfaced to you, never guessed.
-   Demographics and work authorisation are never inferred.
-4. **Packet-hash approval** — you approve a specific packet hash. If anything changes between approval
-   and submission, the transaction fails rather than sending something you did not see.
+## Engineering decisions
 
-And when the model is unreachable, the app says so and falls back to a keyword extractor — it does not
-pretend to have scored with AI.
+| Decision | Reason |
+| --- | --- |
+| Backend authorization | Cedar and conditional database writes enforce submission rules independently of model output. |
+| Versioned application packets | The system can identify the exact content approved for a particular attempt. |
+| Transactional outbox | Workflow state and the intent to dispatch work are committed together, reducing lost-work windows. |
+| Separate worker queues | Watch backlogs have their own execution lane instead of occupying the interactive queue. |
+| Explicit uncertain outcomes | A timeout after an external write is not sufficient evidence that the write failed. |
+| Two browser executors | Public forms and authenticated sessions require different access and execution models. |
+| Evidence-aware matching | Resume quotes are checked against source text; a match score is an application rubric, not an employer ATS score or interview probability. |
 
----
+## Repository structure
 
-## Authorization
-
-Cedar policies plus DynamoDB conditional writes. The model has no say in any of it.
-
-| Control | Enforced by |
-|---|---|
-| Approval mode (review / auto > 80 / auto eligible) | Cedar policy, evaluated at submit time |
-| Daily cap, cooldown | DynamoDB conditional write — a race cannot exceed the cap |
-| Mandate expiry | Cedar policy + clock |
-| Packet integrity | Hash compared inside the submitting transaction |
-| Ownership | Derived from the Cognito JWT; **no tool accepts a user id** |
-
-The agent's tools are a fixed, typed registry: no shell, no arbitrary fetch, no credential access, no
-policy editing. The same registry is served over MCP — and `approve_application` is **withheld** from
-that surface, because submitting is the one irreversible act and a tool call from another model cannot
-evidence that a person asked for it.
-
----
-
-## MCP server
-
-`POST /api/mcp` serves the agent's tool registry to any Model Context Protocol client, with full
-**OAuth 2.1** — dynamic client registration (RFC 7591), PKCE S256, single-use codes.
-
-```bash
-# Discovery, registration, PKCE exchange and a tool call all work against the live deployment
-curl -s https://frg3ei3pc0.execute-api.us-east-1.amazonaws.com/.well-known/oauth-protected-resource
-```
-
-One tool registry, two front doors: `describe_tool()` builds the schema for both the Bedrock tool loop
-and MCP from the same docstrings, so a tool cannot be described one way to the voice agent and another
-way to a connector.
-
----
-
-## AWS services
-
-Lambda · API Gateway (HTTP API) · DynamoDB (single table + streams) · S3 · SQS (standard + FIFO) ·
-Cognito · EventBridge Scheduler · Bedrock · Transcribe · Polly · SES · Secrets Manager · SSM Parameter
-Store · CloudWatch · SNS · Budgets · IAM · STS · CloudFront
-
-Plus two AWS open-source projects: **Strands Agents SDK** (the agent runtime) and **Cedar** (authorization).
-
-No VPC, no NAT gateway, no load balancer, no always-on compute — a deliberate cost decision, not an omission.
-
----
-
-## Develop
-
-```bash
-# Backend tests — no AWS account needed
-cd backend && pip install -r requirements-dev.txt && pytest -q      # 259 passing
-
-# Browser worker against a real Chromium
-cd worker-browser && npm install && npx playwright-core install chromium && npm test
-
-# UI with realistic fixtures
-cd frontend && npm install && npm run build && node dev/mock-server.mjs   # http://localhost:5173
-```
-
-The test suite is written from real payloads and from bugs that actually shipped — a board that returns
-one placeholder id for all 665 of its postings, a search that answered a question about one employer with
-jobs from another, an index key that made every live board invisible. Each of those has a test named after
-what went wrong.
-
----
-
-## Deploy
-
-```bash
-git clone https://github.com/souvikDevloper/career-agent && cd career-agent
-./scripts/bootstrap.sh you@example.com     # OIDC provider, deploy role, artifacts bucket, SSM parameters
-git push origin main                        # CI: test → build → deploy → smoke test
-```
-
-Configuration lives in one SSM parameter (`/career-agent/deploy-parameters`):
-
-```
-GreenhouseBoards=stripe,databricks,...  WorkdayBoards=paypal:wd1:jobs,...
-OracleBoards=jpmc:CX_1001:IN            AmazonBoards=IND
-ModelProvider=bedrock
-```
-
----
-
-## Project layout
-
-```
-backend/                 Python 3.12 · 7,400 lines · 259 tests
+```text
+backend/
   src/career_agent/
-    workflow.py          state machine, transactional outbox, usage ledger
-    scoring.py           versioned rubric, eligibility filters
-    policy.py            Cedar engine + reference implementation
-    agent.py             Strands tool registry (one registry, two front doors)
-    mcp.py               MCP server
-    oauth.py             OAuth 2.1 authorization server
-    llm.py               model access, provider-agnostic
-    sources/             amazon · oraclehcm · workday · greenhouse · lever · ashby · portal
-    handlers/            api · worker · relay · scheduled · notifier · gate · portal · web
-worker-browser/          Node 22 Playwright worker
-frontend/                React 19 + TypeScript on esbuild · 4,700 lines
-policies/                career_agent.cedar
-template.yaml            AWS SAM stack
+    agent.py              Strands runtime and typed tool registry
+    discovery.py          Search, normalization, filtering, and source status
+    scoring.py            Fit rubric, evidence checks, and eligibility
+    applying.py           Application packet preparation and grounding
+    submission.py         Per-posting executor selection
+    workflow.py           State transitions, approvals, quotas, and attempt control
+    policy.py             Cedar policy integration
+    services.py           Application services used by handlers and tools
+    sources/              Employer-specific discovery adapters
+    handlers/             API, workers, relay, scheduler, gate, and notifications
+    mcp.py / oauth.py      Authenticated external tool access
+worker-browser/           Node.js and Playwright cloud executor
+browser-companion/        Chrome extension and browser-flow regressions
+frontend/                 React and TypeScript application
+policies/                 Cedar authorization policies
+scripts/                  Bootstrap, build, and deployment smoke checks
+infra/                    Deployment bootstrap infrastructure
+template.yaml             AWS SAM application infrastructure
+docs/                     Architecture, development, demo, and coverage guides
 ```
 
----
+## Validation and operational limits
 
-## Cost
+[CI](https://github.com/souvikDevloper/career-agent/actions/workflows/ci-cd.yml) runs backend lint and tests, Cedar/Strands import checks, browser-worker tests, companion regressions, and frontend type checking and builds. Changes on `main` proceed to AWS deployment and a smoke test after those checks pass.
 
-Built for a $100 credit envelope and measured against it: no always-on compute, per-user and global daily
-model allowances **reserved before work starts** (a transaction, so a race cannot exceed them), polling
-that skips unchanged feeds, lazy description fetching, S3 lifecycle expiry, and AWS Budget alerts at 50%
-and forecast 90%.
+The browser suites use real Chromium with controlled fixtures. They verify supported behaviors without claiming universal live-employer coverage. A successful build or prepared packet is not proof of a completed application.
 
----
+The deployment uses serverless compute with model-call allowances, queue concurrency limits, lifecycle cleanup, and budget alerts. Actual costs depend on model usage and AWS configuration; budget alerts are notifications, not a hard spending cap. Email delivery is constrained by SES sandbox status until production access is granted. CloudFront is optional; the alternative serves the private frontend bucket through the API's web handler.
 
-## Known limitations
+## Documentation
 
-Stated here rather than discovered by a judge:
+| Guide | Contents |
+| --- | --- |
+| [Architecture](docs/ARCHITECTURE.md) | Components, search pipeline, submission sequence, states, persistence, trust boundaries, and failure handling |
+| [Development and deployment](docs/DEVELOPMENT.md) | Prerequisites, local checks, model configuration, deployment, and operational verification |
+| [Browser Companion](browser-companion/README.md) | Installation, pairing, supported behavior, and extension-specific tests |
+| [Search reliability](docs/search-reliability.md) | Dated source checks and coverage limitations |
+| [Demo script](docs/DEMO_SCRIPT.md) | Demonstration walkthrough |
+| [Submission notes](docs/SUBMISSION.md) | Hackathon submission material |
 
-- **Live employer submission is a handoff, not an automation.** Only the labelled test portal is submitted to end-to-end.
-- **Email is SES sandbox** — delivery is limited to verified addresses until production access is granted.
-- **CloudFront is off.** A new AWS account cannot create a distribution until verification completes, so the
-  HTTP API serves the UI on the same origin. Same TLS, same origin, private bucket, SPA deep links — it
-  gives up edge caching only. One parameter turns it on.
-- **Coverage is bounded by configured feeds and direct employer adapters.** It does not represent every opening on the market.
+## Development attribution
 
----
-
-## Built with AI assistance
-
-Built with Claude (Anthropic) as a pair programmer, as the hackathon rules permit.
+Developed by Souvik Ghosh and the Career Agent team with AI-assisted implementation, debugging, and documentation. The team is responsible for reviewing the code and validating the product's behavior.
 
 ## License
 
-MIT
+[MIT](LICENSE).

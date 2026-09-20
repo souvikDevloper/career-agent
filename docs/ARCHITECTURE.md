@@ -1,481 +1,280 @@
 # Architecture
 
-How Career Agent is put together, and — more importantly — **where each guarantee is
-enforced**. The product's claims ("no invented qualifications", "the model can't bypass
-your rules", "never a silent double-apply") are only worth something if they live in
-code paths that a prompt cannot talk its way around. This document points at those paths.
+[README](../README.md) · [Development and deployment](DEVELOPMENT.md) · [Browser Companion](../browser-companion/README.md)
 
-- [Shape of the system](#shape-of-the-system)
-- [The two request paths](#the-two-request-paths)
-- [Application state machine](#application-state-machine)
-- [Authorization: Cedar and the gate](#authorization-cedar-and-the-gate)
-- [The submission gate protocol](#the-submission-gate-protocol)
-- [Data model](#data-model)
-- [Transactional outbox](#transactional-outbox)
-- [Truthfulness: where "no invented facts" is enforced](#truthfulness-where-no-invented-facts-is-enforced)
-- [Scheduled work](#scheduled-work)
-- [Failure handling](#failure-handling)
-- [Cost and operations](#cost-and-operations)
+Career Agent separates conversational reasoning from durable workflow state and permission to act. The model can choose among typed tools; application code determines whether a transition or submission is allowed.
 
----
+This guide describes the repository implementation. Resource definitions in [template.yaml](../template.yaml), transitions in [workflow.py](../backend/src/career_agent/workflow.py), and policies in [career_agent.cedar](../policies/career_agent.cedar) are the executable sources of truth.
 
-## Shape of the system
+## Contents
 
-Everything is serverless and event-driven. There is no NAT gateway, no load balancer and
-no always-on compute.
+1. [System boundaries](#1-system-boundaries)
+2. [Work dispatch and workload isolation](#2-work-dispatch-and-workload-isolation)
+3. [Discovery and matching](#3-discovery-and-matching)
+4. [Agent runtime and model access](#4-agent-runtime-and-model-access)
+5. [Packets and authorization](#5-packets-and-authorization)
+6. [Browser execution](#6-browser-execution)
+7. [Application state model](#7-application-state-model)
+8. [Persistence and ownership](#8-persistence-and-ownership)
+9. [API and credential boundaries](#9-api-and-credential-boundaries)
+10. [Failure handling](#10-failure-handling)
+11. [Verification](#11-verification)
 
-```
-                    ┌─────────────────────── CloudFront ───────────────────────┐
-                    │  S3 (React UI)            /api/* → HTTP API (same origin) │
-                    └──────────────────────────────┬───────────────────────────┘
-                                                   │  Cognito JWT
-                                                   ▼
-  mic ──► Transcribe (presigned,           ┌──────────────┐
-          streaming)                       │ ApiFunction  │───────────────┐
-                                           └──────┬───────┘               │
-                                                  │ writes                │ Invoke
-                                                  ▼                       │ (sync)
-                                    ┌─────────────────────────┐           │
-                                    │ DynamoDB (single table) │           │
-                                    │  + transactional outbox │           │
-                                    └───────────┬─────────────┘           │
-                                                │ Streams (NEW_IMAGE)     │
-                                                ▼                         │
-                                         ┌──────────────┐                 │
-                                         │RelayFunction │                 │
-                                         └──┬────┬──────┘                 │
-                        ┌───────────────────┘    └────────────┐           │
-                        ▼                                     ▼           │
-                  SQS work                            SQS notify          │
-                        │                                     │           │
-                        ▼                                     ▼           │
-               ┌─────────────────┐                   ┌────────────────┐   │
-               │ WorkerFunction  │                   │NotifierFunction│   │
-               │ Strands + Nova  │                   │  SES, Telegram │   │
-               └────────┬────────┘                   └────────────────┘   │
-                        │ outbox → SQS submit (FIFO, group = user)         │
-                        ▼                                                  │
-               ┌─────────────────┐        Invoke         ┌──────────────┐  │
-               │ BrowserFunction │◄─────────────────────►│ GateFunction │◄─┘
-               │ Node 22 +       │   begin / dispatch /  │ Cedar, quota,│
-               │ Playwright      │       complete        │ fencing      │
-               └────────┬────────┘                       └──────────────┘
-                        │ fills & submits
-                        ▼
-               PortalFunction (fictional test employer) ──HMAC webhook──► ApiFunction
+## 1. System boundaries
 
-  EventBridge Scheduler ──► ScheduledFunction   (monitor every 5 min, cleanup every 6 h)
+| Layer | Components | Responsibility |
+| --- | --- | --- |
+| User experience | React, TypeScript, Browser Companion | Profile editing, search, approval, timelines, and authenticated form execution |
+| Identity and API | Cognito, HTTP API, Python API Lambda | Authenticate requests, bind them to a user, validate inputs, and invoke services |
+| Reasoning | Strands Agents SDK, configurable model adapter | Select typed tools and generate grounded explanations |
+| Domain | Discovery, scoring, applying, services, workflow, Cedar | Normalize jobs, prepare packets, enforce transitions, and authorize attempts |
+| Persistence | DynamoDB, S3 | Store records, versions, outbox intent, documents, and execution evidence |
+| Delivery | DynamoDB Streams, relay, SQS, EventBridge Scheduler | Dispatch durable work and trigger due watches, reminders, and repair |
+| Execution | Worker Lambdas, Playwright Lambda, browser extension | Run queued tasks and interact with supported forms |
+| Operations | CloudWatch, dead-letter queues, SNS, AWS Budgets | Surface delivery failures, inspect execution, and monitor spending |
+
+The private frontend bucket has two deployment options: CloudFront with origin access control, or an API Gateway web route backed by `WebFunction`. The latter is the project's account-constrained deployment path; CloudFront is an infrastructure option, not a prerequisite for using the app.
+
+## 2. Work dispatch and workload isolation
+
+```mermaid
+flowchart LR
+    API["API / application services"] --> Tx["DynamoDB transaction<br/>Domain change + outbox record"]
+    Schedule["Scheduled tasks"] --> Tx
+    Tx --> Stream["DynamoDB Streams"]
+    Stream --> Relay["Relay"]
+    Repair["Pending-outbox repair"] --> Relay
+    Relay --> Interactive["InteractiveQueue"]
+    Relay --> Watch["WatchQueue"]
+    Relay --> Submit["SubmitQueue · FIFO"]
+    Relay --> Notify["NotifyQueue"]
+    Interactive --> Worker["WorkerFunction"]
+    Watch --> WatchWorker["WatchWorkerFunction"]
+    Submit --> Browser["BrowserFunction"]
+    Notify --> Notifier["NotifierFunction"]
+    Legacy["WorkQueue · legacy backlog"] --> Drain["LegacyWorkDrainFunction"]
+    Drain --> Watch
 ```
 
-**Lambda functions** (`template.yaml`): `ApiFunction`, `WorkerFunction`, `RelayFunction`,
-`ScheduledFunction`, `NotifierFunction`, `GateFunction`, `PortalFunction`, `BrowserFunction`.
+Interactive and watch workers share the worker implementation but consume different queues. The legacy work-drain function handles the earlier queue during migration and moves autonomous work into the watch lane. It is a compatibility path, not the destination for new interactive requests.
 
-**Queues**, each with its own dead-letter queue and SSE enabled:
+The current template limits each interactive, watch, and legacy-drain event-source mapping to two concurrent invocations. These limits reduce competition in a low-concurrency account; they do not reserve capacity for the API or guarantee latency. Other functions still share account-level capacity.
 
-| Queue | Type | Carries |
-|---|---|---|
-| `WorkQueue` | standard, 3 receives | agent work: prepare, reconcile, classify |
-| `SubmitQueue` | **FIFO**, 5 receives | one submission at a time **per user** (`MessageGroupId` = user) |
-| `NotifyQueue` | standard, 4 receives | dashboard / SES / Telegram fan-out |
+The monitor schedule runs every five minutes. User watches have their own due times and a minimum requested interval of 15 minutes; a scheduler tick is not a promise of exact execution time. Queue backlog and source polling intervals can introduce additional delay. Example-workspace cleanup runs every six hours.
 
-The FIFO grouping is load-bearing: it is what stops two submissions for the same user
-racing each other into the same employer form.
+### Delivery semantics
 
----
+A state transition and its outbox intent can commit in one DynamoDB transaction. The relay sends the outbox payload to SQS, then marks it dispatched. If delivery succeeds but the acknowledgement or record update fails, the message may be sent again.
 
-## The front door
+Delivery is **at least once**. Conditional writes, canonical application keys, leases, and attempt state provide domain-level duplicate protection. FIFO deduplication helps the submission lane but does not make a third-party browser interaction transactional.
 
-CloudFront is the intended entry point and does five jobs: terminates TLS, serves the SPA
-from a **private** S3 bucket via Origin Access Control, routes `/api/*` and `/portal*` to
-API Gateway so the browser sees **one origin**, rewrites extensionless paths to
-`index.html` for client-side routes, and sets the security headers — including the
-`Permissions-Policy` that grants microphone access.
+Pending outbox records are repairable through scheduled relay repair. Workers report failed batch items so a failure does not require treating every successfully processed message as failed.
 
-A new AWS account cannot create a distribution until activation completes:
-`CreateDistribution` returns 403 no matter what IAM permits, and the stack rolls back at
-that single resource while every other CloudFront resource creates normally. The
-`UseCloudFront` parameter therefore has a second mode. With it `false`, a `WebFunction`
-behind the HTTP API's `$default` route serves the same built assets out of the same private
-bucket over IAM — same origin, same TLS, same SPA rewrite, same headers. The only thing
-given up is edge caching: every asset request reaches Lambda. Content-hashed assets are
-still served `immutable` and the shell `no-cache`, so it costs latency, not correctness.
+## 3. Discovery and matching
 
-Either way the app's own code is identical — it only ever calls same-origin relative paths.
-
----
-
-## The two request paths
-
-**Synchronous** — anything the person is waiting on. `CloudFront → HTTP API → ApiFunction`,
-authorized by a Cognito JWT. The API writes to DynamoDB and returns; it never calls the
-model or the browser inline.
-
-**Asynchronous** — everything slow or risky. The API commits a state change *and* an outbox
-row in one transaction; the relay turns that row into an SQS message; a worker picks it up.
-The person's request never blocks on Bedrock, Playwright or an employer's site.
-
-This split is why a timeout in a browser worker can never lose a state change: the state
-change was already committed before the work was dispatched.
-
----
-
-## The agent's tools, and the second front door
-
-The agent has a registry of allowlisted, typed business tools (`agent.TOOLS`). They are
-plain functions: no shell, no arbitrary fetch, no credential access, no policy editing.
-Each one re-derives the owner from the verified session rather than taking a user id, and
-authorization is enforced by backend code and Cedar, never by the prompt.
-
-That registry is served two ways. The voice and chat agent calls it through Strands (or a
-Bedrock Converse tool loop when Strands is unavailable). An **MCP** server at `POST
-/api/mcp` serves the same registry to any Model Context Protocol client, so a judge can
-add the connector in their own client and drive the real system.
-
-`describe_tool()` builds the schema for both. The Bedrock `toolSpec` and the MCP
-`inputSchema` come from one function reading one set of docstrings, including the `Args:`
-block, which becomes per-parameter documentation. A tool therefore cannot be described one
-way to the voice agent and another way to a connector, and the Connectors page in the app
-proves it by running a real handshake against the live endpoint instead of describing one.
-
-Three properties matter more than the protocol plumbing:
-
-- **Identity.** `/api/mcp` sits under the existing `ANY /api/{proxy+}` route, so API
-  Gateway's JWT authorizer runs before any of this code does. The owner comes from the
-  validated token; no tool accepts a user id, so a body that names one is rejected outright.
-- **Approval is not on this surface.** Submitting is the one irreversible act in the
-  product, and the guard on it is that a person asked in their own words — which a tool call
-  arriving from another model cannot evidence. `prepare_application` is served; approving
-  stays in the app. Calling it anyway returns an `isError` result saying where to go, and
-  the function never runs.
-- **Tool failures are results, not protocol errors.** A JSON-RPC error aborts the caller's
-  turn; an `isError` result lets its model read what went wrong and try something else.
-
-Reads do not write an operation record — only `search_jobs` needs one to stream progress
-into, and a DynamoDB write nobody reads still costs money.
-
----
-
-### Reaching the model while bedrock-runtime is held
-
-This account cannot call `bedrock-runtime`: every model, every region, both Converse
-and InvokeModel, returns `ValidationException: Operation not allowed` while the control
-plane answers normally. That is an account verification hold, confirmed by CloudFront
-refusing `CreateDistribution` with "Your account must be verified".
-
-The agent still runs on Amazon Bedrock. The **bedrock-mantle** endpoint is a separate
-API surface on the same service and is not under the hold, and it authenticates with a
-Bedrock API key rather than SigV4:
-
-    https://bedrock-mantle.us-east-1.api.aws/v1/chat/completions
-
-Three things about it cost time and are worth writing down:
-
-- **It routes by model, and the native route is `/v1`.** `/openai/v1` and `/anthropic/v1`
-  are compatibility shims that each serve one model family; anything else on them returns
-  "isn't supported on this route". The model list lives at `/v1/models`, not
-  `/openai/v1/models`, which was the clue that `/v1` is the real namespace.
-- **The catalog is not the entitlement list.** `/v1/models` returns 55 models; almost none
-  are callable. `anthropic.claude-haiku-4-5` returns 403 "not available for this account",
-  which is a different error from the routing one and the distinction matters when
-  diagnosing.
-- **`zai.glm-5` is what this account can actually call**, found by trying the Workbench
-  rather than by guessing at the API.
-
-So `MODEL_PROVIDER=openai` here does not mean OpenAI. It means "speak the OpenAI chat
-completions wire format", which is what the mantle endpoint speaks. The model is served
-by Amazon Bedrock, on this account, with Strands Agents driving the tool loop. When the
-hold lifts, `MODEL_PROVIDER=bedrock` returns to `bedrock-runtime` and Nova with no code
-change.
-
----
-
-### Connecting a client: OAuth 2.1
-
-A client obtains its own token rather than being handed a pasted one. It registers itself
-(RFC 7591), sends the person to `/oauth/authorize` with a PKCE challenge, they sign in and
-consent, and it exchanges a single-use code for tokens.
-
-Cognito remains the only place a password is checked, and **the token issued to the client
-is the Cognito ID token**, the same one the browser carries. That is the decision the rest
-follows from: API Gateway's JWT authorizer keeps validating identity before any application
-code runs, so adding OAuth changed who may obtain a token and nothing about how one is
-trusted. This layer never decides who somebody is.
-
-Two controls carry the security, and both are exact rather than clever:
-
-- **The redirect URI** decides where a code is delivered: https anywhere, plain http only
-  on the loopback interface *by address*, no fragments, no wildcards. `localhost.evil.test`
-  is not loopback.
-- **The PKCE verifier** decides who may redeem it: S256 only, compared in constant time,
-  and mandatory. A request without one never reaches a consent screen.
-
-Errors split by who is allowed to hear them. An unknown client or an unregistered redirect
-URI returns 400 and is never redirected anywhere, because reporting those *to* the supplied
-URI is how an open redirect becomes a token thief. A client's own mistake (wrong
-`response_type`, missing challenge) goes back to its registered URI with `state` intact.
-
-Codes are single-use through a conditional delete, so two simultaneous redemptions cannot
-both succeed, and are bound to client, redirect URI and challenge. The authorization
-request is parked server-side under an opaque id, so the browser carries a handle rather
-than the parameters, and nothing edited in the address bar changes the destination. The
-identity attached to a code comes from the verified JWT, never the request body.
-
-**Stated limitations.** The refresh token handed to a client is the person's own Cognito
-refresh token, because minting a separate one would need their password again, so a
-connected client has the reach of their signed-in session until it expires or they sign out
-everywhere. The consent screen says exactly that. And API Gateway HTTP APIs return a bare
-`www-authenticate: Bearer` on 401 with no way to customise it, so the `resource_metadata`
-pointer the MCP spec asks for is absent; clients fall back to probing
-`/.well-known/oauth-protected-resource`, which is served. Hand-rolling JWT verification to
-gain that header would trade a real security property for a cosmetic one.
-
----
-
-
-## Application state machine
-
-Defined in `backend/src/career_agent/workflow.py` as `STATES` and `TRANSITIONS`, and
-enforced on every write — an illegal transition raises rather than being persisted.
-
-```
-Discovered ──► Ineligible ──► Preparing
-     │                           │
-     └──────────► Preparing ◄────┘
-                     │
-      ┌──────────────┼───────────────┬──────────────────┐
-      ▼              ▼               ▼                  ▼
-NeedsInformation  NeedsApproval  Authorized      ManualHandoff
-      │              │               │                  │
-      └──► Preparing └──► Authorized │                  └──► Submitted
-                                     ▼
-                                  Queued ──► Paused ──► Queued
-                                     │
-                                     ▼
-                                Submitting
-                                     │
-              ┌──────────────────────┼────────────────────────┐
-              ▼                      ▼                        ▼
-          Submitted            KnownFailure            OutcomeUnknown
-                                     │                        │
-                                     ▼                        ▼
-                                 Preparing            Submitted │ NeedsReview
+```mermaid
+flowchart TB
+    Request["Search request / due watch"] --> Filters["Structured intent<br/>Company, role, location, work mode"]
+    Filters --> Route{"Source strategy"}
+    Route --> Direct["Direct employer search<br/>Google / Microsoft"]
+    Route --> Feeds["Configured employer feeds<br/>Polling + cached postings"]
+    Direct --> Normalize["Normalize records and source status"]
+    Feeds --> Normalize
+    Normalize --> Deduplicate["Canonical identity and deduplication"]
+    Deduplicate --> Filter["Company, title, location,<br/>seniority and preference filtering"]
+    Filter --> Hydrate["Fetch details where needed"]
+    Hydrate --> Eligibility["Eligibility checks<br/>Pass / fail / unknown"]
+    Eligibility --> Evidence["Resume evidence extraction<br/>Quote verification"]
+    Evidence --> Score["Versioned fit rubric"]
+    Score --> Matches["Persist matches with explanations"]
+    Matches --> Prepare["Preparation when requested<br/>or authorized by watch settings"]
 ```
 
-`Submitted` and `Withdrawn` are terminal (`TRANSITIONS` maps both to the empty set).
-`Submitting` and `OutcomeUnknown` deliberately have **no** path to `Withdrawn` either — once
-a form may already have been submitted, the record has to be resolved, not quietly dropped.
-Every other state can be withdrawn.
+[discovery.py](../backend/src/career_agent/discovery.py) owns normalization, filtering, deduplication, hydration, and source status. Employer adapters live in [sources](../backend/src/career_agent/sources). The diagram shows logical stages; detail hydration and filtering can be repeated as more information becomes available.
 
-The transition helper is also the optimistic-concurrency point: each update is conditional
-on both the row's `version` and its current `action_state`, so two concurrent writers cannot
-both advance the same application.
+Search results must be interpreted with their source evidence. “No matching records were returned” is narrower than “this company has no openings.” Cached data, incomplete responses, unconfigured sources, and source errors must not be represented as an exhaustive live search.
 
-The state worth dwelling on is **`OutcomeUnknown`**. When a browser worker times out after
-clicking Submit, the honest answer is "we do not know whether that landed". The system
-does not guess. It moves to `OutcomeUnknown`, keeps consuming the user's daily capacity,
-and schedules reconciliation — which resolves to `Submitted` if a receipt is found or
-`NeedsReview` if it cannot be determined. There is no path from `OutcomeUnknown` back to
-a state that would let a second submission happen automatically.
+### Eligibility and scoring
 
-Separately from `action_state` (what the agent did), each application carries a
-`recruitment_stage` (what the *employer* did): `applied`, `reply_received`,
-`assessment_invited`, `interview_scheduled`, `offer`, `rejected`, `withdrawn`. The two are
-tracked independently so an employer's silence is never confused with an agent failure.
+[scoring.py](../backend/src/career_agent/scoring.py) separates hard filters from the fit score. Missing evidence can leave a requirement unknown; a score does not resolve an unknown requirement or grant submission permission.
 
----
+The current `fit-rubric/2.0` weights are:
 
-## Authorization: Cedar and the gate
+| Dimension | Maximum |
+| --- | ---: |
+| Required skills | 40 |
+| Project and experience evidence | 30 |
+| Role responsibilities | 20 |
+| User preferences | 10 |
+| **Total** | **100** |
 
-`policies/career_agent.cedar` defines seven actions:
+The result is Career Agent's rubric, not an employer ATS score or a prediction of interview success. Quote verification checks whether supporting text occurs in the supplied resume. It does not independently authenticate the applicant's credentials.
 
+## 4. Agent runtime and model access
+
+[agent.py](../backend/src/career_agent/agent.py) creates a Strands agent around a fixed registry of typed application tools. Tools expose search, watch management, saved profile answers, preparation, and status through services bound to the authenticated user.
+
+| Configuration | Strands adapter | Endpoint selection |
+| --- | --- | --- |
+| `ModelProvider=bedrock` | `BedrockModel` | Native Bedrock APIs and `ModelId` |
+| `ModelProvider=openai` | `OpenAIModel` | OpenAI-compatible `ModelApiBase` and `FallbackModelId` |
+| `ModelProvider=anthropic` | `AnthropicModel` | Configured compatible endpoint and model |
+
+The project's deployment uses **GLM-5 on Amazon Bedrock** through `https://bedrock-mantle.us-east-1.api.aws/v1`, with model identifier `zai.glm-5`. The historical configuration name `FallbackModelId` is used by this adapter even when the endpoint is Bedrock itself. It does not imply an off-AWS fallback.
+
+Tool arguments pass through domain validation and authorization. The model does not receive an arbitrary shell or unrestricted fetch tool. Fallback paths report the mode used; heuristic matching should not be described as a model-generated evaluation.
+
+Text and finalized voice input use the application tool layer. Transcribe supplies speech recognition and Polly supplies spoken output. A partial transcript is not an action request.
+
+## 5. Packets and authorization
+
+Preparation combines the selected resume version, profile facts, saved screening answers, and available employer-form information. [applying.py](../backend/src/career_agent/applying.py) builds the packet and applies grounding checks, including checks on quoted evidence and generated numerical claims.
+
+A packet has a version and content hash. Approval records refer to the current packet rather than granting permission to send arbitrary later edits. New answers or a revised resume can require re-preparation and a fresh authorization decision.
+
+| Mode | Submission condition |
+| --- | --- |
+| `review` | Current packet has the required explicit approval |
+| `auto_above_80` | Score is strictly greater than 80, automation eligibility passes, and the current mandate permits the action |
+| `auto_eligible` | Automation eligibility passes and the current mandate permits the action |
+
+All routes remain subject to the relevant packet checks, ownership, allowed destination, mandate scope and expiry, daily capacity, cooldown, and current policy evaluation. Saving a preference is not equivalent to granting an active mandate.
+
+Cedar evaluates policy. DynamoDB conditions protect the corresponding state changes and capacity reservation against concurrent requests. Both are needed: a policy decision alone cannot atomically reserve the last daily application slot.
+
+## 6. Browser execution
+
+The route belongs to the individual posting, not merely to its discovery connector. [submission.py](../backend/src/career_agent/submission.py) selects `cloud_browser`, `local_browser`, or `manual` according to the supported destination.
+
+### Shared submission protocol
+
+```mermaid
+sequenceDiagram
+    participant Executor as Browser executor
+    participant Gate as Backend gate
+    participant DB as DynamoDB
+    participant Employer as Employer form
+    Executor->>Gate: Begin attempt for current packet
+    Gate->>DB: Check policy and reserve capacity and lease
+    DB-->>Gate: Conditional transaction succeeds
+    Gate-->>Executor: Authorized attempt
+    Executor->>Employer: Read and fill supported fields
+    Executor->>Gate: Request dispatch authorization
+    Gate->>DB: Recheck attempt and persist dispatch boundary
+    DB-->>Gate: Dispatch recorded
+    Gate-->>Executor: Permission for final submission
+    Executor->>Employer: Click final submit control
+    alt Employer confirmation observed
+        Employer-->>Executor: Confirmation or reference
+        Executor->>Gate: Complete with observed evidence
+        Gate->>DB: Record Submitted and notification intent
+    else Result cannot be established
+        Executor->>Gate: Report uncertain outcome
+        Gate->>DB: Record OutcomeUnknown
+        Note over Executor,Employer: Reconcile before a new submission attempt
+    end
 ```
-view_application   prepare_application   approve_application   submit_application
-cancel_application   publish_profile   send_referral
+
+The diagram summarizes the shared domain protocol. Transport and evidence differ by executor: the cloud worker invokes the gate Lambda and can store screenshots in S3; the companion uses capability-scoped API endpoints and reports browser observations.
+
+Recording dispatch before clicking creates a conservative window: a browser can fail after dispatch was recorded but before the click occurred. The backend cannot safely infer failure from that interruption. It preserves uncertainty rather than risking a second application.
+
+### Cloud browser
+
+The Node.js worker uses Playwright with Chromium for the controlled test portal and qualifying public Greenhouse-hosted forms. It runs independently of the API and obtains authorization through the gate. It has no direct DynamoDB write access; workflow mutations remain behind the gate.
+
+### Browser Companion
+
+The extension uses the existing employer session without copying passwords or cookies into the backend. Pairing creates a scoped runner capability with a maximum seven-day lifetime. Application-specific sessions are short-lived and bound to the intended application context.
+
+The runner polls for eligible work while the browser is available. Its content script handles recognized controls, resume uploads, repeated work and education records, and navigation. It preserves user-entered fields and pauses for missing information or employer challenges. Reloading the extension is necessary after a local extension update.
+
+Supported patterns are tested with local employer-shaped fixtures. A fixture passing does not establish compatibility with every live page, and identifying a submit button does not establish employer acceptance.
+
+## 7. Application state model
+
+```mermaid
+stateDiagram-v2
+    [*] --> Discovered
+    Discovered --> Ineligible
+    Discovered --> Preparing
+    Ineligible --> Preparing
+    Preparing --> NeedsInformation
+    NeedsInformation --> Preparing
+    Preparing --> NeedsApproval
+    NeedsApproval --> Authorized
+    NeedsApproval --> NeedsUserPresence
+    Preparing --> Authorized
+    Preparing --> NeedsUserPresence
+    Preparing --> ManualHandoff
+    Authorized --> Queued
+    Queued --> Submitting
+    NeedsUserPresence --> Submitting
+    Submitting --> Submitted
+    Submitting --> KnownFailure
+    Submitting --> OutcomeUnknown
+    KnownFailure --> Preparing
+    OutcomeUnknown --> Submitted
+    OutcomeUnknown --> NeedsReview
+    NeedsReview --> Preparing
+    NeedsReview --> Submitted
+    ManualHandoff --> Submitted
+    Submitted --> [*]
 ```
 
-Cedar is evaluated by `cedarpy` inside `backend/src/career_agent/policy.py`. Two properties
-matter:
+This is a condensed operational view. The executable transition table also includes pause, withdrawal, re-preparation, and pre-dispatch recovery paths.
 
-1. **The model never evaluates policy.** The agent loop can *request* a submission; it
-   cannot authorize one. Authorization is a separate call against live DynamoDB facts.
-2. **Decisions are computed fresh at the moment of submission**, not cached from when the
-   packet was prepared. A mandate revoked thirty seconds ago is honoured.
+Submission state and recruitment stage are distinct. A submitted application can later receive an assessment or interview update without repeating submission. Manually reported completion also has a different provenance from browser-observed confirmation; consumers must retain that distinction.
 
-The three approval modes (`review`, `auto_above_80`, `auto_eligible`) are settings that
-feed the Cedar context — they are not branches in prompt text. `auto_above_80` is strictly
-greater than 80, and the boundary is unit-tested at 80/81.
+## 8. Persistence and ownership
 
-Cedar decisions are the *policy* half. The *concurrency* half — daily caps, cooldowns,
-one-submission-at-a-time — is enforced by DynamoDB conditional writes and transactions,
-because a policy engine cannot make a race condition impossible. Both must pass.
+DynamoDB uses a single-table design. The API derives the user identity from authentication rather than trusting a user identifier supplied to an agent tool.
 
----
+| Record family | Purpose |
+| --- | --- |
+| Profile, resume, and settings | Applicant data, saved answers, preferences, mandate, and notification settings |
+| Jobs and source metadata | Normalized postings, source status, polling state, and cached details |
+| Matches and watches | Scores, search criteria, watch due times, and automation preferences |
+| Applications and canonical keys | Lifecycle records and duplicate-application protection |
+| Packet versions and approvals | Prepared content and authorization tied to that content |
+| Attempts, leases, and usage | Submission ownership, dispatch state, and quota accounting |
+| Outbox records | Durable work and notification intent |
+| Events and tasks | Timeline, follow-up work, and outcome history |
 
-## The submission gate protocol
+User-owned workflow rows use the `USER#<id>` partition convention. Applications use `APP#<id>` sort keys; `APPKEY#<canonical>` records protect canonical identity. Outbox records use separate `OUTBOX#<id>` partitions and a pending-work index for repair.
 
-`BrowserFunction` runs Playwright and Chromium. It holds **no business rules and no
-DynamoDB permissions**. Everything it is allowed to do is decided by `GateFunction`, which
-it calls synchronously (`handlers/gate.py`). Three operations:
+S3 holds binary objects such as resumes and cloud-browser evidence. Lifecycle cleanup reduces retention; database TTL is cleanup, not the authorization clock. Mandate and session expiry must be evaluated when an action is attempted.
 
-**`begin`** — the worker asks permission to start.
-The gate re-checks Cedar, reserves daily capacity atomically, takes a lease, and computes a
-**fencing token** (`fencing = app.version + 1`). It returns either `proceed` (with the
-target URL, the answers, a 300-second presigned resume URL and the field list), or
-`reconcile`, or a refusal with the reason. The worker receives only what it needs for this
-one form — never the user's profile.
+## 9. API and credential boundaries
 
-**`dispatch`** — the worker has loaded the form and is about to click Submit.
-It sends the live form's HTML; the gate parses it and compares the **form signature**
-against the one the packet was built from. If the employer changed the form, the answers no
-longer map to the fields they were verified against, and the gate refuses. The write is
-conditional on `fencing` still matching **and** `dispatched_at` not existing:
+Cognito JWTs protect application API requests. Browser sessions use scoped capabilities so an employer tab does not need the user's full application login token.
 
-```python
-condition=And(C("fencing", "eq", fencing), C("dispatched_at", "not_exists"), ...)
-```
+`POST /api/mcp` exposes tools from the shared registry. The OAuth implementation includes discovery, dynamic client registration, PKCE S256, and single-use authorization-code handling. The external MCP surface excludes `approve_application`; an external model's tool call does not supply the application's evidence of explicit user approval.
 
-That condition is the no-double-apply guarantee. Once an attempt is marked dispatched, no
-worker — including a retried copy of the same worker, or a replacement after a timeout —
-can ever mark it dispatched again. A stale worker whose lease expired carries an old
-fencing token and fails the condition.
+This is a custom OAuth implementation, not a claim of third-party protocol certification. Client interoperability and token validation should be tested against the intended deployment.
 
-**`complete`** — the worker reports the outcome, with the employer's reference and an
-evidence screenshot written to S3 under `evidence/{uid}/{app_id}/{attempt_id}`.
+Internal execution uses IAM and application-scoped secrets. Model API keys belong in SSM SecureString parameters, not frontend configuration or repository files. GitHub Actions assumes its deployment role through OIDC instead of storing long-lived AWS deployment keys.
 
----
+## 10. Failure handling
 
-## Data model
+| Failure | Expected response | Practical limit |
+| --- | --- | --- |
+| Source unavailable or throttled | Preserve source status and distinguish cached results | Search may be incomplete |
+| Model unavailable or allowance exhausted | Expose failure or a labelled fallback | Heuristics are not equivalent model results |
+| Unknown required answer | Pause for information and re-prepare | Profile data cannot resolve every employer question |
+| Approval no longer matches packet | Require a current authorization decision | One approval does not cover arbitrary edits |
+| Duplicate queue delivery | Conditional state and attempt checks reject repeated work | SQS remains at least once |
+| Worker lease expires | Validate attempt ownership before further actions | Earlier permission does not remain valid indefinitely |
+| Browser stops after dispatch | Preserve uncertainty and reconcile | Some employers have no confirmation lookup |
+| Watch backlog grows | Keep watch and interactive queues separate | Account-wide concurrency can still affect both |
+| Notification fails | Retry and expose dead-letter failures | Acceptance and notification delivery are separate outcomes |
 
-A single DynamoDB table, `PAY_PER_REQUEST`, with `pk`/`sk`, one GSI (`gsi1pk`/`gsi1sk`),
-`StreamViewType: NEW_IMAGE`, and TTL on `ttl`.
+SES sandbox restrictions apply until production access is granted. Telegram requires configuration. Employer emails are not automatically ingested from Gmail; reply processing depends on a configured inbound path.
 
-All of a user's items share `pk = USER#{user_id}`, so a user's data is one query and
-isolation is a partition-key property rather than a filter someone can forget:
+Model-call allowances, queue limits, lifecycle policies, and budget notifications constrain resource use. They do not promise a fixed bill or a hard dollar cap.
 
-| `sk` | Item |
-|---|---|
-| `APP#{app_id}` | application: state, score, packet hash, fencing, current attempt |
-| `PACKET#{app_id}#{version:04d}` | immutable packet version — answers, field evidence, form signature |
-| `ATTEMPT#{app_id}#{attempt_id}` | one submission attempt: lease, dispatch, outcome, Cedar decision |
-| `PROFILE#CURRENT` → `PROFILE#V#{version:06d}` | pointer + immutable profile versions |
-| `MATCH#{job_key}` | score, components, filters, evidence, rubric version |
-| `JOB#…`, `SOURCE#{source}`, `WATCH#{watch_id}` | discovery inputs and schedules |
-| `LEDGER#{local_date}` | the day's submission count, in the user's timezone |
-| `EVENT#{ts}#{event_id}` | the timeline the UI reads |
-| `TASK#{task_id}`, `MSG#{message_id}` | deadlines and employer messages |
+## 11. Verification
 
-Outbox rows live at `pk = OUTBOX#{id}`, with `OUTBOX#pending` on the GSI so the repair
-sweep can find anything the stream dropped.
+CI runs backend lint/tests and SDK import checks; real-Chromium browser-worker and companion regressions; and frontend type checking and builds. On `main`, deployment follows successful checks, then runs [smoke.py](../scripts/smoke.py).
 
-Two details that carry weight:
-
-- **Packets are immutable and versioned.** An approval is bound to a specific
-  `packet_hash`. Change anything in the packet and the hash changes, which invalidates the
-  approval and sends it back for a fresh one. You cannot approve one thing and have another
-  submitted.
-- **The daily ledger is keyed by the user's local date**, not UTC, so "5 per day" means
-  what the user thinks it means.
-
-`backend/src/career_agent/store.py` abstracts this behind a `Store` interface with a small
-declarative condition DSL (`C`, `And`, `Or`). `DynamoStore` runs in AWS; `MemoryStore`
-implements *identical* conditional semantics, which is what makes the race-condition tests
-(cap races, revoked mandates, stale fencing) runnable in unit tests with no AWS.
-
----
-
-## Transactional outbox
-
-The failure this avoids: write the state change, then fail before enqueuing the work — or
-enqueue the work, then fail before the state change. Either way the system lies.
-
-Instead, `Workflow.outbox_put()` returns a `Put` that is committed **in the same DynamoDB
-transaction** as the state change. Then:
-
-1. DynamoDB Streams (`NEW_IMAGE`) deliver the new row to `RelayFunction`.
-2. The relay sends it to the queue named on the row (`work`, `submit`, `notify`), using the
-   row's dedupe key as `MessageDeduplicationId` and its group as `MessageGroupId` for FIFO.
-3. The row is marked `dispatched` conditionally, so a replayed stream record is a no-op.
-4. The 5-minute monitor re-sends anything still `pending`, covering the case where the
-   stream itself dropped a record.
-
-So a message is sent *at least* once and acted on *at most* once — the state change and its
-side effect can never disagree.
-
----
-
-## Truthfulness: where "no invented facts" is enforced
-
-This is the part that is easiest to claim and hardest to actually do, so it is worth being
-precise about the mechanism.
-
-**Evidence is verified against the source text, not trusted from the model.**
-`resume.py` asks Nova for facts *with an exact supporting quote*, then
-`verify_facts(facts, text)` marks each fact `verified` **only if that quote is actually
-found in the resume text**. A fabricated quote fails the check. The model's output is
-treated as a claim to be checked, not an answer.
-
-**Some fields are never inferred at all.** Work authorization is hard-coded to
-`{"value": None, "verified": False}` after extraction — no resume wording can set it. It
-comes from the user or it becomes a question. Demographic fields are answered from policy
-(`decline_to_self_identify`), never generated.
-
-**Every packet field is traceable.** Each answer carries its provenance —
-`resume:education`, `profile:user_confirmed`, `saved_answer:user_consent`,
-`generated:grounded_note`, `policy:decline_to_self_identify` — and the UI shows it next to
-the value. A required field with no verified source does not get a plausible guess; it
-becomes `NeedsInformation` and the application stops.
-
-**Scores are a stated rubric, not a vibe.** `scoring.py` pins `RUBRIC_VERSION =
-"fit-rubric/1.0"`; eligibility filters are deterministic; the model only supplies evidence
-that is then verified. Every stored match records the rubric version that produced it, so
-an old score is never silently re-interpreted under new rules.
-
----
-
-## Scheduled work
-
-Two EventBridge Scheduler rules target `ScheduledFunction`:
-
-| Schedule | Rate | Does |
-|---|---|---|
-| `MonitorSchedule` | 5 minutes | poll job sources, send due reminders, repair the outbox |
-| `CleanupSchedule` | 6 hours | delete expired example workspaces |
-
-Source polling compares a content hash before doing anything: an unchanged feed costs zero
-model calls. This is what makes "watches while you sleep" affordable rather than a way to
-burn a credit balance overnight.
-
----
-
-## Failure handling
-
-| Failure | Behaviour |
-|---|---|
-| Worker crashes mid-submission | Lease expires; a replacement worker's stale fencing token fails the conditional write, so it reconciles instead of resubmitting |
-| Timeout after clicking Submit | `OutcomeUnknown`; capacity stays consumed; reconciliation resolves to `Submitted` or `NeedsReview` |
-| Employer changed the form | Signature mismatch at `dispatch`; submission refused; packet is rebuilt and re-approved |
-| Mandate revoked after queueing | Cedar is re-evaluated at `begin`; the queued submission is refused |
-| Two submissions race the daily cap | Capacity is reserved by a conditional transaction before the external write; the loser is refused |
-| DynamoDB stream drops a record | The 5-minute outbox repair re-sends anything still `pending` |
-| Queue message keeps failing | Redrive to the per-queue DLQ; `DeadLetterAlarm` and `WorkDeadLetterAlarm` fire |
-| Model returns malformed output | Treated as no evidence; the field becomes a question, not a guess |
-
----
-
-## Cost and operations
-
-Designed to fit a $100 credit envelope:
-
-- No NAT gateway, load balancer, or always-on compute.
-- Per-user and global daily allowances for model and voice usage, **reserved before** the
-  work is done rather than measured after.
-- Source polling that skips unchanged feeds entirely.
-- S3 lifecycle expiry on evidence and resumes; DynamoDB TTL on ephemeral items.
-- `CostBudget` with alerts at 50% actual and 90% forecast.
-- Least-privilege IAM per function — most visibly, the browser worker has no database
-  access at all.
-- CloudWatch alarms on both dead-letter queues.
-
-Deployment is GitHub Actions via OIDC (`.github/workflows/ci-cd.yml`): tests → build →
-`cloudformation deploy` → publish the UI to S3 → CloudFront invalidation → smoke test
-against the live URL. No AWS keys are stored in the repository.
+A domain test proves a transition rule, a browser fixture proves a supported interaction, and an employer confirmation supports a submission result. These are different levels of verification and should remain labelled as such.
