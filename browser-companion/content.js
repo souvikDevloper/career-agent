@@ -79,7 +79,11 @@
       if (legend && !legend.contains(el)) return clean(legend.textContent);
       const groupLabel = explicitLabel(group); if (groupLabel) return groupLabel;
     }
-    const direct = explicitLabel(el); if (direct && !PLACEHOLDER.test(norm(direct))) return direct;
+    const direct = explicitLabel(el);
+    // Workday includes the current selection and validation state in aria-label.
+    // Those are widget state, not part of the profile question.
+    if (direct && !PLACEHOLDER.test(norm(direct))) return isCustomChoice(el)
+      ? clean(direct.replace(/\s+(?:select one|select an option|select\.\.\.).*$/i, "").replace(/\s+required$/i, "")) : direct;
     if (group) {
       const label = group.querySelector("legend, [data-automation-id='formLabel'], label, [class*='label'], [class*='question']");
       if (label && !label.contains(el)) return clean(label.textContent);
@@ -101,11 +105,12 @@
       if (datePart && !dateContext.date_field) {
         const dateLabel = norm(explicitLabel(node) || node.querySelector(":scope > label, :scope > legend, :scope > [data-automation-id='formLabel']")?.textContent);
         const dateField = /^(from|start date)$/.test(dateLabel) || /^formField[-_]startDate$/i.test(automation) ? "start" :
-          /^(to|end date)$/.test(dateLabel) || /^formField[-_]endDate$/i.test(automation) ? "end" : undefined;
+          /^(to(?: actual or expected)?|end date)$/.test(dateLabel) || /^formField[-_]endDate$/i.test(automation) ? "end" : undefined;
         if (dateField) Object.assign(dateContext, { date_field: dateField, date_part: datePart });
       }
-      const heading = [...node.children].find((child) => child.matches("h2,h3,h4,legend,[data-automation-id='panelTitle']"));
-      const repeated = norm(heading?.textContent).match(/^(?:work )?(experience|education)\s*(\d+)$/);
+      const headings = [...node.querySelectorAll("h2,h3,h4,legend,[data-automation-id='panelTitle']")]
+        .map((heading) => norm(heading.textContent).match(/^(?:work )?(experience|education)\s*(\d+)$/)).filter(Boolean);
+      const repeated = headings.length === 1 ? headings[0] : null;
       if (repeated) return { section: repeated[1], index: Number(repeated[2]) - 1, ...dateContext };
       if (/^(workExperience|education)-\d+$/.test(automation)) return { section: automation.startsWith("work") ? "experience" : "education", index: Number(automation.split("-").pop()), ...dateContext };
       node = node.parentElement;
@@ -134,6 +139,7 @@
     return clean(el.getAttribute("aria-valuetext") || el.getAttribute("data-value") || el.value || el.textContent);
   }
   function empty(el) {
+    if (el.dataset.careerAgentPendingChoice === "true") return true;
     if (el.type === "radio") return !radioGroup(el).some((radio) => radio.checked);
     if (el.type === "checkbox") return !el.checked;
     if (el.type === "file") return !el.files?.length && el.dataset.careerAgentUploaded !== "true";
@@ -146,6 +152,7 @@
     const labelNode = el.labels?.[0] || (el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`)) || group?.querySelector("label,legend,[data-automation-id='formLabel']");
     const labelled = (el.getAttribute("aria-labelledby") || "").split(/\s+/).map((id) => document.getElementById(id)?.textContent || "").join(" ");
     const question = labelNode?.textContent || labelled || el.getAttribute("aria-label") || (clean(group?.textContent).length < 700 ? group?.textContent : "");
+    if (/\b(?:optional|not required|entirely voluntary)\b/i.test(question || "")) return false;
     return /\*|\brequired\b/i.test(question || "") || !!group?.querySelector("[aria-label='Required'],[data-automation-id='required']");
   }
   function unansweredRequired() {
@@ -181,13 +188,34 @@
   }
   async function setValue(el, value) {
     if (!el.isConnected || !enabled(el) || value == null) return false;
+    // A file input can only be populated with File objects, never text/URLs.
+    if (["file", "hidden", "password"].includes(el.type)) return false;
     const wanted = norm(value);
     if (el.tagName === "SELECT") {
       const option = [...el.options].find((candidate) => !candidate.disabled && (norm(candidate.value) === wanted || norm(candidate.textContent) === wanted));
       if (!option) return false;
       Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(el, option.value);
     } else if (isCustomChoice(el)) {
-      const option = (await openChoice(el)).find((candidate) => norm(candidate.textContent) === wanted || norm(candidate.getAttribute("data-value")) === wanted);
+      const matches = (candidate) => norm(candidate.textContent) === wanted || norm(candidate.getAttribute("data-value")) === wanted;
+      let available = await openChoice(el), option = available.find(matches);
+      if (!option && available.length) {
+        const response = await send({ type: "resolve_questions", questions: [{ id: "choice", label: labelOf(el), context: fieldContext(el), required: requiredLike(el), options: available.map(node => clean(node.textContent)).slice(0, 50) }] });
+        const resolved = response?.data?.answers?.[0]?.value;
+        if (resolved != null) option = available.find(node => norm(node.textContent) === norm(resolved));
+      }
+      // Search-backed prompts (e.g. Workday Field of Study) expose options only
+      // after typing. Typed search text alone must never count as a selection.
+      if (!option && el.tagName === "INPUT") {
+        el.dataset.careerAgentPendingChoice = "true";
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, String(value));
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        option = await until(() => optionNodes(el).find(matches), 2500);
+        if (!option) {
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, "");
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+        delete el.dataset.careerAgentPendingChoice;
+      }
       if (!option) { closeChoice(el); return false; }
       option.click(); return !!await until(() => !el.isConnected || !empty(el), 1200);
     } else if (el.type === "radio") {
@@ -209,7 +237,8 @@
     "why this role": ["why this role", "cover letter", "why are you interested in this role"],
   };
   function findControl(label, exactName) {
-    const all = controls().filter(empty), exact = exactName && all.find((el) => el.name === exactName || el.id === exactName);
+    const all = controls().filter((el) => empty(el) && !["file", "hidden", "password"].includes(el.type) && !fieldContext(el));
+    const exact = exactName && all.find((el) => el.name === exactName || el.id === exactName);
     if (exact) return exact;
     const aliases = ALIASES[norm(label)] || [norm(label)]; return all.find((el) => !fieldContext(el) && aliases.includes(norm(labelOf(el))));
   }
@@ -217,7 +246,16 @@
     if (!url) return false;
     // Workday and other ATS products hide the native file input behind a widget.
     const files = [...document.querySelectorAll("input[type='file']")].filter((el) => enabled(el) && !el.files?.length);
-    const target = files.find((el) => /\b(resume|cv)\b/i.test(labelOf(el))) || (files.length === 1 && /\b(resume|cv)\b/i.test(questionContainer(files[0])?.textContent) ? files[0] : null);
+    const uploadLabel = (el) => {
+      let node = el, text = labelOf(el);
+      for (let depth = 0; node && depth < 5; depth++, node = node.parentElement) {
+        const candidate = clean(node.textContent);
+        if (candidate.length > 900 || node.querySelectorAll("input[type='file']").length > 1) break;
+        if (/\b(resume|cv|transcript|academic record|cover letter|certificate)\b/i.test(candidate)) { text += " " + candidate; break; }
+      }
+      return text;
+    };
+    const target = files.find((el) => /\b(resume|cv)\b/i.test(uploadLabel(el)) && !/\b(transcript|academic record|cover letter|certificate)\b/i.test(uploadLabel(el)));
     if (!target || target.dataset.careerAgentUploaded === "true") return false;
     const data = await send({ type: "resume", url }), bytes = Uint8Array.from(atob(data.base64), (char) => char.charCodeAt(0)), dt = new DataTransfer();
     const type = data.type || "application/pdf";
@@ -242,6 +280,7 @@
     }
     if (await attachResume(packet.resume_url).catch(() => false)) filled++; return filled;
   }
+  const uncertainAdds = new Set();
   async function expandRecords(packet) {
     // Add only records actually present in the approved packet. Locate an Add
     // button inside a single, explicitly headed history section; never click a
@@ -258,13 +297,20 @@
         if (foreign) break;
         const add = [...scope.querySelectorAll("button,[role='button']")].find((node) => visible(node) && enabled(node) && /^add(?: (?:work )?experience| education| another)?$/.test(norm(node.textContent)));
         if (!add) continue;
-        const count = () => new Set(controls().filter((el) => scope.contains(el)).map(fieldContext).filter((context) => context?.section === section).map((context) => context.index)).size;
+        const count = () => {
+          const fields = controls().filter((el) => scope.contains(el));
+          const indexed = new Set(fields.map(fieldContext).filter((context) => context?.section === section).map((context) => context.index)).size;
+          // Unrecognized row wrappers must never be interpreted as zero rows.
+          const anchors = fields.filter((el) => (section === "education" ? /^(school|school or university|university|college)$/ : /^(job title|position title)$/).test(norm(labelOf(el)))).length;
+          return Math.max(indexed, anchors);
+        };
+        if (uncertainAdds.has(section)) break;
         for (let added = count(); added < wanted && !stopped; added++) {
           const before = count();
           const currentAdd = [...scope.querySelectorAll("button,[role='button']")].find((node) => visible(node) && enabled(node) && /^add(?: (?:work )?experience| education| another)?$/.test(norm(node.textContent)));
           if (!currentAdd) break;
           currentAdd.click();
-          if (!await until(() => count() > before, 2500)) break;
+          if (!await until(() => count() > before, 2500)) { uncertainAdds.add(section); break; }
         }
         break;
       }
@@ -291,7 +337,7 @@
       if (el.type === "radio" && seenRadio.has(el.name)) continue;
       if (el.type === "radio") seenRadio.add(el.name);
       const label = labelOf(el).slice(0, 600); if (!label || SENSITIVE.test(norm(label))) continue;
-      const options = await optionTexts(el); if (isCustomChoice(el) && !options.length) continue;
+      const options = await optionTexts(el);
       const id = fieldId(el); questions.push({ id, label, options: options.slice(0, 50), required: requiredLike(el), context: fieldContext(el) }); byId.set(id, el);
     }
     let filled = 0;

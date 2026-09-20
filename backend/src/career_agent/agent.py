@@ -231,6 +231,7 @@ def t_create_watch(keywords: str, interval_minutes: int = 5, company: str = "", 
 
 
 def _watch_summary(w: dict) -> dict:
+    w = {**w, "watch_id": w.get("watch_id") or str(w.get("sk", "")).removeprefix("WATCH#")}
     return {k: w.get(k) for k in ("watch_id", "keywords", "filters", "interval_minutes", "sources", "enabled",
                                   "next_check_at", "last_checked_at", "last_status")}
 

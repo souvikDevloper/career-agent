@@ -6,7 +6,7 @@ from typing import Any
 
 from . import llm
 from .config import settings as cfg
-from .scoring import RUBRIC_VERSION, Evidence, heuristic_evidence, score_match, verify_quotes
+from .scoring import FAIL, RUBRIC_VERSION, UNKNOWN, Evidence, hard_filters, heuristic_evidence, score_match, verify_quotes
 from .store import C, Put, Update
 from .util import sha256
 
@@ -164,7 +164,22 @@ class Matcher:
 
     def list(self, uid: str) -> list[dict]:
         rows = self.store.query(f"USER#{uid}", "MATCH#", limit=300)
+        profile = self.profiles.current(uid)
+        prefs = self.wf.settings(uid)["preferences"]
+        if profile:
+            rows = [self.refresh_eligibility(row, profile, prefs) for row in rows]
         return sorted(rows, key=lambda r: (-int(r.get("score", 0)), r.get("created_at", "")))
+
+    def refresh_eligibility(self, match: dict, profile: dict, prefs: dict) -> dict:
+        """Re-evaluate factual gates without paying to regenerate model evidence."""
+        if not match.get("job"):
+            return match
+        filters = hard_filters(match["job"], prefs, profile.get("facts") or {})
+        blocked = any(f.mandatory and f.status == FAIL for f in filters)
+        unknowns = [f.detail for f in filters if f.mandatory and f.status == UNKNOWN]
+        return {**match, "filters": [f.to_dict() for f in filters], "blocked": blocked,
+                "unknowns": unknowns, "auto_eligible": not blocked and not unknowns,
+                "eligibility_profile_version": profile["version"]}
 
 
 def _job_card(job: dict) -> dict:

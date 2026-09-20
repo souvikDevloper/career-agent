@@ -159,6 +159,7 @@ def handler(event: dict, context: Any) -> dict:
     except (ValueError, json.JSONDecodeError) as exc:
         return error(400, "invalid_request", str(exc)[:200], cid)
     except WorkflowError as exc:
+        log(logger, "http.workflow_error", code=exc.code, detail=str(exc)[:300], correlation_id=cid, route=rx.pattern)
         return error(exc.status, exc.code, str(exc), cid)
     except ResumeError as exc:
         return error(422, "resume_error", str(exc), cid)
@@ -240,7 +241,8 @@ def seed_example_workspace(uid: str, username: str) -> None:
                                                                             "note": "Fictional applicant; test employer only"})])
     # Seed a watch and kick off one search. Without this the workspace opens with a
     # profile but no matches, which reads as a broken app rather than an empty one.
-    svc.store.put({"pk": f"USER#{uid}", "sk": f"WATCH#{new_id('w_')}", "entity": "watch", "keywords": "intern",
+    watch_id = new_id("w_")
+    svc.store.put({"pk": f"USER#{uid}", "sk": f"WATCH#{watch_id}", "watch_id": watch_id, "user_id": uid, "entity": "watch", "keywords": "intern",
                    "interval_minutes": 5, "enabled": True, "gsi1pk": "WATCH#enabled",
                    "gsi1sk": f"USER#{uid}", "created_at": svc.wf.clock.iso(), "ttl": now + 3 * 86400})
     svc.wf.start_operation(uid, "search", {"keywords": "intern"}, f"seed:{uid}", None)
@@ -363,6 +365,8 @@ def _profile_public(profile: dict | None) -> dict | None:
 
 
 def _strip(item: dict) -> dict:
+    if str(item.get("sk", "")).startswith("WATCH#"):
+        item = {**item, "watch_id": item.get("watch_id") or item["sk"].removeprefix("WATCH#")}
     return {k: v for k, v in item.items() if k not in ("pk", "sk", "gsi1pk", "gsi1sk", "ttl")}
 
 
