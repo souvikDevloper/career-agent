@@ -124,6 +124,7 @@ Globals:
         MODEL_ID: !Ref ModelId
         STAGE: !Ref Stage
         WORK_QUEUE_URL: !Ref WorkQueue
+        WATCH_QUEUE_URL: !Ref WatchQueue
         SUBMIT_QUEUE_URL: !Ref SubmitQueue
         NOTIFY_QUEUE_URL: !Ref NotifyQueue
         USER_POOL_ID: !Ref UserPool
@@ -240,6 +241,15 @@ Resources:
       VisibilityTimeout: 360
       SqsManagedSseEnabled: true
       RedrivePolicy: { deadLetterTargetArn: !GetAtt WorkDLQ.Arn, maxReceiveCount: 3 }
+  WatchDLQ:
+    Type: AWS::SQS::Queue
+    Properties: { MessageRetentionPeriod: 1209600, SqsManagedSseEnabled: true }
+  WatchQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 360
+      SqsManagedSseEnabled: true
+      RedrivePolicy: { deadLetterTargetArn: !GetAtt WatchDLQ.Arn, maxReceiveCount: 3 }
   SubmitDLQ:
     Type: AWS::SQS::Queue
     Properties: { FifoQueue: true, MessageRetentionPeriod: 1209600, SqsManagedSseEnabled: true }
@@ -373,14 +383,41 @@ Resources:
             Queue: !GetAtt WorkQueue.Arn
             BatchSize: 1
             FunctionResponseTypes: [ReportBatchItemFailures]
-            # Five, and it is a ceiling on the account rather than on this
-            # function. The account allows ten concurrent Lambda executions in
-            # total, across every function, so a worker permitted ten can take
-            # every slot: with a queue backlog it does exactly that, and API
-            # Gateway then cannot invoke the API at all and answers 503 without
-            # the request ever reaching the code. Raising this to ten did that.
-            # Whatever this number becomes, it has to leave room for the API.
-            ScalingConfig: { MaximumConcurrency: 5 }
+            # Interactive work must stay responsive even when Astra has a large
+            # autonomous backlog. Keep this lane small while the account-wide
+            # Lambda concurrency quota is only ten.
+            ScalingConfig: { MaximumConcurrency: 2 }
+
+  WatchWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: build/backend/
+      Handler: career_agent.handlers.worker.handler
+      MemorySize: 1024
+      Timeout: 300
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - S3ReadPolicy: { BucketName: !Ref DataBucket }
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref InternalSecret }
+        - Statement:
+            - Effect: Allow
+              Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream, bedrock:Converse, bedrock:ConverseStream]
+              Resource:
+                - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*"
+                - "arn:aws:bedrock:*::foundation-model/amazon.nova-*"
+            - Effect: Allow
+              Action: [ssm:GetParameter]
+              Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/*"
+      Events:
+        Watch:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt WatchQueue.Arn
+            BatchSize: 1
+            FunctionResponseTypes: [ReportBatchItemFailures]
+            # Astra stays fully enabled, but background automation is never
+            # allowed to consume the account. Latency is preferable to 503s.
+            ScalingConfig: { MaximumConcurrency: 2 }
 
   RelayFunction:
     Type: AWS::Serverless::Function
@@ -392,6 +429,7 @@ Resources:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
         - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref InternalSecret }
         - SQSSendMessagePolicy: { QueueName: !GetAtt WorkQueue.QueueName }
+        - SQSSendMessagePolicy: { QueueName: !GetAtt WatchQueue.QueueName }
         - SQSSendMessagePolicy: { QueueName: !GetAtt SubmitQueue.QueueName }
         - SQSSendMessagePolicy: { QueueName: !GetAtt NotifyQueue.QueueName }
       Events:
@@ -420,6 +458,7 @@ Resources:
         - S3CrudPolicy: { BucketName: !Ref DataBucket }
         - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref InternalSecret }
         - SQSSendMessagePolicy: { QueueName: !GetAtt WorkQueue.QueueName }
+        - SQSSendMessagePolicy: { QueueName: !GetAtt WatchQueue.QueueName }
         - SQSSendMessagePolicy: { QueueName: !GetAtt SubmitQueue.QueueName }
         - SQSSendMessagePolicy: { QueueName: !GetAtt NotifyQueue.QueueName }
         - Statement:
@@ -450,6 +489,7 @@ Resources:
             Queue: !GetAtt NotifyQueue.Arn
             BatchSize: 5
             FunctionResponseTypes: [ReportBatchItemFailures]
+            ScalingConfig: { MaximumConcurrency: 2 }
 
   GateFunction:
     Type: AWS::Serverless::Function
@@ -510,7 +550,7 @@ Resources:
             Queue: !GetAtt SubmitQueue.Arn
             BatchSize: 1
             FunctionResponseTypes: [ReportBatchItemFailures]
-            ScalingConfig: { MaximumConcurrency: 2 }
+            ScalingConfig: { MaximumConcurrency: 1 }
 
   # ------------------------------------------------------------------ schedules
   SchedulerRole:
@@ -817,6 +857,21 @@ Resources:
       Namespace: AWS/SQS
       MetricName: ApproximateNumberOfMessagesVisible
       Dimensions: [{ Name: QueueName, Value: !GetAtt SubmitDLQ.QueueName }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+  WatchDeadLetterAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAlertEmail
+    Properties:
+      AlarmDescription: Astra watch messages landed in the dead-letter queue.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions: [{ Name: QueueName, Value: !GetAtt WatchDLQ.QueueName }]
       Statistic: Maximum
       Period: 300
       EvaluationPeriods: 1
