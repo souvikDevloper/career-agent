@@ -373,13 +373,14 @@ Resources:
             Queue: !GetAtt WorkQueue.Arn
             BatchSize: 1
             FunctionResponseTypes: [ReportBatchItemFailures]
-            # Ten, not fifteen. Each message is a full search that already runs
-            # its own model calls three at a time, so fifteen workers would put
-            # forty-five requests against an endpoint measured degrading from a
-            # ten second median to twenty-five under load - the concurrency that
-            # caused the timeouts this limit exists to avoid. Ten doubles the
-            # drain rate and keeps thirty in flight.
-            ScalingConfig: { MaximumConcurrency: 10 }
+            # Five, and it is a ceiling on the account rather than on this
+            # function. The account allows ten concurrent Lambda executions in
+            # total, across every function, so a worker permitted ten can take
+            # every slot: with a queue backlog it does exactly that, and API
+            # Gateway then cannot invoke the API at all and answers 503 without
+            # the request ever reaching the code. Raising this to ten did that.
+            # Whatever this number becomes, it has to leave room for the API.
+            ScalingConfig: { MaximumConcurrency: 5 }
 
   RelayFunction:
     Type: AWS::Serverless::Function
