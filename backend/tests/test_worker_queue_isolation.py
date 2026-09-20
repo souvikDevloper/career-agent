@@ -1,8 +1,8 @@
-"""Regression tests for separating autonomous Astra work from interactive work."""
+"""Regression tests for cutting new user work away from the legacy backlog."""
 
 import json
 
-from career_agent.handlers import worker
+from career_agent.handlers import queue_router
 
 
 class FakeSQS:
@@ -11,37 +11,58 @@ class FakeSQS:
 
     def send_message(self, **kwargs):
         self.sent.append(kwargs)
-        return {"MessageId": "migrated"}
+        return {"MessageId": "forwarded"}
 
 
-def test_legacy_watch_message_is_forwarded_out_of_work_queue(monkeypatch):
+def test_legacy_watch_message_goes_to_watch_queue(monkeypatch):
     fake = FakeSQS()
     monkeypatch.setenv("WATCH_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/astra-watch")
-    monkeypatch.setattr(worker, "_sqs", fake)
+    monkeypatch.setenv("INTERACTIVE_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/interactive")
+    monkeypatch.setattr(queue_router, "_sqs", fake)
 
-    record = {
-        "messageId": "old-1",
-        "eventSourceARN": "arn:aws:sqs:us-east-1:123:career-agent-work",
-    }
     msg = {"kind": "check_watch", "user_id": "u1", "watch_id": "w_1"}
+    result = queue_router.handler(
+        {"Records": [{"messageId": "old-1", "body": json.dumps(msg)}]},
+        None,
+    )
 
-    assert worker._forward_legacy_watch(record, msg)
+    assert result == {"batchItemFailures": []}
     assert fake.sent == [{
         "QueueUrl": "https://sqs.us-east-1.amazonaws.com/123/astra-watch",
         "MessageBody": json.dumps(msg),
     }]
 
 
-def test_watch_queue_delivery_is_not_forwarded_again(monkeypatch):
+def test_legacy_interactive_message_goes_to_fresh_interactive_queue(monkeypatch):
     fake = FakeSQS()
     monkeypatch.setenv("WATCH_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/astra-watch")
-    monkeypatch.setattr(worker, "_sqs", fake)
+    monkeypatch.setenv("INTERACTIVE_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/interactive")
+    monkeypatch.setattr(queue_router, "_sqs", fake)
 
-    record = {
-        "messageId": "watch-1",
-        "eventSourceARN": "arn:aws:sqs:us-east-1:123:astra-watch",
-    }
-    msg = {"kind": "match_new_job", "user_id": "u1", "job_key": "j1"}
+    msg = {"kind": "search", "user_id": "u1", "op_id": "op_1", "payload": {"keywords": "backend intern"}}
+    result = queue_router.handler(
+        {"Records": [{"messageId": "old-2", "body": json.dumps(msg)}]},
+        None,
+    )
 
-    assert not worker._forward_legacy_watch(record, msg)
-    assert fake.sent == []
+    assert result == {"batchItemFailures": []}
+    assert fake.sent == [{
+        "QueueUrl": "https://sqs.us-east-1.amazonaws.com/123/interactive",
+        "MessageBody": json.dumps(msg),
+    }]
+
+
+def test_router_retries_only_failed_record(monkeypatch):
+    class FailingSQS:
+        def send_message(self, **kwargs):
+            raise RuntimeError("temporary send failure")
+
+    monkeypatch.setenv("INTERACTIVE_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/interactive")
+    monkeypatch.setattr(queue_router, "_sqs", FailingSQS())
+
+    result = queue_router.handler(
+        {"Records": [{"messageId": "old-3", "body": json.dumps({"kind": "resume"})}]},
+        None,
+    )
+
+    assert result == {"batchItemFailures": [{"itemIdentifier": "old-3"}]}
