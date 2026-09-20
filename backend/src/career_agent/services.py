@@ -46,6 +46,16 @@ SCORING_CALL_TIMEOUT_SECONDS = 35
 WATCH_MIN_INTERVAL_MINUTES = 15
 WATCH_MAX_INTERVAL_MINUTES = 10080
 
+# Admission control: a scheduler tick may make some watches late, but it must
+# never turn a burst of due autonomous work into an account-wide outage.
+WATCH_FANOUT_PER_RUN = 10
+
+# Only queued candidates are marked WATCHSEEN, so limiting one check does not
+# discard the rest: later checks continue through the unseen matches. This
+# spreads an initial watch catch-up across intervals instead of creating up to
+# twelve model-scoring jobs per watch in one burst.
+WATCH_MATCH_FANOUT_PER_CHECK = 4
+
 
 def _candidate_pool_size(total: int, requested: int) -> int:
     requested = max(1, min(12, requested))
@@ -484,8 +494,8 @@ class Services:
                 "next_check_at": self.wf.clock.now() + interval * 60, "revision": 1,
                 "enabled": True, "created_at": self.wf.clock.iso(), "gsi1pk": "WATCH#enabled", "gsi1sk": f"{uid}#{wid}"}
         self.store.transact([Put(item, C("pk", "not_exists")),
-                             self.wf.outbox_put("work", {"kind": "check_watch", "user_id": uid, "watch_id": wid},
-                                                f"work:watch:{wid}:created"),
+                             self.wf.outbox_put("watch", {"kind": "check_watch", "user_id": uid, "watch_id": wid},
+                                                f"watch:check:{wid}:created"),
                              self.wf.event_put(uid, "watch.created", {"keywords": item["keywords"]})])
         return item
 
@@ -514,7 +524,7 @@ class Services:
     def delete_watch(self, uid: str, wid: str) -> None:
         self.store.delete(f"USER#{uid}", f"WATCH#{wid}")
 
-    def run_monitor(self, only_source: str | None = None, force: bool = False) -> dict:
+    def run_monitor(self, only_source: str | None = None, force: bool = False, user_id: str | None = None) -> dict:
         """Invoked every 5 minutes by EventBridge Scheduler and by 'Check now'."""
         summary: dict[str, Any] = {"sources": [], "fanout": 0}
         # Queue each user's due search independently of whether shared feeds
@@ -528,9 +538,13 @@ class Services:
             wid = watch.get("watch_id") or str(watch.get("sk", "")).removeprefix("WATCH#")
             if not str(watch.get("pk", "")).startswith("USER#") or not wid.startswith("w_"):
                 continue
+            if user_id and uid != user_id:
+                continue
             watch = {**watch, "user_id": uid, "watch_id": wid}
             if not watch.get("enabled", True) or (not force and float(watch.get("next_check_at", 0)) > now):
                 continue
+            if summary["fanout"] >= WATCH_FANOUT_PER_RUN:
+                break
             interval = max(WATCH_MIN_INTERVAL_MINUTES,
                            min(WATCH_MAX_INTERVAL_MINUTES, int(watch.get("interval_minutes", WATCH_MIN_INTERVAL_MINUTES))))
             due = watch.get("next_check_at")
@@ -538,8 +552,8 @@ class Services:
                 self.store.transact([
                     Update(watch["pk"], watch["sk"], set={"user_id": uid, "watch_id": wid, "next_check_at": now + interval * 60, "last_queued_at": self.wf.clock.iso()},
                            condition=And(C("enabled", "eq", True), C("next_check_at", "eq", due) if due is not None else C("next_check_at", "not_exists"))),
-                    self.wf.outbox_put("work", {"kind": "check_watch", "user_id": watch["user_id"], "watch_id": watch["watch_id"]},
-                                       f"work:watch:{watch['watch_id']}:{watch.get('revision', 0)}:{due}:{int(now // 60)}"),
+                    self.wf.outbox_put("watch", {"kind": "check_watch", "user_id": watch["user_id"], "watch_id": watch["watch_id"]},
+                                       f"watch:check:{watch['watch_id']}:{watch.get('revision', 0)}:{due}:{int(now // 60)}"),
                 ])
                 summary["fanout"] += 1
             except ConditionFailed:
@@ -581,14 +595,14 @@ class Services:
         criteria_hash = sha256([watch_id, watch.get("revision", 0), watch.get("keywords"), watch.get("filters"), prefs])
         queued = 0
         for job in matched:
-            if queued >= 12:
+            if queued >= WATCH_MATCH_FANOUT_PER_CHECK:
                 break
             key = f"work:watchmatch:{uid}:{job['job_key']}:{job.get('content_hash')}:{profile['version']}:{criteria_hash}"
             try:
                 self.store.transact([
                     Put({"pk": f"USER#{uid}", "sk": f"WATCHSEEN#{sha256(key)}", "entity": "watch_seen",
                          "job_key": job["job_key"], "at": self.wf.clock.iso()}, C("pk", "not_exists")),
-                    self.wf.outbox_put("work", {
+                    self.wf.outbox_put("watch", {
                         "kind": "match_new_job", "user_id": uid, "job_key": job["job_key"], "watch_id": watch_id,
                         "watch_revision": int(watch.get("revision", 0)),
                     }, key),
