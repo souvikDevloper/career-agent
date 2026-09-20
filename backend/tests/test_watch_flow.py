@@ -185,3 +185,50 @@ def test_rematch_does_not_mutate_active_or_final_application(watch_env, monkeypa
     svc.match_new_job(UID, job["job_key"], watch["watch_id"])
     assert svc.wf.get_app(UID, app["app_id"]) == before
     assert not outbox(store, "prepare")
+
+
+def test_astra_watch_work_uses_dedicated_queue(watch_env):
+    svc, store, _ = watch_env
+    watch = svc.create_watch(UID, "software", 30)
+    created = outbox(store, "check_watch")
+    assert created and created[-1]["queue"] == "watch"
+
+    assert svc.check_watch(UID, watch["watch_id"])["queued"] == 1
+    matches = outbox(store, "match_new_job")
+    assert matches and matches[-1]["queue"] == "watch"
+
+
+def test_manual_monitor_only_fans_out_requesting_users_watches(watch_env):
+    svc, store, _ = watch_env
+    svc.create_watch(UID, "software", 30)
+    svc.create_watch("other-user", "software", 30)
+    before = set(store._items)
+
+    summary = svc.run_monitor(force=True, user_id=UID)
+
+    created = [
+        row for key, row in store._items.items()
+        if key not in before and row.get("entity") == "outbox"
+        and row.get("message", {}).get("kind") == "check_watch"
+    ]
+    assert summary["fanout"] == 1
+    assert len(created) == 1
+    assert created[0]["queue"] == "watch"
+    assert created[0]["message"]["user_id"] == UID
+
+
+def test_monitor_fanout_is_bounded_per_scheduler_run(watch_env):
+    svc, store, _ = watch_env
+    for n in range(12):
+        svc.create_watch(UID, f"software {n}", 30)
+    before = set(store._items)
+
+    summary = svc.run_monitor(force=True)
+
+    created = [
+        row for key, row in store._items.items()
+        if key not in before and row.get("entity") == "outbox"
+        and row.get("message", {}).get("kind") == "check_watch"
+    ]
+    assert summary["fanout"] == 10
+    assert len(created) == 10
